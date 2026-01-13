@@ -223,7 +223,8 @@ impl NativePty {
         }
 
         // Set the slave as the controlling terminal
-        if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+        // Cast needed: TIOCSCTTY type differs between Linux and macOS
+        if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
             libc::_exit(1);
         }
 

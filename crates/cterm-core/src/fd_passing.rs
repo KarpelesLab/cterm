@@ -51,7 +51,8 @@ pub fn send_fds(socket: &UnixStream, fds: &[RawFd], data: &[u8]) -> io::Result<(
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = cmsg_buffer.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_buffer_len;
+    // Cast needed: msg_controllen is usize on Linux, u32 on macOS
+    msg.msg_controllen = cmsg_buffer_len as _;
 
     // Set up the control message header
     let cmsg: *mut libc::cmsghdr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
@@ -65,7 +66,8 @@ pub fn send_fds(socket: &UnixStream, fds: &[RawFd], data: &[u8]) -> io::Result<(
     unsafe {
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(fd_bytes as u32) as usize;
+        // Cast needed: cmsg_len is usize on Linux, u32 on macOS
+        (*cmsg).cmsg_len = libc::CMSG_LEN(fd_bytes as u32) as _;
 
         // Copy file descriptors into the control message data
         let cmsg_data = libc::CMSG_DATA(cmsg);
@@ -120,7 +122,8 @@ pub fn recv_fds(
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = cmsg_buffer.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_buffer_len;
+    // Cast needed: msg_controllen is usize on Linux, u32 on macOS
+    msg.msg_controllen = cmsg_buffer_len as _;
 
     // Receive the message
     let ret = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut msg, 0) };
@@ -137,7 +140,8 @@ pub fn recv_fds(
         unsafe {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
                 // Calculate number of file descriptors in this control message
-                let fd_bytes = (*cmsg).cmsg_len - libc::CMSG_LEN(0) as usize;
+                // Cast needed: cmsg_len is usize on Linux, u32 on macOS
+                let fd_bytes = (*cmsg).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
                 let num_fds = fd_bytes / std::mem::size_of::<RawFd>();
 
                 // Extract file descriptors
