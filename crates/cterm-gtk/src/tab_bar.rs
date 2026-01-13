@@ -24,6 +24,7 @@ struct TabInfo {
     id: u64,
     button: Button,
     label: Label,
+    bell_icon: Label,
     close_button: Button,
 }
 
@@ -82,6 +83,11 @@ impl TabBar {
     pub fn add_tab(&self, id: u64, title: &str) {
         let tab_box = GtkBox::new(Orientation::Horizontal, 4);
 
+        // Bell icon (hidden by default)
+        let bell_icon = Label::new(Some("🔔"));
+        bell_icon.set_visible(false);
+        bell_icon.add_css_class("tab-bell-icon");
+
         let label = Label::new(Some(title));
 
         let close_button = Button::builder()
@@ -90,6 +96,7 @@ impl TabBar {
             .build();
         close_button.add_css_class("tab-close-button");
 
+        tab_box.append(&bell_icon);
         tab_box.append(&label);
         tab_box.append(&close_button);
 
@@ -130,6 +137,7 @@ impl TabBar {
             id,
             button,
             label,
+            bell_icon,
             close_button,
         });
 
@@ -229,6 +237,21 @@ impl TabBar {
     /// Get number of tabs
     pub fn tab_count(&self) -> usize {
         self.tabs.borrow().len()
+    }
+
+    /// Set bell indicator visibility for a tab
+    pub fn set_bell(&self, id: u64, visible: bool) {
+        for tab in self.tabs.borrow().iter() {
+            if tab.id == id {
+                tab.bell_icon.set_visible(visible);
+                break;
+            }
+        }
+    }
+
+    /// Clear bell indicator for a tab (convenience wrapper)
+    pub fn clear_bell(&self, id: u64) {
+        self.set_bell(id, false);
     }
 }
 

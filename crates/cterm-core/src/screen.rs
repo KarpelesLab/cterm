@@ -132,6 +132,8 @@ pub struct Screen {
     pub dirty: bool,
     /// Current scroll offset (for viewing scrollback)
     pub scroll_offset: usize,
+    /// Bell was triggered (should be cleared after notification)
+    pub bell: bool,
 }
 
 impl Screen {
@@ -163,6 +165,7 @@ impl Screen {
             icon_name: String::new(),
             dirty: true,
             scroll_offset: 0,
+            bell: false,
         }
     }
 

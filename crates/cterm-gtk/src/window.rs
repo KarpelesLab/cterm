@@ -272,6 +272,8 @@ fn create_new_tab(
         if let Some(idx) = tabs.iter().position(|t| t.id == tab_id) {
             notebook_click.set_current_page(Some(idx as u32));
             tab_bar_click.set_active(tab_id);
+            // Clear bell when tab becomes active
+            tab_bar_click.clear_bell(tab_id);
         }
     });
 
@@ -282,6 +284,23 @@ fn create_new_tab(
     let window_exit = window.clone();
     terminal.set_on_exit(move || {
         close_tab_by_id(&notebook_exit, &tabs_exit, &tab_bar_exit, &window_exit, tab_id);
+    });
+
+    // Set up bell callback to show bell icon on inactive tabs
+    let tab_bar_bell = tab_bar.clone();
+    let notebook_bell = notebook.clone();
+    let tabs_bell = Rc::clone(tabs);
+    terminal.set_on_bell(move || {
+        // Only show bell if this tab is not active
+        if let Some(current_page) = notebook_bell.current_page() {
+            let tabs = tabs_bell.borrow();
+            if let Some(current_tab) = tabs.get(current_page as usize) {
+                if current_tab.id != tab_id {
+                    // This tab is not active, show bell
+                    tab_bar_bell.set_bell(tab_id, true);
+                }
+            }
+        }
     });
 
     // Store terminal with its ID
@@ -363,6 +382,8 @@ fn sync_tab_bar_active(tab_bar: &TabBar, tabs: &Rc<RefCell<Vec<TabEntry>>>, note
         let tabs = tabs.borrow();
         if let Some(tab) = tabs.get(page_idx as usize) {
             tab_bar.set_active(tab.id);
+            // Clear bell when tab becomes active
+            tab_bar.clear_bell(tab.id);
         }
     }
 }

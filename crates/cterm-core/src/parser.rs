@@ -51,7 +51,7 @@ impl vte::Perform for ScreenPerformer<'_> {
         match byte {
             // Bell (BEL)
             0x07 => {
-                // TODO: Trigger bell notification
+                self.screen.bell = true;
                 log::debug!("Bell");
             }
             // Backspace (BS)

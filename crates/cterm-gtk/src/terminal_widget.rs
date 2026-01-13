@@ -33,6 +33,7 @@ pub struct TerminalWidget {
     cell_width: f64,
     cell_height: f64,
     on_exit: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    on_bell: Rc<RefCell<Option<Box<dyn Fn()>>>>,
 }
 
 impl TerminalWidget {
@@ -96,6 +97,7 @@ impl TerminalWidget {
             cell_width,
             cell_height,
             on_exit: Rc::new(RefCell::new(None)),
+            on_bell: Rc::new(RefCell::new(None)),
         };
 
         // Set up drawing
@@ -121,6 +123,11 @@ impl TerminalWidget {
     /// Set callback for when the terminal process exits
     pub fn set_on_exit<F: Fn() + 'static>(&self, callback: F) {
         *self.on_exit.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// Set callback for when the terminal rings the bell
+    pub fn set_on_bell<F: Fn() + 'static>(&self, callback: F) {
+        *self.on_bell.borrow_mut() = Some(Box::new(callback));
     }
 
     /// Set up the draw function
@@ -304,6 +311,7 @@ impl TerminalWidget {
         // Handle messages on main thread using glib timeout
         let terminal_main = Arc::clone(&self.terminal);
         let on_exit = Rc::clone(&self.on_exit);
+        let on_bell = Rc::clone(&self.on_bell);
         glib::timeout_add_local(Duration::from_millis(10), move || {
             // Process all pending messages
             while let Ok(msg) = rx.try_recv() {
@@ -311,6 +319,15 @@ impl TerminalWidget {
                     PtyMessage::Data(data) => {
                         let mut term = terminal_main.lock();
                         term.process(&data);
+
+                        // Check for bell
+                        if term.screen().bell {
+                            term.screen_mut().bell = false;
+                            if let Some(ref callback) = *on_bell.borrow() {
+                                callback();
+                            }
+                        }
+
                         term.screen_mut().dirty = false;
                         drawing_area.queue_draw();
                     }
