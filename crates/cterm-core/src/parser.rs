@@ -62,9 +62,7 @@ impl vte::Perform for ScreenPerformer<'_> {
             }
             // Horizontal Tab (HT)
             0x09 => {
-                // Move to next tab stop (every 8 columns)
-                let next_tab = ((self.screen.cursor.col / 8) + 1) * 8;
-                self.screen.cursor.col = next_tab.min(self.screen.width() - 1);
+                self.screen.tab_forward(1);
             }
             // Line Feed (LF), Vertical Tab (VT), Form Feed (FF)
             0x0a | 0x0b | 0x0c => {
@@ -286,10 +284,7 @@ impl vte::Perform for ScreenPerformer<'_> {
             // Cursor Backward Tabulation (CBT)
             ('Z', []) => {
                 let n = first_param(&params_vec, 1);
-                for _ in 0..n {
-                    let prev_tab = (self.screen.cursor.col.saturating_sub(1) / 8) * 8;
-                    self.screen.cursor.col = prev_tab;
-                }
+                self.screen.tab_backward(n);
             }
             // Insert Characters (ICH)
             ('@', []) => {
@@ -319,8 +314,23 @@ impl vte::Perform for ScreenPerformer<'_> {
             }
             // Device Status Report (DSR)
             ('n', []) => {
-                // TODO: Send device status response
-                log::trace!("DSR request: {:?}", params_vec);
+                let mode = first_param(&params_vec, 0);
+                match mode {
+                    5 => {
+                        // Status report - respond "OK"
+                        self.screen.queue_response(b"\x1b[0n".to_vec());
+                    }
+                    6 => {
+                        // Cursor position report - respond with CSI row;col R
+                        let row = self.screen.cursor.row + 1;
+                        let col = self.screen.cursor.col + 1;
+                        let response = format!("\x1b[{};{}R", row, col);
+                        self.screen.queue_response(response.into_bytes());
+                    }
+                    _ => {
+                        log::trace!("Unknown DSR mode: {}", mode);
+                    }
+                }
             }
             // Set Top and Bottom Margins (DECSTBM)
             ('r', []) => {
@@ -397,6 +407,20 @@ impl vte::Perform for ScreenPerformer<'_> {
                     _ => {}
                 }
             }
+            // Cursor Horizontal Tab forward (CHT)
+            ('I', []) => {
+                let n = first_param(&params_vec, 1);
+                self.screen.tab_forward(n);
+            }
+            // Tab Clear (TBC)
+            ('g', []) => {
+                let mode = first_param(&params_vec, 0);
+                match mode {
+                    0 => self.screen.clear_tab_stop(),
+                    3 => self.screen.clear_all_tab_stops(),
+                    _ => {}
+                }
+            }
             _ => {
                 log::trace!(
                     "Unhandled CSI: action={:?}, intermediates={:?}, params={:?}",
@@ -449,7 +473,7 @@ impl vte::Perform for ScreenPerformer<'_> {
             }
             // Set tab stop at current column (HTS)
             (b'H', []) => {
-                // TODO: Tab stops
+                self.screen.set_tab_stop();
             }
             _ => {
                 log::trace!(

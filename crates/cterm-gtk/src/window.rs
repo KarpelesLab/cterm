@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, EventControllerKey,
-    Notebook, Orientation, gdk, glib,
+    Notebook, Orientation, gdk, gio, glib,
 };
 
 use cterm_app::config::Config;
@@ -155,23 +155,54 @@ impl CtermWindow {
                             return glib::Propagation::Stop;
                         }
                         Action::Copy => {
-                            // TODO: Copy selection
+                            // TODO: Copy selection (requires text selection implementation)
                             return glib::Propagation::Stop;
                         }
                         Action::Paste => {
-                            // TODO: Paste from clipboard
+                            // Get clipboard and paste to current terminal
+                            if let Some(display) = gdk::Display::default() {
+                                let clipboard = display.clipboard();
+                                let tabs_paste = Rc::clone(&tabs);
+                                let notebook_paste = notebook.clone();
+                                clipboard.read_text_async(None::<&gio::Cancellable>, move |result| {
+                                    if let Ok(Some(text)) = result {
+                                        // Find current terminal and write
+                                        if let Some(page_idx) = notebook_paste.current_page() {
+                                            let tabs = tabs_paste.borrow();
+                                            if let Some(tab) = tabs.get(page_idx as usize) {
+                                                tab.terminal.write_str(&text);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
                             return glib::Propagation::Stop;
                         }
                         Action::ZoomIn => {
-                            // TODO: Increase font size
+                            if let Some(page_idx) = notebook.current_page() {
+                                let tabs_ref = tabs.borrow();
+                                if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                    tab.terminal.zoom_in();
+                                }
+                            }
                             return glib::Propagation::Stop;
                         }
                         Action::ZoomOut => {
-                            // TODO: Decrease font size
+                            if let Some(page_idx) = notebook.current_page() {
+                                let tabs_ref = tabs.borrow();
+                                if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                    tab.terminal.zoom_out();
+                                }
+                            }
                             return glib::Propagation::Stop;
                         }
                         Action::ZoomReset => {
-                            // TODO: Reset font size
+                            if let Some(page_idx) = notebook.current_page() {
+                                let tabs_ref = tabs.borrow();
+                                if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                    tab.terminal.zoom_reset();
+                                }
+                            }
                             return glib::Propagation::Stop;
                         }
                         Action::CloseWindow => {

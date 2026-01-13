@@ -29,7 +29,8 @@ pub struct TerminalWidget {
     terminal: Arc<Mutex<Terminal>>,
     theme: Theme,
     font_family: String,
-    font_size: f64,
+    font_size: Rc<RefCell<f64>>,
+    default_font_size: f64,
     cell_width: f64,
     cell_height: f64,
     on_exit: Rc<RefCell<Option<Box<dyn Fn()>>>>,
@@ -93,7 +94,8 @@ impl TerminalWidget {
             terminal: Arc::clone(&terminal),
             theme: theme.clone(),
             font_family,
-            font_size,
+            font_size: Rc::new(RefCell::new(font_size)),
+            default_font_size: font_size,
             cell_width,
             cell_height,
             on_exit: Rc::new(RefCell::new(None)),
@@ -130,14 +132,66 @@ impl TerminalWidget {
         *self.on_bell.borrow_mut() = Some(Box::new(callback));
     }
 
+    /// Write a string to the terminal (for paste operations)
+    pub fn write_str(&self, s: &str) {
+        let term = self.terminal.lock();
+        if let Err(e) = term.write_str(s) {
+            log::error!("Failed to write to terminal: {}", e);
+        }
+    }
+
+    /// Increase font size (zoom in)
+    pub fn zoom_in(&self) {
+        let mut font_size = self.font_size.borrow_mut();
+        *font_size = (*font_size + 1.0).min(72.0);
+        drop(font_size);
+        self.trigger_resize();
+    }
+
+    /// Decrease font size (zoom out)
+    pub fn zoom_out(&self) {
+        let mut font_size = self.font_size.borrow_mut();
+        *font_size = (*font_size - 1.0).max(6.0);
+        drop(font_size);
+        self.trigger_resize();
+    }
+
+    /// Reset font size to default
+    pub fn zoom_reset(&self) {
+        *self.font_size.borrow_mut() = self.default_font_size;
+        self.trigger_resize();
+    }
+
+    /// Trigger a resize to recalculate terminal dimensions
+    fn trigger_resize(&self) {
+        // Force a resize by getting current size and calling resize signal
+        let width = self.drawing_area.width();
+        let height = self.drawing_area.height();
+
+        let font_size = *self.font_size.borrow();
+        let cell_width = font_size * 0.6;
+        let cell_height = font_size * 1.4;
+
+        let cols = ((width as f64) / cell_width).floor() as usize;
+        let rows = ((height as f64) / cell_height).floor() as usize;
+
+        if cols > 0 && rows > 0 {
+            let mut term = self.terminal.lock();
+            term.resize(cols, rows);
+        }
+
+        self.drawing_area.queue_draw();
+    }
+
     /// Set up the draw function
     fn setup_drawing(&self) {
         let terminal = Arc::clone(&self.terminal);
         let theme = self.theme.clone();
         let font_family = self.font_family.clone();
-        let font_size = self.font_size;
+        let font_size = Rc::clone(&self.font_size);
 
-        self.drawing_area.set_draw_func(move |area, cr, width, height| {
+        self.drawing_area.set_draw_func(move |_area, cr, width, height| {
+            let font_size = *font_size.borrow();
             draw_terminal(
                 cr,
                 width as f64,
@@ -348,10 +402,11 @@ impl TerminalWidget {
     /// Set up resize handling
     fn setup_resize(&self) {
         let terminal = Arc::clone(&self.terminal);
-        let font_size = self.font_size;
+        let font_size = Rc::clone(&self.font_size);
 
-        self.drawing_area.connect_resize(move |area, width, height| {
+        self.drawing_area.connect_resize(move |_area, width, height| {
             // Calculate cell dimensions using Pango
+            let font_size = *font_size.borrow();
             let cell_width = font_size * 0.6;
             let cell_height = font_size * 1.4;
 

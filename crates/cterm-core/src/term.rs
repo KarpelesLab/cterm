@@ -104,6 +104,18 @@ impl Terminal {
 
         self.parser.parse(&mut self.screen, data);
 
+        // Send any pending responses back to the PTY
+        if self.screen.has_pending_responses() {
+            let responses = self.screen.take_pending_responses();
+            if let Some(ref pty) = self.pty {
+                for response in responses {
+                    if let Err(e) = pty.write(&response) {
+                        log::error!("Failed to send response to PTY: {}", e);
+                    }
+                }
+            }
+        }
+
         // Check for title change
         if self.screen.title != self.last_title {
             self.last_title = self.screen.title.clone();

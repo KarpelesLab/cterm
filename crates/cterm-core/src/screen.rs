@@ -134,6 +134,10 @@ pub struct Screen {
     pub scroll_offset: usize,
     /// Bell was triggered (should be cleared after notification)
     pub bell: bool,
+    /// Tab stop positions (columns where tabs stop)
+    tab_stops: Vec<bool>,
+    /// Pending responses to send back to the PTY (for DSR etc)
+    pending_responses: Vec<Vec<u8>>,
 }
 
 impl Screen {
@@ -166,7 +170,82 @@ impl Screen {
             dirty: true,
             scroll_offset: 0,
             bell: false,
+            tab_stops: Self::default_tab_stops(width),
+            pending_responses: Vec::new(),
         }
+    }
+
+    /// Queue a response to be sent back through the PTY
+    pub fn queue_response(&mut self, response: Vec<u8>) {
+        self.pending_responses.push(response);
+    }
+
+    /// Take all pending responses (drains the queue)
+    pub fn take_pending_responses(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.pending_responses)
+    }
+
+    /// Check if there are pending responses
+    pub fn has_pending_responses(&self) -> bool {
+        !self.pending_responses.is_empty()
+    }
+
+    /// Create default tab stops (every 8 columns)
+    fn default_tab_stops(width: usize) -> Vec<bool> {
+        (0..width).map(|i| i % 8 == 0 && i > 0).collect()
+    }
+
+    /// Set a tab stop at the current cursor position
+    pub fn set_tab_stop(&mut self) {
+        let col = self.cursor.col;
+        if col < self.tab_stops.len() {
+            self.tab_stops[col] = true;
+        }
+    }
+
+    /// Clear tab stop at current cursor position
+    pub fn clear_tab_stop(&mut self) {
+        let col = self.cursor.col;
+        if col < self.tab_stops.len() {
+            self.tab_stops[col] = false;
+        }
+    }
+
+    /// Clear all tab stops
+    pub fn clear_all_tab_stops(&mut self) {
+        self.tab_stops.fill(false);
+    }
+
+    /// Move cursor to the next tab stop
+    pub fn tab_forward(&mut self, count: usize) {
+        let width = self.width();
+        for _ in 0..count {
+            // Find next tab stop
+            let mut next_col = self.cursor.col + 1;
+            while next_col < width && !self.tab_stops.get(next_col).copied().unwrap_or(false) {
+                next_col += 1;
+            }
+            // If no tab stop found, go to the last column
+            self.cursor.col = next_col.min(width.saturating_sub(1));
+        }
+        self.dirty = true;
+    }
+
+    /// Move cursor to the previous tab stop
+    pub fn tab_backward(&mut self, count: usize) {
+        for _ in 0..count {
+            // Find previous tab stop
+            if self.cursor.col == 0 {
+                break;
+            }
+            let mut prev_col = self.cursor.col - 1;
+            while prev_col > 0 && !self.tab_stops.get(prev_col).copied().unwrap_or(false) {
+                prev_col -= 1;
+            }
+            // If no tab stop found, go to column 0
+            self.cursor.col = prev_col;
+        }
+        self.dirty = true;
     }
 
     /// Get screen width
