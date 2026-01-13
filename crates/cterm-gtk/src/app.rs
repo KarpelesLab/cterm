@@ -1,19 +1,8 @@
 //! Application setup and management
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
-
-use gtk4::prelude::*;
-use gtk4::{
-    Application, ApplicationWindow, Box as GtkBox, CssProvider, Orientation,
-    gdk, gio, glib,
-};
-use parking_lot::Mutex;
+use gtk4::{Application, CssProvider, gdk};
 
 use cterm_app::config::{load_config, Config};
-use cterm_app::session::{Session, TabState, WindowState};
-use cterm_app::shortcuts::ShortcutManager;
 use cterm_ui::theme::Theme;
 
 use crate::window::CtermWindow;
@@ -52,103 +41,55 @@ fn get_theme(config: &Config) -> Theme {
 }
 
 /// Apply CSS styling to the application
-fn apply_css(theme: &Theme) {
+/// Only styles terminal-specific elements, leaving system defaults for dialogs, menus, etc.
+fn apply_css(_theme: &Theme) {
     let provider = CssProvider::new();
 
-    let css = format!(
-        r#"
-        /* Global styles */
-        window {{
-            background-color: {};
-        }}
+    // Only style terminal-specific elements
+    // Menu bar, dialogs, and preferences use system defaults
+    let css = r#"
+        /* Terminal drawing area - background handled by Cairo drawing */
+        .terminal {
+            padding: 0;
+        }
 
-        /* Terminal area */
-        .terminal {{
-            background-color: {};
-            padding: 4px;
-        }}
+        /* Tab bar styling - compact height */
+        .tab-bar {
+            padding: 1px 2px;
+        }
 
-        /* Tab bar */
-        .tab-bar {{
-            background-color: {};
-            border-bottom: 1px solid {};
-            padding: 2px 4px;
-        }}
-
-        .tab-bar button {{
-            background: {};
-            color: {};
+        .tab-bar button {
             border: none;
-            border-radius: 4px;
-            padding: 4px 12px;
-            margin: 2px;
-            min-height: 24px;
-        }}
+            border-radius: 3px;
+            padding: 2px 8px;
+            margin: 1px;
+            min-height: 0;
+        }
 
-        .tab-bar button:hover {{
-            background: alpha({}, 0.1);
-        }}
-
-        .tab-bar button.active {{
-            background: {};
-            color: {};
-        }}
-
-        .tab-bar button.has-unread {{
+        .tab-bar button.has-unread {
             font-weight: bold;
-        }}
+        }
 
-        .tab-close-button {{
-            padding: 2px;
-            min-width: 16px;
-            min-height: 16px;
+        .tab-close-button {
+            padding: 0px 2px;
+            min-width: 14px;
+            min-height: 14px;
             border-radius: 50%;
-        }}
+        }
 
-        .tab-close-button:hover {{
+        .tab-close-button:hover {
             background: alpha(red, 0.2);
-        }}
-
-        /* Scrollbar */
-        scrollbar {{
-            background: transparent;
-        }}
-
-        scrollbar slider {{
-            background: {};
-            border-radius: 4px;
-            min-width: 8px;
-            min-height: 8px;
-        }}
-
-        scrollbar slider:hover {{
-            background: {};
-        }}
+        }
 
         /* New tab button */
-        .new-tab-button {{
-            padding: 4px 8px;
-            border-radius: 4px;
-        }}
+        .new-tab-button {
+            padding: 2px 6px;
+            border-radius: 3px;
+            min-height: 0;
+        }
+        "#;
 
-        .new-tab-button:hover {{
-            background: alpha(white, 0.1);
-        }}
-        "#,
-        rgb_to_css(&theme.colors.background),
-        rgb_to_css(&theme.colors.background),
-        rgb_to_css(&theme.ui.tab_bar_background),
-        rgb_to_css(&theme.ui.border),
-        rgb_to_css(&theme.ui.tab_inactive_background),
-        rgb_to_css(&theme.ui.tab_inactive_text),
-        rgb_to_css(&theme.ui.tab_active_text),
-        rgb_to_css(&theme.ui.tab_active_background),
-        rgb_to_css(&theme.ui.tab_active_text),
-        rgb_to_css(&theme.ui.scrollbar),
-        rgb_to_css(&theme.ui.scrollbar_hover),
-    );
-
-    provider.load_from_data(&css);
+    provider.load_from_data(css);
 
     // Apply to the default display
     if let Some(display) = gdk::Display::default() {
@@ -158,9 +99,4 @@ fn apply_css(theme: &Theme) {
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
-}
-
-/// Convert RGB to CSS color string
-fn rgb_to_css(rgb: &cterm_core::color::Rgb) -> String {
-    format!("rgb({}, {}, {})", rgb.r, rgb.g, rgb.b)
 }

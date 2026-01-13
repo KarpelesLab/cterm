@@ -9,30 +9,34 @@ use std::time::Duration;
 use gtk4::prelude::*;
 use gtk4::{
     DrawingArea, EventControllerKey, EventControllerScroll,
-    GestureClick, ScrolledWindow, Widget, gdk, glib, pango,
+    GestureClick, gdk, glib, pango,
 };
 use parking_lot::Mutex;
 
 use cterm_app::config::Config;
-use cterm_core::color::{Color, ColorPalette, Rgb};
+use cterm_core::color::{Color, Rgb};
 use cterm_core::cell::CellAttrs;
-use cterm_core::parser::Parser;
-use cterm_core::pty::{Pty, PtyConfig, PtyError};
-use cterm_core::screen::{CursorStyle, Screen, ScreenConfig};
+use cterm_core::pty::{PtyConfig, PtyError};
+use cterm_core::screen::{CursorStyle, ScreenConfig};
 use cterm_core::term::{Key, Modifiers, Terminal};
 use cterm_ui::theme::Theme;
 
+/// Cell dimensions calculated from font metrics
+#[derive(Debug, Clone, Copy)]
+pub struct CellDimensions {
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Terminal widget wrapping GTK drawing area
 pub struct TerminalWidget {
-    container: ScrolledWindow,
     drawing_area: DrawingArea,
     terminal: Arc<Mutex<Terminal>>,
     theme: Theme,
     font_family: String,
     font_size: Rc<RefCell<f64>>,
     default_font_size: f64,
-    cell_width: f64,
-    cell_height: f64,
+    cell_dims: Rc<RefCell<CellDimensions>>,
     on_exit: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     on_bell: Rc<RefCell<Option<Box<dyn Fn()>>>>,
 }
@@ -40,30 +44,27 @@ pub struct TerminalWidget {
 impl TerminalWidget {
     /// Create a new terminal widget
     pub fn new(config: &Config, theme: &Theme) -> Result<Self, PtyError> {
-        // Create drawing area
-        let drawing_area = DrawingArea::new();
-        drawing_area.set_can_focus(true);
-        drawing_area.set_focusable(true);
-        drawing_area.add_css_class("terminal");
-
-        // Create scrolled window
-        let container = ScrolledWindow::builder()
-            .hscrollbar_policy(gtk4::PolicyType::Never)
-            .vscrollbar_policy(gtk4::PolicyType::Automatic)
-            .vexpand(true)
-            .hexpand(true)
-            .child(&drawing_area)
-            .build();
-
         // Get font settings
         let font_family = config.appearance.font.family.clone();
         let font_size = config.appearance.font.size;
 
-        // Calculate cell dimensions (will be updated on first draw)
-        let cell_width = font_size * 0.6;
-        let cell_height = font_size * 1.2;
+        // Calculate cell dimensions using Pango font metrics
+        let cell_dims = calculate_cell_dimensions(&font_family, font_size);
 
-        // Calculate initial terminal size
+        // Create drawing area with proper sizing
+        let drawing_area = DrawingArea::new();
+        drawing_area.set_can_focus(true);
+        drawing_area.set_focusable(true);
+        drawing_area.add_css_class("terminal");
+        drawing_area.set_vexpand(true);
+        drawing_area.set_hexpand(true);
+
+        // Set minimum size for 80x24 characters
+        let min_width = (cell_dims.width * 80.0).ceil() as i32;
+        let min_height = (cell_dims.height * 24.0).ceil() as i32;
+        drawing_area.set_size_request(min_width, min_height);
+
+        // Calculate initial terminal size (80x24 minimum)
         let cols = 80;
         let rows = 24;
 
@@ -88,16 +89,16 @@ impl TerminalWidget {
         let terminal = Terminal::with_shell(cols, rows, screen_config, &pty_config)?;
         let terminal = Arc::new(Mutex::new(terminal));
 
+        let cell_dims = Rc::new(RefCell::new(cell_dims));
+
         let widget = Self {
-            container,
             drawing_area: drawing_area.clone(),
             terminal: Arc::clone(&terminal),
             theme: theme.clone(),
             font_family,
             font_size: Rc::new(RefCell::new(font_size)),
             default_font_size: font_size,
-            cell_width,
-            cell_height,
+            cell_dims,
             on_exit: Rc::new(RefCell::new(None)),
             on_bell: Rc::new(RefCell::new(None)),
         };
@@ -118,8 +119,13 @@ impl TerminalWidget {
     }
 
     /// Get the widget for adding to containers
-    pub fn widget(&self) -> &ScrolledWindow {
-        &self.container
+    pub fn widget(&self) -> &DrawingArea {
+        &self.drawing_area
+    }
+
+    /// Get the current cell dimensions
+    pub fn cell_dimensions(&self) -> CellDimensions {
+        *self.cell_dims.borrow()
     }
 
     /// Set callback for when the terminal process exits
@@ -144,7 +150,9 @@ impl TerminalWidget {
     pub fn zoom_in(&self) {
         let mut font_size = self.font_size.borrow_mut();
         *font_size = (*font_size + 1.0).min(72.0);
+        let new_size = *font_size;
         drop(font_size);
+        self.update_cell_dimensions(new_size);
         self.trigger_resize();
     }
 
@@ -152,14 +160,23 @@ impl TerminalWidget {
     pub fn zoom_out(&self) {
         let mut font_size = self.font_size.borrow_mut();
         *font_size = (*font_size - 1.0).max(6.0);
+        let new_size = *font_size;
         drop(font_size);
+        self.update_cell_dimensions(new_size);
         self.trigger_resize();
     }
 
     /// Reset font size to default
     pub fn zoom_reset(&self) {
         *self.font_size.borrow_mut() = self.default_font_size;
+        self.update_cell_dimensions(self.default_font_size);
         self.trigger_resize();
+    }
+
+    /// Update cell dimensions after font size change
+    fn update_cell_dimensions(&self, font_size: f64) {
+        let new_dims = calculate_cell_dimensions(&self.font_family, font_size);
+        *self.cell_dims.borrow_mut() = new_dims;
     }
 
     /// Reset the terminal (soft reset - keeps scrollback)
@@ -190,16 +207,14 @@ impl TerminalWidget {
 
     /// Trigger a resize to recalculate terminal dimensions
     fn trigger_resize(&self) {
-        // Force a resize by getting current size and calling resize signal
+        // Force a resize by getting current size
         let width = self.drawing_area.width();
         let height = self.drawing_area.height();
 
-        let font_size = *self.font_size.borrow();
-        let cell_width = font_size * 0.6;
-        let cell_height = font_size * 1.4;
-
-        let cols = ((width as f64) / cell_width).floor() as usize;
-        let rows = ((height as f64) / cell_height).floor() as usize;
+        let dims = self.cell_dims.borrow();
+        let cols = ((width as f64) / dims.width).floor() as usize;
+        let rows = ((height as f64) / dims.height).floor() as usize;
+        drop(dims);
 
         if cols > 0 && rows > 0 {
             let mut term = self.terminal.lock();
@@ -215,17 +230,18 @@ impl TerminalWidget {
         let theme = self.theme.clone();
         let font_family = self.font_family.clone();
         let font_size = Rc::clone(&self.font_size);
+        let cell_dims = Rc::clone(&self.cell_dims);
 
-        self.drawing_area.set_draw_func(move |_area, cr, width, height| {
+        self.drawing_area.set_draw_func(move |_area, cr, _width, _height| {
             let font_size = *font_size.borrow();
+            let dims = *cell_dims.borrow();
             draw_terminal(
                 cr,
-                width as f64,
-                height as f64,
                 &terminal,
                 &theme,
                 &font_family,
                 font_size,
+                dims,
             );
         });
     }
@@ -428,16 +444,13 @@ impl TerminalWidget {
     /// Set up resize handling
     fn setup_resize(&self) {
         let terminal = Arc::clone(&self.terminal);
-        let font_size = Rc::clone(&self.font_size);
+        let cell_dims = Rc::clone(&self.cell_dims);
 
         self.drawing_area.connect_resize(move |_area, width, height| {
-            // Calculate cell dimensions using Pango
-            let font_size = *font_size.borrow();
-            let cell_width = font_size * 0.6;
-            let cell_height = font_size * 1.4;
-
-            let cols = ((width as f64) / cell_width).floor() as usize;
-            let rows = ((height as f64) / cell_height).floor() as usize;
+            let dims = cell_dims.borrow();
+            let cols = ((width as f64) / dims.width).floor() as usize;
+            let rows = ((height as f64) / dims.height).floor() as usize;
+            drop(dims);
 
             if cols > 0 && rows > 0 {
                 let mut term = terminal.lock();
@@ -445,6 +458,69 @@ impl TerminalWidget {
             }
         });
     }
+}
+
+/// Calculate cell dimensions using Pango font metrics
+fn calculate_cell_dimensions(font_family: &str, font_size: f64) -> CellDimensions {
+    // Get the default font map and create a context
+    let font_map = pangocairo::FontMap::default();
+    let context = font_map.create_context();
+
+    // Try the requested font first, then fall back to generic monospace
+    let fonts_to_try = [
+        font_family.to_string(),
+        "monospace".to_string(),
+    ];
+
+    for font_name in &fonts_to_try {
+        let font_desc = pango::FontDescription::from_string(&format!("{} {}", font_name, font_size));
+
+        if let Some(font) = font_map.load_font(&context, &font_desc) {
+            let metrics = font.metrics(None);
+            // Use the approximate char width for monospace fonts
+            let char_width = metrics.approximate_char_width() as f64 / pango::SCALE as f64;
+            // Height is ascent + descent with some line spacing
+            let ascent = metrics.ascent() as f64 / pango::SCALE as f64;
+            let descent = metrics.descent() as f64 / pango::SCALE as f64;
+            let height = ascent + descent;
+
+            // Validate that we got sensible metrics
+            if char_width > 0.0 && height > 0.0 {
+                log::debug!(
+                    "Using font '{}' at {}pt: cell={}x{}",
+                    font_name, font_size, char_width, height * 1.1
+                );
+                return CellDimensions {
+                    width: char_width,
+                    height: height * 1.1, // Small line spacing factor
+                };
+            }
+        }
+    }
+
+    // Last resort: use a Pango layout to measure a character directly
+    let layout = pango::Layout::new(&context);
+    let font_desc = pango::FontDescription::from_string(&format!("monospace {}", font_size));
+    layout.set_font_description(Some(&font_desc));
+    layout.set_text("M");
+
+    let (width, height) = layout.pixel_size();
+    if width > 0 && height > 0 {
+        log::warn!(
+            "Font metrics unavailable, using layout measurement: {}x{}",
+            width, height
+        );
+        return CellDimensions {
+            width: width as f64,
+            height: height as f64 * 1.1,
+        };
+    }
+
+    // This should never happen on a functioning system with fonts installed
+    panic!(
+        "Failed to load any font or measure text. \
+         Please ensure fonts are installed (e.g., fonts-dejavu or similar)."
+    );
 }
 
 /// Messages from PTY reader thread
@@ -456,12 +532,11 @@ enum PtyMessage {
 /// Draw the terminal contents
 fn draw_terminal(
     cr: &cairo::Context,
-    width: f64,
-    height: f64,
     terminal: &Arc<Mutex<Terminal>>,
     theme: &Theme,
     font_family: &str,
     font_size: f64,
+    cell_dims: CellDimensions,
 ) {
     let term = terminal.lock();
     let screen = term.screen();
@@ -472,7 +547,7 @@ fn draw_terminal(
     cr.set_source_rgb(r, g, b);
     cr.paint().ok();
 
-    // Create Pango layout for text measurement and rendering
+    // Create Pango layout for text rendering
     let pango_context = pangocairo::functions::create_context(cr);
     let layout = pango::Layout::new(&pango_context);
 
@@ -480,11 +555,9 @@ fn draw_terminal(
     let font_desc = pango::FontDescription::from_string(&format!("{} {}", font_family, font_size));
     layout.set_font_description(Some(&font_desc));
 
-    // Measure cell size
-    layout.set_text("M");
-    let (char_width, char_height) = layout.pixel_size();
-    let cell_width = char_width as f64;
-    let cell_height = char_height as f64 * 1.2;
+    // Use pre-calculated cell dimensions
+    let cell_width = cell_dims.width;
+    let cell_height = cell_dims.height;
 
     // Draw cells
     let grid = screen.grid();

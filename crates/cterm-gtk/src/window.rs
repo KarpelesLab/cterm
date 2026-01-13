@@ -17,7 +17,7 @@ use cterm_ui::theme::Theme;
 use crate::dialogs;
 use crate::menu;
 use crate::tab_bar::TabBar;
-use crate::terminal_widget::TerminalWidget;
+use crate::terminal_widget::{CellDimensions, TerminalWidget};
 
 /// Tab entry tracking terminal and its ID
 struct TabEntry {
@@ -42,12 +42,20 @@ pub struct CtermWindow {
 impl CtermWindow {
     /// Create a new window
     pub fn new(app: &Application, config: &Config, theme: &Theme) -> Self {
+        // Calculate cell dimensions for initial window sizing
+        let cell_dims = calculate_initial_cell_dimensions(config);
+
+        // Calculate window size for 80x24 terminal plus chrome (menu bar ~30px, tab bar ~24px)
+        let chrome_height = 54; // Approximate height for menu bar + tab bar
+        let default_width = (cell_dims.width * 80.0).ceil() as i32 + 20; // Add some padding
+        let default_height = (cell_dims.height * 24.0).ceil() as i32 + chrome_height + 20;
+
         // Create the main window
         let window = ApplicationWindow::builder()
             .application(app)
             .title("cterm")
-            .default_width(800)
-            .default_height(600)
+            .default_width(default_width)
+            .default_height(default_height)
             .build();
 
         // Create the main container
@@ -910,4 +918,61 @@ fn keyval_to_keycode(keyval: gdk::Key) -> Option<KeyCode> {
         Key::grave => KeyCode::Backquote,
         _ => return None,
     })
+}
+
+/// Calculate initial cell dimensions for window sizing
+/// Uses Pango font metrics to get accurate measurements
+fn calculate_initial_cell_dimensions(config: &Config) -> CellDimensions {
+    use gtk4::pango;
+
+    let font_family = &config.appearance.font.family;
+    let font_size = config.appearance.font.size;
+
+    // Get the default font map and create a context
+    let font_map = pangocairo::FontMap::default();
+    let context = font_map.create_context();
+
+    // Try the requested font first, then fall back to generic monospace
+    let fonts_to_try = [
+        font_family.to_string(),
+        "monospace".to_string(),
+    ];
+
+    for font_name in &fonts_to_try {
+        let font_desc = pango::FontDescription::from_string(&format!("{} {}", font_name, font_size));
+
+        if let Some(font) = font_map.load_font(&context, &font_desc) {
+            let metrics = font.metrics(None);
+            let char_width = metrics.approximate_char_width() as f64 / pango::SCALE as f64;
+            let ascent = metrics.ascent() as f64 / pango::SCALE as f64;
+            let descent = metrics.descent() as f64 / pango::SCALE as f64;
+            let height = ascent + descent;
+
+            if char_width > 0.0 && height > 0.0 {
+                return CellDimensions {
+                    width: char_width,
+                    height: height * 1.1,
+                };
+            }
+        }
+    }
+
+    // Last resort: use a Pango layout to measure a character directly
+    let layout = pango::Layout::new(&context);
+    let font_desc = pango::FontDescription::from_string(&format!("monospace {}", font_size));
+    layout.set_font_description(Some(&font_desc));
+    layout.set_text("M");
+
+    let (width, height) = layout.pixel_size();
+    if width > 0 && height > 0 {
+        return CellDimensions {
+            width: width as f64,
+            height: height as f64 * 1.1,
+        };
+    }
+
+    panic!(
+        "Failed to load any font or measure text. \
+         Please ensure fonts are installed (e.g., fonts-dejavu or similar)."
+    );
 }
