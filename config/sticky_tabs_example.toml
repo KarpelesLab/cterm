@@ -1,0 +1,42 @@
+# cterm sticky tabs configuration
+#
+# Sticky tabs are persistent tab configurations that can be quickly opened
+# and optionally auto-started when cterm launches.
+
+[[tabs]]
+name = "Claude"
+command = "claude"
+# working_directory = "~"
+color = "#7c3aed"
+auto_start = false
+keep_open = true
+
+[[tabs]]
+name = "Claude (Continue)"
+command = "claude"
+args = ["-c"]
+# working_directory = "~"
+color = "#7c3aed"
+auto_start = false
+keep_open = true
+
+[[tabs]]
+name = "Project"
+# command = "" # Empty for default shell
+working_directory = "~/projects"
+color = "#22c55e"
+auto_start = false
+keep_open = false
+
+# Example with environment variables
+# [[tabs]]
+# name = "Dev Server"
+# command = "npm"
+# args = ["run", "dev"]
+# working_directory = "~/projects/myapp"
+# color = "#3b82f6"
+# auto_start = false
+# keep_open = true
+# [tabs.env]
+# NODE_ENV = "development"
+# PORT = "3000"

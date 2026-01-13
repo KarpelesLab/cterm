@@ -1,0 +1,105 @@
+# Tokyo Night theme for cterm
+
+name = "Tokyo Night"
+author = "folke"
+
+[colors]
+foreground = { r = 192, g = 202, b = 245 }
+background = { r = 26, g = 27, b = 38 }
+cursor = { r = 192, g = 202, b = 245 }
+selection = { r = 40, g = 59, b = 97 }
+
+# ANSI colors (16 colors)
+[[colors.ansi]]
+r = 21
+g = 22
+b = 30
+
+[[colors.ansi]]
+r = 247
+g = 118
+b = 142
+
+[[colors.ansi]]
+r = 158
+g = 206
+b = 106
+
+[[colors.ansi]]
+r = 224
+g = 175
+b = 104
+
+[[colors.ansi]]
+r = 122
+g = 162
+b = 247
+
+[[colors.ansi]]
+r = 187
+g = 154
+b = 247
+
+[[colors.ansi]]
+r = 125
+g = 207
+b = 255
+
+[[colors.ansi]]
+r = 169
+g = 177
+b = 214
+
+[[colors.ansi]]
+r = 65
+g = 72
+b = 104
+
+[[colors.ansi]]
+r = 247
+g = 118
+b = 142
+
+[[colors.ansi]]
+r = 158
+g = 206
+b = 106
+
+[[colors.ansi]]
+r = 224
+g = 175
+b = 104
+
+[[colors.ansi]]
+r = 122
+g = 162
+b = 247
+
+[[colors.ansi]]
+r = 187
+g = 154
+b = 247
+
+[[colors.ansi]]
+r = 125
+g = 207
+b = 255
+
+[[colors.ansi]]
+r = 192
+g = 202
+b = 245
+
+[ui]
+tab_bar_background = { r = 22, g = 22, b = 30 }
+tab_active_background = { r = 26, g = 27, b = 38 }
+tab_inactive_background = { r = 22, g = 22, b = 30 }
+tab_active_text = { r = 192, g = 202, b = 245 }
+tab_inactive_text = { r = 86, g = 95, b = 137 }
+border = { r = 40, g = 40, b = 64 }
+scrollbar = { r = 65, g = 72, b = 104 }
+scrollbar_hover = { r = 86, g = 95, b = 137 }
+
+[cursor]
+color = { r = 192, g = 202, b = 245 }
+text_color = { r = 26, g = 27, b = 38 }

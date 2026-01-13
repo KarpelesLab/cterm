@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cterm-core",
+    "crates/cterm-ui",
+    "crates/cterm-app",
+    "crates/cterm-gtk",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["cterm contributors"]
+license = "MIT"
+repository = "https://github.com/magicaltux/cterm"
+description = "A high-performance, customizable terminal emulator"
+
+[workspace.dependencies]
+# Core dependencies
+bitflags = "2"
+unicode-width = "0.2"
+log = "0.4"
+env_logger = "0.11"
+thiserror = "2"
+parking_lot = "0.12"
+
+# Parser
+vte = "0.13"
+
+# PTY
+portable-pty = "0.8"
+anyhow = "1"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "6"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# GTK4
+gtk4 = "0.9"
+libadwaita = "0.7"
+glib = "0.20"
+gio = "0.20"
+gdk4 = "0.9"
+cairo-rs = { version = "0.20", features = ["png"] }
+pango = "0.20"
+pangocairo = "0.20"
+
+# Internal crates
+cterm-core = { path = "crates/cterm-core" }
+cterm-ui = { path = "crates/cterm-ui" }
+cterm-app = { path = "crates/cterm-app" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

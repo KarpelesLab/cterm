@@ -1,0 +1,77 @@
+# cterm default configuration
+
+[general]
+# Default shell (leave empty for system default)
+# default_shell = "/bin/bash"
+
+# Number of lines to keep in scrollback buffer
+scrollback_lines = 10000
+
+# Ask for confirmation when closing with running processes
+confirm_close_with_running = true
+
+# Copy text to clipboard on selection
+copy_on_select = false
+
+# Default working directory for new tabs (empty = current directory)
+# working_directory = "/home/user"
+
+[appearance]
+# Theme name (or "custom" to use custom_theme below)
+# Built-in themes: "Default Dark", "Default Light", "Tokyo Night", "Dracula", "Nord"
+theme = "Default Dark"
+
+# Font family
+font_family = "monospace"
+
+# Font size in points
+font_size = 12
+
+# Cursor style: "block", "underline", or "bar"
+cursor_style = "block"
+
+# Whether cursor should blink
+cursor_blink = true
+
+# Window opacity (0.0 to 1.0)
+opacity = 1.0
+
+# Padding around terminal content in pixels
+padding = 4
+
+# Make bold text use bright colors
+bold_is_bright = false
+
+[tabs]
+# When to show tab bar: "always", "multiple", "never"
+show_tab_bar = "always"
+
+# Tab bar position: "top" or "bottom"
+tab_bar_position = "top"
+
+# Where to insert new tabs: "end" or "after_current"
+new_tab_position = "end"
+
+# Show close button on tabs
+show_close_button = true
+
+[shortcuts]
+new_tab = "Ctrl+Shift+T"
+close_tab = "Ctrl+Shift+W"
+next_tab = "Ctrl+Tab"
+prev_tab = "Ctrl+Shift+Tab"
+new_window = "Ctrl+Shift+N"
+close_window = "Ctrl+Shift+Q"
+copy = "Ctrl+Shift+C"
+paste = "Ctrl+Shift+V"
+select_all = "Ctrl+Shift+A"
+zoom_in = "Ctrl+Plus"
+zoom_out = "Ctrl+Minus"
+zoom_reset = "Ctrl+0"
+scroll_up = "Shift+PageUp"
+scroll_down = "Shift+PageDown"
+scroll_page_up = "PageUp"
+scroll_page_down = "PageDown"
+preferences = "Ctrl+Comma"
+find = "Ctrl+Shift+F"
+reset = "Ctrl+Shift+R"

@@ -1,0 +1,21 @@
+[package]
+name = "cterm-core"
+version.workspace = true
+edition.workspace = true
+description = "Core terminal emulation library for cterm"
+
+[dependencies]
+bitflags.workspace = true
+unicode-width.workspace = true
+log.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+vte.workspace = true
+portable-pty.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true

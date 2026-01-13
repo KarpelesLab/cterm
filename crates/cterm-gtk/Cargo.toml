@@ -1,0 +1,31 @@
+[package]
+name = "cterm-gtk"
+version.workspace = true
+edition.workspace = true
+description = "GTK4 UI implementation for cterm"
+
+[[bin]]
+name = "cterm"
+path = "src/main.rs"
+
+[features]
+default = []
+adwaita = ["dep:libadwaita"]
+
+[dependencies]
+cterm-core.workspace = true
+cterm-ui.workspace = true
+cterm-app.workspace = true
+gtk4.workspace = true
+libadwaita = { workspace = true, optional = true }
+glib.workspace = true
+gio.workspace = true
+gdk4.workspace = true
+cairo-rs.workspace = true
+pango.workspace = true
+pangocairo.workspace = true
+log.workspace = true
+env_logger.workspace = true
+tokio.workspace = true
+futures.workspace = true
+parking_lot.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "cterm-ui"
+version.workspace = true
+edition.workspace = true
+description = "UI abstraction traits for cterm"
+
+[dependencies]
+cterm-core.workspace = true
+bitflags.workspace = true
+thiserror.workspace = true
+serde.workspace = true

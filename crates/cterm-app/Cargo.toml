@@ -1,0 +1,15 @@
+[package]
+name = "cterm-app"
+version.workspace = true
+edition.workspace = true
+description = "Application logic for cterm"
+
+[dependencies]
+cterm-core.workspace = true
+cterm-ui.workspace = true
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+log.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
