@@ -260,7 +260,12 @@ impl TerminalWidget {
             let modifiers = gtk_state_to_modifiers(state);
             let has_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             let has_alt = state.contains(gdk::ModifierType::ALT_MASK);
-            let _has_shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+            let has_shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+            // Let Ctrl+Shift combinations pass through to window shortcuts
+            if has_ctrl && has_shift {
+                return glib::Propagation::Proceed;
+            }
 
             // Handle special keys (arrows, function keys, etc.)
             if let Some(key) = keyval_to_key(keyval) {
@@ -275,10 +280,9 @@ impl TerminalWidget {
 
             // Get the character for this key
             if let Some(c) = keyval.to_unicode() {
-                let term = terminal_key.lock();
-
                 // Handle Ctrl+letter -> control character
                 if has_ctrl && !has_alt {
+                    let term = terminal_key.lock();
                     let ctrl_char = match c.to_ascii_lowercase() {
                         'a'..='z' => Some((c.to_ascii_lowercase() as u8 - b'a' + 1) as u8),
                         '[' | '3' => Some(0x1b), // Escape
@@ -301,6 +305,7 @@ impl TerminalWidget {
 
                 // Handle Alt+key -> ESC + key
                 if has_alt && !has_ctrl {
+                    let term = terminal_key.lock();
                     let mut buf = vec![0x1b]; // ESC
                     let mut char_buf = [0u8; 4];
                     let s = c.encode_utf8(&mut char_buf);
@@ -313,6 +318,7 @@ impl TerminalWidget {
 
                 // Regular character (no Ctrl/Alt)
                 if !has_ctrl && !has_alt {
+                    let term = terminal_key.lock();
                     let mut buf = [0u8; 4];
                     let s = c.encode_utf8(&mut buf);
                     if let Err(e) = term.write(s.as_bytes()) {
