@@ -4,6 +4,14 @@ use gtk4::gio;
 
 /// Create the application menu model
 pub fn create_menu_model() -> gio::Menu {
+    create_menu_model_with_options(false)
+}
+
+/// Create the application menu model with options
+///
+/// If `show_debug` is true, includes a Debug submenu in the Help menu
+/// with developer/testing options.
+pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     let menu = gio::Menu::new();
 
     // File menu
@@ -63,6 +71,15 @@ pub fn create_menu_model() -> gio::Menu {
     help_menu.append(Some("Preferences..."), Some("win.preferences"));
     help_menu.append(Some("Check for Updates..."), Some("win.check-updates"));
     help_menu.append(Some("About"), Some("win.about"));
+
+    // Debug submenu (hidden unless Shift is held when opening menu)
+    if show_debug {
+        let debug_menu = gio::Menu::new();
+        debug_menu.append(Some("Re-launch cterm"), Some("win.debug-relaunch"));
+        debug_menu.append(Some("Dump State"), Some("win.debug-dump-state"));
+        help_menu.append_submenu(Some("Debug"), &debug_menu);
+    }
+
     menu.append_submenu(Some("Help"), &help_menu);
 
     menu

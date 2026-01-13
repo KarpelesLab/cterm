@@ -36,8 +36,8 @@ pub struct CtermWindow {
     pub shortcuts: ShortcutManager,
     tabs: Rc<RefCell<Vec<TabEntry>>>,
     next_tab_id: Rc<RefCell<u64>>,
-    #[allow(dead_code)] // Kept to hold reference to menu model
-    menu_model: gio::Menu,
+    menu_bar: PopoverMenuBar,
+    debug_menu_shown: Rc<RefCell<bool>>,
 }
 
 impl CtermWindow {
@@ -86,6 +86,8 @@ impl CtermWindow {
         // Create shortcut manager
         let shortcuts = ShortcutManager::from_config(&config.shortcuts);
 
+        let debug_menu_shown = Rc::new(RefCell::new(false));
+
         let cterm_window = Self {
             window: window.clone(),
             notebook: notebook.clone(),
@@ -95,7 +97,8 @@ impl CtermWindow {
             shortcuts,
             tabs: Rc::new(RefCell::new(Vec::new())),
             next_tab_id: Rc::new(RefCell::new(0)),
-            menu_model,
+            menu_bar,
+            debug_menu_shown,
         };
 
         // Set up window actions
@@ -103,6 +106,9 @@ impl CtermWindow {
 
         // Set up key event handling
         cterm_window.setup_key_handler();
+
+        // Set up Shift key tracking for debug menu
+        cterm_window.setup_debug_menu_handler();
 
         // Create initial tab
         cterm_window.new_tab();
@@ -533,6 +539,63 @@ impl CtermWindow {
             });
             window.add_action(&action);
         }
+
+        // Debug menu actions (hidden unless Shift is held when opening Help menu)
+        {
+            // Re-launch cterm - triggers seamless upgrade to the same binary (for testing)
+            let tabs = Rc::clone(&tabs);
+            let window_clone = window.clone();
+            let action = gio::SimpleAction::new("debug-relaunch", None);
+            action.connect_activate(move |_, _| {
+                log::info!("Debug: Re-launching cterm for seamless upgrade test");
+
+                // Get current executable path
+                let current_exe = match std::env::current_exe() {
+                    Ok(path) => path,
+                    Err(e) => {
+                        log::error!("Failed to get current executable path: {}", e);
+                        return;
+                    }
+                };
+
+                log::info!("Re-launching from: {:?}", current_exe);
+
+                // Get the current tabs for state collection
+                let tabs_borrowed = tabs.borrow();
+                let tab_count = tabs_borrowed.len();
+
+                log::info!(
+                    "Re-launch would preserve {} tabs (not yet fully implemented)",
+                    tab_count
+                );
+
+                // Trigger upgrade to same binary via the execute-upgrade action
+                let path_str = current_exe.to_string_lossy().to_string();
+                if let Err(e) = gtk4::prelude::WidgetExt::activate_action(
+                    &window_clone,
+                    "win.execute-upgrade",
+                    Some(&path_str.to_variant()),
+                ) {
+                    log::error!("Failed to activate execute-upgrade action: {}", e);
+                }
+            });
+            window.add_action(&action);
+        }
+
+        {
+            // Dump State - dump current terminal state for debugging
+            let tabs = Rc::clone(&tabs);
+            let action = gio::SimpleAction::new("debug-dump-state", None);
+            action.connect_activate(move |_, _| {
+                log::info!("Debug: Dumping terminal state");
+                let tabs = tabs.borrow();
+                log::info!("Number of tabs: {}", tabs.len());
+                for (i, tab) in tabs.iter().enumerate() {
+                    log::info!("Tab {}: id={}, title=\"{}\"", i, tab.id, tab.title);
+                }
+            });
+            window.add_action(&action);
+        }
     }
 
     /// Present the window
@@ -673,6 +736,45 @@ impl CtermWindow {
         });
 
         self.window.add_controller(key_controller);
+    }
+
+    /// Set up Shift key tracking for debug menu visibility
+    fn setup_debug_menu_handler(&self) {
+        let debug_controller = EventControllerKey::new();
+
+        let menu_bar = self.menu_bar.clone();
+        let debug_menu_shown = Rc::clone(&self.debug_menu_shown);
+
+        // Track Shift key for debug menu
+        debug_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
+            // Check if Shift was pressed
+            if keyval == gdk::Key::Shift_L || keyval == gdk::Key::Shift_R {
+                let mut shown = debug_menu_shown.borrow_mut();
+                if !*shown {
+                    *shown = true;
+                    let new_menu = menu::create_menu_model_with_options(true);
+                    menu_bar.set_menu_model(Some(&new_menu));
+                }
+            }
+            glib::Propagation::Proceed
+        });
+
+        let menu_bar = self.menu_bar.clone();
+        let debug_menu_shown = Rc::clone(&self.debug_menu_shown);
+
+        debug_controller.connect_key_released(move |_, keyval, _keycode, _state| {
+            // Check if Shift was released
+            if keyval == gdk::Key::Shift_L || keyval == gdk::Key::Shift_R {
+                let mut shown = debug_menu_shown.borrow_mut();
+                if *shown {
+                    *shown = false;
+                    let new_menu = menu::create_menu_model_with_options(false);
+                    menu_bar.set_menu_model(Some(&new_menu));
+                }
+            }
+        });
+
+        self.window.add_controller(debug_controller);
     }
 
     /// Set up tab bar callbacks
