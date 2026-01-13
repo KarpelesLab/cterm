@@ -124,9 +124,10 @@ impl AnsiColor {
 }
 
 /// Terminal color specification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Color {
     /// Default foreground/background color
+    #[default]
     Default,
     /// One of the 16 ANSI colors
     Ansi(AnsiColor),
@@ -134,12 +135,6 @@ pub enum Color {
     Indexed(u8),
     /// 24-bit true color
     Rgb(Rgb),
-}
-
-impl Default for Color {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl Color {
