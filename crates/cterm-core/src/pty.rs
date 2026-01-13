@@ -569,6 +569,31 @@ mod windows {
             Ok(exit_code as i32)
         }
 
+        /// Try to wait for the process to exit without blocking
+        /// Returns Ok(Some(exit_code)) if process has exited, Ok(None) if still running
+        pub fn try_wait(&mut self) -> io::Result<Option<i32>> {
+            if let Some(status) = self.exit_status {
+                return Ok(Some(status));
+            }
+
+            let result = unsafe { WaitForSingleObject(self.process_handle, 0) };
+            if result == WAIT_OBJECT_0 {
+                // Process has exited
+                let mut exit_code: DWORD = 0;
+                unsafe {
+                    winapi::um::processthreadsapi::GetExitCodeProcess(
+                        self.process_handle,
+                        &mut exit_code,
+                    );
+                }
+                self.exit_status = Some(exit_code as i32);
+                Ok(Some(exit_code as i32))
+            } else {
+                // Process still running
+                Ok(None)
+            }
+        }
+
         /// Send a signal to the process
         pub fn send_signal(&self, signal: i32) -> io::Result<()> {
             // Windows doesn't have Unix signals, handle common cases
