@@ -126,11 +126,7 @@ impl TerminalWidget {
     /// This takes a pre-existing terminal with restored screen state and PTY,
     /// and sets up the GTK widget around it.
     #[cfg(unix)]
-    pub fn from_restored(
-        terminal: Terminal,
-        config: &Config,
-        theme: &Theme,
-    ) -> Self {
+    pub fn from_restored(terminal: Terminal, config: &Config, theme: &Theme) -> Self {
         // Get font settings
         let font_family = config.appearance.font.family.clone();
         let font_size = config.appearance.font.size;

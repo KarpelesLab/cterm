@@ -527,7 +527,10 @@ impl CtermWindow {
                             fds.push(fd);
                             log::info!(
                                 "Tab {}: Got PTY FD {} (index {}), child_pid={}",
-                                tab.id, fd, tab_state.pty_fd_index, tab_state.child_pid
+                                tab.id,
+                                fd,
+                                tab_state.pty_fd_index,
+                                tab_state.child_pid
                             );
                         } else {
                             log::warn!("Tab {}: Failed to get PTY FD", tab.id);

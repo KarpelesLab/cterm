@@ -284,8 +284,7 @@ fn create_restored_window(
                 });
 
                 // Store the tab
-                tabs.borrow_mut()
-                    .push((tab_id, title, terminal_widget));
+                tabs.borrow_mut().push((tab_id, title, terminal_widget));
             }
             Err(e) => {
                 log::error!("Failed to restore tab {}: {}", tab_idx, e);

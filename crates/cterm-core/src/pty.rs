@@ -586,11 +586,21 @@ mod windows {
             let mut write_pipe_process: HANDLE = INVALID_HANDLE_VALUE;
 
             // Create pipes: PTY reads from read_pipe_pty, process writes to write_pipe_process
-            if CreatePipe(&mut read_pipe_pty, &mut write_pipe_process, ptr::null_mut(), 0) == FALSE
+            if CreatePipe(
+                &mut read_pipe_pty,
+                &mut write_pipe_process,
+                ptr::null_mut(),
+                0,
+            ) == FALSE
             {
                 return Err(PtyError::Create(Box::new(io::Error::last_os_error())));
             }
-            if CreatePipe(&mut read_pipe_process, &mut write_pipe_pty, ptr::null_mut(), 0) == FALSE
+            if CreatePipe(
+                &mut read_pipe_process,
+                &mut write_pipe_pty,
+                ptr::null_mut(),
+                0,
+            ) == FALSE
             {
                 CloseHandle(read_pipe_pty);
                 CloseHandle(write_pipe_process);
@@ -674,10 +684,7 @@ mod windows {
                     .chain(std::iter::once(0))
                     .collect()
             });
-            let cwd_ptr = cwd_wide
-                .as_ref()
-                .map(|v| v.as_ptr())
-                .unwrap_or(ptr::null());
+            let cwd_ptr = cwd_wide.as_ref().map(|v| v.as_ptr()).unwrap_or(ptr::null());
 
             let result = CreateProcessW(
                 ptr::null(),
@@ -912,7 +919,9 @@ mod tests {
         // Read from cloned reader
         use std::io::Read;
         let mut buf = [0u8; 1024];
-        let n = reader.read(&mut buf).expect("Failed to read from cloned reader");
+        let n = reader
+            .read(&mut buf)
+            .expect("Failed to read from cloned reader");
         assert!(n > 0);
 
         // The output should contain "clone_test"
@@ -979,7 +988,9 @@ mod tests {
         let duped_fd = original_pty.dup_fd().expect("Failed to dup FD");
 
         // Write something to the original PTY
-        original_pty.write(b"hello_passover\n").expect("Failed to write");
+        original_pty
+            .write(b"hello_passover\n")
+            .expect("Failed to write");
 
         // Give it time to echo
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -993,13 +1004,17 @@ mod tests {
 
         // The restored PTY should be able to read
         let mut buf = [0u8; 1024];
-        let n = restored_pty.read(&mut buf).expect("Failed to read from restored PTY");
+        let n = restored_pty
+            .read(&mut buf)
+            .expect("Failed to read from restored PTY");
         assert!(n > 0);
         let output = String::from_utf8_lossy(&buf[..n]);
         assert!(output.contains("hello_passover"), "Output was: {}", output);
 
         // The restored PTY should be able to write
-        restored_pty.write(b"test_write\n").expect("Failed to write to restored PTY");
+        restored_pty
+            .write(b"test_write\n")
+            .expect("Failed to write to restored PTY");
 
         // Give it time to echo
         std::thread::sleep(std::time::Duration::from_millis(100));
