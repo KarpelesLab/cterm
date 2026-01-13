@@ -1,47 +1,69 @@
 # cterm
 
-A high-performance, customizable terminal emulator built in pure Rust with GTK4, designed with modularity to support alternative UI backends. Features optimized for running AI coding assistants like Claude Code.
+A high-performance, customizable terminal emulator built in pure Rust with GTK4. Features a modular architecture designed to support alternative UI backends, with optimizations for running AI coding assistants like Claude Code.
 
 ## Features
 
-- **High Performance**: Custom terminal emulator with efficient screen buffer management
-- **True Color Support**: Full 24-bit color support with 256-color palette
-- **Unicode Support**: Proper handling of wide characters and Unicode
-- **Tabs**: Multiple tabs with keyboard shortcuts, custom colors, and naming
-- **Sticky Tabs**: Persistent tab configurations that survive restarts (great for Claude sessions)
+### Terminal Emulation
+- **High Performance**: Custom VT100/ANSI terminal emulator with efficient screen buffer management
+- **True Color Support**: Full 24-bit RGB color with 256-color palette fallback
+- **Unicode Support**: Proper handling of wide characters, combining characters, and emoji
+- **Scrollback Buffer**: Configurable scrollback with efficient memory usage
+- **Find in Scrollback**: Search through terminal history with regex support
+
+### User Interface
+- **Tabs**: Multiple terminal tabs with keyboard shortcuts
+- **Tab Customization**: Custom colors and names for tabs
+- **Sticky Tabs**: Persistent tab configurations for frequently-used commands (great for Claude sessions)
+- **Themes**: Built-in themes (Tokyo Night, Dracula, Nord, and more) plus custom TOML themes
+- **Keyboard Shortcuts**: Fully configurable shortcuts for all actions
+- **Zoom**: Adjustable font size with Ctrl+/Ctrl-
+
+### Terminal Features
 - **Hyperlinks**: Clickable URLs with OSC 8 support
-- **Customizable Themes**: Built-in themes (Tokyo Night, Dracula, Nord) plus custom themes via TOML
-- **Keyboard Shortcuts**: Configurable shortcuts for all actions
-- **Cross-Platform**: Designed with modular UI layer (currently GTK4, Qt support planned)
+- **Clipboard**: OSC 52 clipboard integration for remote copy/paste
+- **Color Queries**: OSC 10/11 color query support for theme-aware applications
+- **Alternate Screen**: Full alternate screen buffer support (for vim, less, etc.)
 
-## Building
+### System Integration
+- **Native PTY**: Cross-platform PTY implementation (Unix openpty, Windows ConPTY ready)
+- **Seamless Upgrades**: Update cterm without losing terminal sessions (Unix)
+- **Auto-Update**: Built-in update checker with GitHub releases integration
 
-### Prerequisites
+## Installation
+
+### Pre-built Binaries
+
+Download the latest release from the [GitHub Releases](https://github.com/KarpelesLab/cterm/releases) page.
+
+### Building from Source
+
+#### Prerequisites
 
 - Rust 1.70 or later
 - GTK4 development libraries
 
-On Debian/Ubuntu:
+**Debian/Ubuntu:**
 ```bash
 sudo apt install libgtk-4-dev
 ```
 
-On Fedora:
+**Fedora:**
 ```bash
 sudo dnf install gtk4-devel
 ```
 
-On Arch Linux:
+**Arch Linux:**
 ```bash
 sudo pacman -S gtk4
 ```
 
-On macOS (with Homebrew):
+**macOS (Homebrew):**
 ```bash
 brew install gtk4
 ```
 
-### Build
+#### Build
 
 ```bash
 # Development build
@@ -58,69 +80,25 @@ The binary will be at `target/release/cterm`.
 
 ## Configuration
 
-Configuration files are stored in:
-- Linux: `~/.config/cterm/`
-- macOS: `~/Library/Application Support/com.cterm.terminal/`
-- Windows: `%APPDATA%\cterm\`
+Configuration files are stored in platform-specific locations:
+- **Linux**: `~/.config/cterm/`
+- **macOS**: `~/Library/Application Support/com.cterm.terminal/`
+- **Windows**: `%APPDATA%\cterm\`
 
-### Main Config (`config.toml`)
-
-```toml
-[general]
-default_shell = "/bin/bash"
-scrollback_lines = 10000
-confirm_close_with_running = true
-
-[appearance]
-theme = "Tokyo Night"
-font_family = "JetBrains Mono"
-font_size = 12
-cursor_style = "block"
-cursor_blink = true
-
-[tabs]
-show_tab_bar = "always"
-tab_bar_position = "top"
-
-[shortcuts]
-new_tab = "Ctrl+Shift+T"
-close_tab = "Ctrl+Shift+W"
-next_tab = "Ctrl+Tab"
-prev_tab = "Ctrl+Shift+Tab"
-copy = "Ctrl+Shift+C"
-paste = "Ctrl+Shift+V"
-```
-
-### Sticky Tabs (`sticky_tabs.toml`)
-
-Configure persistent tabs for Claude and other tools:
-
-```toml
-[[tabs]]
-name = "Claude"
-command = "claude"
-color = "#7c3aed"
-keep_open = true
-
-[[tabs]]
-name = "Claude (Continue)"
-command = "claude"
-args = ["-c"]
-color = "#7c3aed"
-keep_open = true
-```
+See [docs/configuration.md](docs/configuration.md) for detailed configuration options.
 
 ## Keyboard Shortcuts
 
 | Action | Default Shortcut |
-|--------|-----------------|
+|--------|------------------|
 | New Tab | Ctrl+Shift+T |
 | Close Tab | Ctrl+Shift+W |
 | Next Tab | Ctrl+Tab |
 | Previous Tab | Ctrl+Shift+Tab |
-| Tab 1-9 | Ctrl+1-9 |
+| Switch to Tab 1-9 | Ctrl+1-9 |
 | Copy | Ctrl+Shift+C |
 | Paste | Ctrl+Shift+V |
+| Find | Ctrl+Shift+F |
 | Zoom In | Ctrl++ |
 | Zoom Out | Ctrl+- |
 | Reset Zoom | Ctrl+0 |
@@ -134,14 +112,14 @@ cterm/
 ├── crates/
 │   ├── cterm-core/     # Core terminal emulation (parser, screen, PTY)
 │   ├── cterm-ui/       # UI abstraction traits
-│   ├── cterm-app/      # Application logic (config, sessions, shortcuts)
+│   ├── cterm-app/      # Application logic (config, sessions, upgrades)
 │   └── cterm-gtk/      # GTK4 UI implementation
-└── config/             # Default configuration files
+└── docs/               # Documentation
 ```
 
-The modular architecture allows:
+The modular architecture enables:
 - **cterm-core**: Pure Rust terminal emulation, reusable in other projects
-- **cterm-ui**: UI-agnostic traits, enabling Qt or other toolkit support
+- **cterm-ui**: UI-agnostic traits for toolkit abstraction
 - **cterm-app**: Shared application logic between UI implementations
 - **cterm-gtk**: GTK4-specific rendering and widgets
 
@@ -153,17 +131,16 @@ The modular architecture allows:
 - Dracula
 - Nord
 
+Custom themes can be added as TOML files in the `themes/` configuration subdirectory.
+
 ## Roadmap
 
-- [ ] Selection and copy/paste
-- [ ] Search in terminal output
+- [ ] Text selection and improved copy/paste
 - [ ] Split panes
-- [ ] GPU-accelerated rendering option
+- [ ] GPU-accelerated rendering
 - [ ] Qt backend
-- [ ] Native macOS backend
-- [ ] Windows ConPTY support
-- [ ] Sixel graphics support
-- [ ] Session save/restore
+- [ ] Sixel/iTerm2 graphics support
+- [ ] Session save/restore across restarts
 - [ ] Plugin system
 
 ## License
