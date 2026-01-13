@@ -213,7 +213,7 @@ mod tests {
 
         assert_eq!(restored.windows.len(), 1);
         assert_eq!(restored.windows[0].x, 100);
-        assert_eq!(restored.windows[0].maximized, true);
+        assert!(restored.windows[0].maximized);
     }
 
     #[test]
