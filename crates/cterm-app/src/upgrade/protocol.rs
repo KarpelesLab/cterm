@@ -156,7 +156,7 @@ pub fn execute_upgrade(
 /// The upgrade state and file descriptors received
 #[cfg(unix)]
 pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeError> {
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     log::info!("Receiving upgrade state from FD {}", fd);
 
@@ -184,11 +184,25 @@ pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeE
         state.windows.len()
     );
 
-    // Send acknowledgment
+    // Send acknowledgment that we received the data
     stream.write_all(&[1])?;
     stream.flush()?;
 
-    log::info!("Acknowledgment sent");
+    log::info!("Acknowledgment sent, waiting for parent to exit...");
+
+    // Wait for parent to close its end of the socketpair (EOF)
+    // This ensures parent has fully exited and released DBus before we start GTK
+    let mut buf = [0u8; 1];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break, // EOF - parent closed its end
+            Ok(_) => continue, // Ignore any data
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break, // Any other error, assume parent is gone
+        }
+    }
+
+    log::info!("Parent exited, proceeding with GTK startup");
 
     Ok((state, fds))
 }
