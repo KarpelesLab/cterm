@@ -9,7 +9,7 @@ use objc2::{class, msg_send};
 use objc2_app_kit::{NSFont, NSGraphicsContext};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
-use cterm_core::color::{AnsiColor, Color, Rgb};
+use cterm_core::color::{Color, Rgb};
 use cterm_core::Terminal;
 use cterm_ui::theme::Theme;
 
@@ -67,6 +67,7 @@ impl CGRenderer {
     /// Render the terminal content
     pub fn render(&self, terminal: &Terminal, bounds: NSRect) {
         let Some(_context) = NSGraphicsContext::currentContext() else {
+            log::warn!("No graphics context");
             return;
         };
 
@@ -135,12 +136,14 @@ impl CGRenderer {
         unsafe {
             let ns_color = Self::ns_color(rgb.r, rgb.g, rgb.b);
 
-            // Create attributes dictionary
-            let font_key: &AnyObject = msg_send![class!(NSAttributedString), fontAttributeName];
-            let color_key: &AnyObject =
-                msg_send![class!(NSAttributedString), foregroundColorAttributeName];
+            // Use the actual string keys for NSAttributedString attributes
+            let font_key = NSString::from_str("NSFont");
+            let color_key = NSString::from_str("NSColor");
 
-            let keys: [&AnyObject; 2] = [font_key, color_key];
+            let keys: [&AnyObject; 2] = [
+                std::mem::transmute::<&NSString, &AnyObject>(&font_key),
+                std::mem::transmute::<&NSString, &AnyObject>(&color_key),
+            ];
             let values: [&AnyObject; 2] = [&*self.font, &*ns_color];
 
             let dict: Retained<AnyObject> = msg_send![
