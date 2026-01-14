@@ -1079,11 +1079,28 @@ impl CtermWindow {
                                 tab.terminal.widget().grab_focus();
 
                                 // Forward the key to the terminal
-                                // For printable characters, write them directly
+                                let has_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+                                let has_alt = state.contains(gdk::ModifierType::ALT_MASK);
+
                                 if let Some(c) = keyval.to_unicode() {
-                                    if !state.contains(gdk::ModifierType::CONTROL_MASK)
-                                        && !state.contains(gdk::ModifierType::ALT_MASK)
-                                    {
+                                    if has_ctrl && !has_alt {
+                                        // Ctrl+key - convert to control character
+                                        let ctrl_char = match c.to_ascii_lowercase() {
+                                            'a'..='z' => Some((c.to_ascii_lowercase() as u8 - b'a' + 1) as char),
+                                            '[' | '3' => Some('\x1b'), // Escape
+                                            '\\' | '4' => Some('\x1c'),
+                                            ']' | '5' => Some('\x1d'),
+                                            '^' | '6' => Some('\x1e'),
+                                            '_' | '7' => Some('\x1f'),
+                                            '@' | '2' => Some('\x00'),
+                                            _ => None,
+                                        };
+                                        if let Some(ctrl) = ctrl_char {
+                                            tab.terminal.write_str(&ctrl.to_string());
+                                            tab.terminal.widget().queue_draw();
+                                            return glib::Propagation::Stop;
+                                        }
+                                    } else if !has_ctrl && !has_alt {
                                         // Simple character - write directly
                                         let mut s = [0u8; 4];
                                         let s = c.encode_utf8(&mut s);
@@ -1093,8 +1110,8 @@ impl CtermWindow {
                                     }
                                 }
 
-                                // For special keys, let the terminal's key handler process it
-                                // The focus is now on the terminal, so proceed normally
+                                // For special keys or Alt combinations, let the terminal's
+                                // key handler process it. Focus is now on the terminal.
                             }
                         }
                     }
