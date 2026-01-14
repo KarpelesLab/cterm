@@ -1024,7 +1024,8 @@ impl CtermWindow {
     /// Set up terminal focus restoration
     ///
     /// When keys are pressed and focus is not on the terminal (e.g., after
-    /// closing a menu), automatically restore focus to the terminal.
+    /// closing a menu), automatically restore focus to the terminal and
+    /// forward the key to the terminal so it's not lost.
     fn setup_terminal_focus_restore(&self) {
         let focus_controller = EventControllerKey::new();
         focus_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
@@ -1032,9 +1033,9 @@ impl CtermWindow {
         let notebook = self.notebook.clone();
         let tabs = Rc::clone(&self.tabs);
 
-        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, _state| {
+        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, state| {
             // Skip modifier keys and menu activation keys
-            let dominated_by_modifier = matches!(
+            let is_modifier = matches!(
                 keyval,
                 gdk::Key::Shift_L
                     | gdk::Key::Shift_R
@@ -1049,7 +1050,7 @@ impl CtermWindow {
                     | gdk::Key::F10
             );
 
-            if dominated_by_modifier {
+            if is_modifier {
                 return glib::Propagation::Proceed;
             }
 
@@ -1058,11 +1059,30 @@ impl CtermWindow {
                 if let Some(focus_widget) = widget.focus_child() {
                     // The terminal drawing area has the "terminal" CSS class
                     if !focus_widget.has_css_class("terminal") {
-                        // Focus is not on terminal, try to restore it
+                        // Focus is not on terminal - restore it and forward the key
                         if let Some(page_idx) = notebook.current_page() {
                             let tabs_ref = tabs.borrow();
                             if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                // Grab focus
                                 tab.terminal.widget().grab_focus();
+
+                                // Forward the key to the terminal
+                                // For printable characters, write them directly
+                                if let Some(c) = keyval.to_unicode() {
+                                    if !state.contains(gdk::ModifierType::CONTROL_MASK)
+                                        && !state.contains(gdk::ModifierType::ALT_MASK)
+                                    {
+                                        // Simple character - write directly
+                                        let mut s = [0u8; 4];
+                                        let s = c.encode_utf8(&mut s);
+                                        tab.terminal.write_str(s);
+                                        tab.terminal.widget().queue_draw();
+                                        return glib::Propagation::Stop;
+                                    }
+                                }
+
+                                // For special keys, let the terminal's key handler process it
+                                // The focus is now on the terminal, so proceed normally
                             }
                         }
                     }

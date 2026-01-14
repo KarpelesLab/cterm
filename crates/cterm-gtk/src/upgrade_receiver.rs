@@ -361,7 +361,7 @@ fn create_restored_window(
         let notebook_focus = notebook.clone();
         let tabs_focus = Rc::clone(&tabs);
 
-        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, _state| {
+        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, state| {
             // Skip modifier keys and menu activation keys
             let is_modifier = matches!(
                 keyval,
@@ -386,11 +386,30 @@ fn create_restored_window(
             if let Some(widget) = controller.widget() {
                 if let Some(focus_widget) = widget.focus_child() {
                     if !focus_widget.has_css_class("terminal") {
-                        // Focus is not on terminal, try to restore it
+                        // Focus is not on terminal - restore it and forward the key
                         if let Some(page_idx) = notebook_focus.current_page() {
                             let tabs_ref = tabs_focus.borrow();
                             if let Some((_, _, terminal)) = tabs_ref.get(page_idx as usize) {
+                                // Grab focus
                                 terminal.widget().grab_focus();
+
+                                // Forward the key to the terminal
+                                // For printable characters, write them directly
+                                if let Some(c) = keyval.to_unicode() {
+                                    if !state.contains(gdk::ModifierType::CONTROL_MASK)
+                                        && !state.contains(gdk::ModifierType::ALT_MASK)
+                                    {
+                                        // Simple character - write directly
+                                        let mut s = [0u8; 4];
+                                        let s = c.encode_utf8(&mut s);
+                                        terminal.write_str(s);
+                                        terminal.widget().queue_draw();
+                                        return glib::Propagation::Stop;
+                                    }
+                                }
+
+                                // For special keys, let the terminal's key handler process it
+                                // The focus is now on the terminal, so proceed normally
                             }
                         }
                     }
