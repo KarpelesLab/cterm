@@ -10,6 +10,7 @@ use cterm_core::pty::Pty;
 use cterm_core::screen::{Screen, ScreenConfig};
 use cterm_core::term::Terminal;
 use cterm_ui::theme::Theme;
+use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -350,6 +351,56 @@ fn create_restored_window(
     }
     if window_state.fullscreen {
         window.fullscreen();
+    }
+
+    // Set up terminal focus restoration after menu interactions
+    {
+        let focus_controller = gtk4::EventControllerKey::new();
+        focus_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+        let notebook_focus = notebook.clone();
+        let tabs_focus = Rc::clone(&tabs);
+
+        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, _state| {
+            // Skip modifier keys and menu activation keys
+            let is_modifier = matches!(
+                keyval,
+                gdk::Key::Shift_L
+                    | gdk::Key::Shift_R
+                    | gdk::Key::Control_L
+                    | gdk::Key::Control_R
+                    | gdk::Key::Alt_L
+                    | gdk::Key::Alt_R
+                    | gdk::Key::Super_L
+                    | gdk::Key::Super_R
+                    | gdk::Key::Meta_L
+                    | gdk::Key::Meta_R
+                    | gdk::Key::F10
+            );
+
+            if is_modifier {
+                return glib::Propagation::Proceed;
+            }
+
+            // Check if focus is on the terminal
+            if let Some(widget) = controller.widget() {
+                if let Some(focus_widget) = widget.focus_child() {
+                    if !focus_widget.has_css_class("terminal") {
+                        // Focus is not on terminal, try to restore it
+                        if let Some(page_idx) = notebook_focus.current_page() {
+                            let tabs_ref = tabs_focus.borrow();
+                            if let Some((_, _, terminal)) = tabs_ref.get(page_idx as usize) {
+                                terminal.widget().grab_focus();
+                            }
+                        }
+                    }
+                }
+            }
+
+            glib::Propagation::Proceed
+        });
+
+        window.add_controller(focus_controller);
     }
 
     Ok(window)

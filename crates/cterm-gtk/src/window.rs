@@ -117,6 +117,9 @@ impl CtermWindow {
         // Set up window focus handler to clear bell on focus
         cterm_window.setup_focus_handler();
 
+        // Set up terminal focus restoration after menu interactions
+        cterm_window.setup_terminal_focus_restore();
+
         // Create initial tab
         cterm_window.new_tab();
 
@@ -1016,6 +1019,60 @@ impl CtermWindow {
                 }
             }
         });
+    }
+
+    /// Set up terminal focus restoration
+    ///
+    /// When keys are pressed and focus is not on the terminal (e.g., after
+    /// closing a menu), automatically restore focus to the terminal.
+    fn setup_terminal_focus_restore(&self) {
+        let focus_controller = EventControllerKey::new();
+        focus_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+        let notebook = self.notebook.clone();
+        let tabs = Rc::clone(&self.tabs);
+
+        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, _state| {
+            // Skip modifier keys and menu activation keys
+            let dominated_by_modifier = matches!(
+                keyval,
+                gdk::Key::Shift_L
+                    | gdk::Key::Shift_R
+                    | gdk::Key::Control_L
+                    | gdk::Key::Control_R
+                    | gdk::Key::Alt_L
+                    | gdk::Key::Alt_R
+                    | gdk::Key::Super_L
+                    | gdk::Key::Super_R
+                    | gdk::Key::Meta_L
+                    | gdk::Key::Meta_R
+                    | gdk::Key::F10
+            );
+
+            if dominated_by_modifier {
+                return glib::Propagation::Proceed;
+            }
+
+            // Check if focus is on the terminal
+            if let Some(widget) = controller.widget() {
+                if let Some(focus_widget) = widget.focus_child() {
+                    // The terminal drawing area has the "terminal" CSS class
+                    if !focus_widget.has_css_class("terminal") {
+                        // Focus is not on terminal, try to restore it
+                        if let Some(page_idx) = notebook.current_page() {
+                            let tabs_ref = tabs.borrow();
+                            if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                tab.terminal.widget().grab_focus();
+                            }
+                        }
+                    }
+                }
+            }
+
+            glib::Propagation::Proceed
+        });
+
+        self.window.add_controller(focus_controller);
     }
 
     /// Set up tab bar callbacks
