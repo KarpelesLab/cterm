@@ -415,8 +415,15 @@ impl CtermWindow {
                 gio::SimpleAction::new("set-encoding", Some(&glib::VariantType::new("s").unwrap()));
             action.connect_activate(|_, param| {
                 if let Some(encoding) = param.and_then(|p| p.get::<String>()) {
-                    log::info!("Set encoding: {}", encoding);
-                    // TODO: Implement encoding change
+                    if encoding == "utf8" {
+                        log::info!("Encoding set to UTF-8");
+                    } else {
+                        // Terminal currently only supports UTF-8
+                        log::warn!(
+                            "Encoding '{}' requested but only UTF-8 is currently supported",
+                            encoding
+                        );
+                    }
                 }
             });
             window.add_action(&action);
@@ -867,7 +874,13 @@ impl CtermWindow {
                             return glib::Propagation::Stop;
                         }
                         Action::Copy => {
-                            // TODO: Copy selection (requires text selection implementation)
+                            // Copy selection to clipboard
+                            if let Some(page_idx) = notebook.current_page() {
+                                let tabs_ref = tabs.borrow();
+                                if let Some(tab) = tabs_ref.get(page_idx as usize) {
+                                    tab.terminal.copy_selection();
+                                }
+                            }
                             return glib::Propagation::Stop;
                         }
                         Action::Paste => {
