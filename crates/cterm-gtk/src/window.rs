@@ -37,6 +37,8 @@ pub struct CtermWindow {
     pub shortcuts: ShortcutManager,
     tabs: Rc<RefCell<Vec<TabEntry>>>,
     next_tab_id: Rc<RefCell<u64>>,
+    menu_bar: PopoverMenuBar,
+    debug_menu_shown: Rc<RefCell<bool>>,
     has_bell: Rc<RefCell<bool>>,
 }
 
@@ -62,8 +64,8 @@ impl CtermWindow {
         // Create the main container
         let main_box = GtkBox::new(Orientation::Vertical, 0);
 
-        // Create menu bar (always include debug menu - it's harmless)
-        let menu_model = menu::create_menu_model_with_options(true);
+        // Create menu bar (debug menu hidden by default, shown when Shift is held)
+        let menu_model = menu::create_menu_model();
         let menu_bar = PopoverMenuBar::from_model(Some(&menu_model));
         main_box.append(&menu_bar);
 
@@ -86,6 +88,7 @@ impl CtermWindow {
         // Create shortcut manager
         let shortcuts = ShortcutManager::from_config(&config.shortcuts);
 
+        let debug_menu_shown = Rc::new(RefCell::new(false));
         let has_bell = Rc::new(RefCell::new(false));
 
         let cterm_window = Self {
@@ -97,6 +100,8 @@ impl CtermWindow {
             shortcuts,
             tabs: Rc::new(RefCell::new(Vec::new())),
             next_tab_id: Rc::new(RefCell::new(0)),
+            menu_bar,
+            debug_menu_shown,
             has_bell,
         };
 
@@ -105,6 +110,9 @@ impl CtermWindow {
 
         // Set up key event handling
         cterm_window.setup_key_handler();
+
+        // Set up Shift key tracking for debug menu
+        cterm_window.setup_debug_menu_handler();
 
         // Set up window focus handler to clear bell on focus
         cterm_window.setup_focus_handler();
@@ -904,6 +912,75 @@ impl CtermWindow {
         });
 
         self.window.add_controller(key_controller);
+    }
+
+    /// Set up Shift key tracking for debug menu visibility
+    ///
+    /// The debug menu is hidden by default and only shown when Shift is held.
+    /// Menu model changes are deferred to idle callbacks to avoid modifying
+    /// the menu while GTK might be processing events (which could cause crashes).
+    fn setup_debug_menu_handler(&self) {
+        let debug_controller = EventControllerKey::new();
+
+        // Track whether an update is pending to avoid multiple queued updates
+        let update_pending = Rc::new(RefCell::new(false));
+
+        let menu_bar = self.menu_bar.clone();
+        let debug_menu_shown = Rc::clone(&self.debug_menu_shown);
+        let update_pending_press = Rc::clone(&update_pending);
+
+        // When Shift is pressed, queue showing the debug menu
+        debug_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
+            if keyval == gdk::Key::Shift_L || keyval == gdk::Key::Shift_R {
+                let shown = *debug_menu_shown.borrow();
+                let pending = *update_pending_press.borrow();
+
+                if !shown && !pending {
+                    *update_pending_press.borrow_mut() = true;
+                    *debug_menu_shown.borrow_mut() = true;
+
+                    let menu_bar = menu_bar.clone();
+                    let update_pending = Rc::clone(&update_pending_press);
+
+                    // Defer menu update to idle to avoid modifying during event processing
+                    glib::idle_add_local_once(move || {
+                        let new_menu = menu::create_menu_model_with_options(true);
+                        menu_bar.set_menu_model(Some(&new_menu));
+                        *update_pending.borrow_mut() = false;
+                    });
+                }
+            }
+            glib::Propagation::Proceed
+        });
+
+        let menu_bar = self.menu_bar.clone();
+        let debug_menu_shown = Rc::clone(&self.debug_menu_shown);
+        let update_pending_release = Rc::clone(&update_pending);
+
+        // When Shift is released, queue hiding the debug menu
+        debug_controller.connect_key_released(move |_, keyval, _keycode, _state| {
+            if keyval == gdk::Key::Shift_L || keyval == gdk::Key::Shift_R {
+                let shown = *debug_menu_shown.borrow();
+                let pending = *update_pending_release.borrow();
+
+                if shown && !pending {
+                    *update_pending_release.borrow_mut() = true;
+                    *debug_menu_shown.borrow_mut() = false;
+
+                    let menu_bar = menu_bar.clone();
+                    let update_pending = Rc::clone(&update_pending_release);
+
+                    // Defer menu update to idle to avoid modifying during event processing
+                    glib::idle_add_local_once(move || {
+                        let new_menu = menu::create_menu_model_with_options(false);
+                        menu_bar.set_menu_model(Some(&new_menu));
+                        *update_pending.borrow_mut() = false;
+                    });
+                }
+            }
+        });
+
+        self.window.add_controller(debug_controller);
     }
 
     /// Set up window focus handler to clear bell when window becomes active
