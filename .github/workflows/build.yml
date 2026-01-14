@@ -215,7 +215,7 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Create release archive
+      - name: Prepare release files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release/cterm-windows-x86_64
@@ -268,13 +268,34 @@ jobs:
               Copy-Item $src release/cterm-windows-x86_64/
             }
           }
-          Compress-Archive -Path release/cterm-windows-x86_64 -DestinationPath release/cterm-windows-x86_64.zip
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y
+
+      - name: Create installer
+        shell: pwsh
+        run: |
+          # Get version from Cargo.toml
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+
+          # Copy installer script and LICENSE to release directory
+          Copy-Item packaging/windows/installer.nsi release/
+          Copy-Item LICENSE release/
+
+          # Run NSIS
+          cd release
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /DVERSION=$version installer.nsi
+
+          # Rename output to standard name
+          Move-Item "cterm-$version-setup.exe" "cterm-windows-x86_64-setup.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-windows-x86_64
-          path: release/cterm-windows-x86_64.zip
+          path: release/cterm-windows-x86_64-setup.exe
 
   build-macos-intel:
     name: Build macOS (Intel)
@@ -330,28 +351,70 @@ jobs:
 
       - name: Create universal binary
         run: |
-          mkdir -p release/cterm-macos-universal
-          lipo -create -output release/cterm-macos-universal/cterm \
+          mkdir -p universal-binary
+          lipo -create -output universal-binary/cterm \
             intel-binary/cterm \
             target/release/cterm
-          chmod +x release/cterm-macos-universal/cterm
+          chmod +x universal-binary/cterm
           # Verify it's universal
-          file release/cterm-macos-universal/cterm
-          lipo -info release/cterm-macos-universal/cterm
+          file universal-binary/cterm
+          lipo -info universal-binary/cterm
 
-      - name: Add README and LICENSE
+      - name: Create app bundle
         run: |
-          cp README.md LICENSE release/cterm-macos-universal/
+          APP_DIR="release/cterm.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
 
-      - name: Create release archive
+          # Copy binary
+          cp universal-binary/cterm "$APP_DIR/Contents/MacOS/"
+
+          # Get version from Cargo.toml
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+          # Create Info.plist with version substitution
+          sed "s/\${VERSION}/$VERSION/g" packaging/macos/Info.plist > "$APP_DIR/Contents/Info.plist"
+
+          # Create PkgInfo
+          echo -n "APPL????" > "$APP_DIR/Contents/PkgInfo"
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
         run: |
-          cd release && tar -czvf cterm-macos-universal.tar.gz cterm-macos-universal
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+          # Create DMG with Applications symlink
+          create-dmg \
+            --volname "cterm $VERSION" \
+            --volicon "release/cterm.app/Contents/Resources/cterm.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "cterm.app" 150 185 \
+            --hide-extension "cterm.app" \
+            --app-drop-link 450 185 \
+            "release/cterm-macos-$VERSION.dmg" \
+            "release/cterm.app" || true
+
+          # Fallback if create-dmg fails (e.g., no icon file)
+          if [ ! -f "release/cterm-macos-$VERSION.dmg" ]; then
+            # Simple DMG creation
+            mkdir -p release/dmg-contents
+            cp -R release/cterm.app release/dmg-contents/
+            ln -s /Applications release/dmg-contents/Applications
+            hdiutil create -volname "cterm $VERSION" -srcfolder release/dmg-contents -ov -format UDZO "release/cterm-macos-$VERSION.dmg"
+          fi
+
+          # Rename to standard name for artifact
+          mv "release/cterm-macos-$VERSION.dmg" "release/cterm-macos-universal.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-macos-universal
-          path: release/cterm-macos-universal.tar.gz
+          path: release/cterm-macos-universal.dmg
 
   release:
     name: Create Release
@@ -375,8 +438,8 @@ jobs:
           files: |
             artifacts/cterm-linux-x86_64/cterm-linux-x86_64.tar.gz
             artifacts/cterm-linux-arm64/cterm-linux-arm64.tar.gz
-            artifacts/cterm-windows-x86_64/cterm-windows-x86_64.zip
-            artifacts/cterm-macos-universal/cterm-macos-universal.tar.gz
+            artifacts/cterm-windows-x86_64/cterm-windows-x86_64-setup.exe
+            artifacts/cterm-macos-universal/cterm-macos-universal.dmg
           draft: false
           prerelease: false
           generate_release_notes: true
