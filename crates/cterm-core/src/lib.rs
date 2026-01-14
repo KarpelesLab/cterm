@@ -21,5 +21,8 @@ pub use color::{AnsiColor, Color, Rgb};
 pub use grid::Grid;
 pub use parser::Parser;
 pub use pty::{Pty, PtyConfig, PtyError, PtySize};
-pub use screen::{ClipboardOperation, ClipboardSelection, ColorQuery, Screen, SearchResult};
+pub use screen::{
+    ClipboardOperation, ClipboardSelection, ColorQuery, Screen, SearchResult, Selection,
+    SelectionMode, SelectionPoint,
+};
 pub use term::Terminal;

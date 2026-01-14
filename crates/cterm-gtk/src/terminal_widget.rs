@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, glib, pango, DrawingArea, EventControllerKey, EventControllerScroll, GestureClick,
+    gdk, gio, glib, pango, DrawingArea, EventControllerKey, EventControllerScroll, GestureClick,
 };
 use parking_lot::Mutex;
 
@@ -358,6 +358,105 @@ impl TerminalWidget {
         self.drawing_area.queue_draw();
     }
 
+    /// Convert pixel coordinates to cell (row, col) coordinates
+    ///
+    /// Returns (visible_row, col) where visible_row is the row on screen (0 = top)
+    pub fn pixel_to_cell(&self, x: f64, y: f64) -> (usize, usize) {
+        let dims = self.cell_dims.borrow();
+        let col = (x / dims.width).floor() as usize;
+        let row = (y / dims.height).floor() as usize;
+        (row, col)
+    }
+
+    /// Convert pixel coordinates to absolute line index
+    ///
+    /// Returns (absolute_line, col) where absolute_line accounts for scrollback
+    pub fn pixel_to_absolute(&self, x: f64, y: f64) -> (usize, usize) {
+        let (visible_row, col) = self.pixel_to_cell(x, y);
+        let term = self.terminal.lock();
+        let absolute_line = term.screen().visible_row_to_absolute_line(visible_row);
+        (absolute_line, col)
+    }
+
+    /// Start a new selection at the given pixel coordinates
+    pub fn start_selection(&self, x: f64, y: f64) {
+        let (line, col) = self.pixel_to_absolute(x, y);
+        let mut term = self.terminal.lock();
+        term.screen_mut()
+            .start_selection(line, col, cterm_core::SelectionMode::Char);
+        drop(term);
+        self.drawing_area.queue_draw();
+    }
+
+    /// Extend the current selection to the given pixel coordinates
+    pub fn extend_selection(&self, x: f64, y: f64) {
+        let (line, col) = self.pixel_to_absolute(x, y);
+        let mut term = self.terminal.lock();
+        term.screen_mut().extend_selection(line, col);
+        drop(term);
+        self.drawing_area.queue_draw();
+    }
+
+    /// Clear the current selection
+    pub fn clear_selection(&self) {
+        let mut term = self.terminal.lock();
+        term.screen_mut().clear_selection();
+        drop(term);
+        self.drawing_area.queue_draw();
+    }
+
+    /// Get the selected text (if any)
+    pub fn get_selected_text(&self) -> Option<String> {
+        let term = self.terminal.lock();
+        term.screen().get_selected_text()
+    }
+
+    /// Copy the current selection to clipboard
+    pub fn copy_selection(&self) {
+        if let Some(text) = self.get_selected_text() {
+            if let Some(display) = gdk::Display::default() {
+                let clipboard = display.clipboard();
+                clipboard.set_text(&text);
+            }
+        }
+    }
+
+    /// Copy the current selection to primary selection (Unix only)
+    #[cfg(unix)]
+    pub fn copy_selection_to_primary(&self) {
+        if let Some(text) = self.get_selected_text() {
+            if let Some(display) = gdk::Display::default() {
+                let primary = display.primary_clipboard();
+                primary.set_text(&text);
+            }
+        }
+    }
+
+    /// Paste from primary selection (Unix middle-click paste)
+    #[cfg(unix)]
+    pub fn paste_primary(&self) {
+        let Some(display) = gdk::Display::default() else {
+            return;
+        };
+        let primary = display.primary_clipboard();
+        let terminal = Arc::clone(&self.terminal);
+        let drawing_area = self.drawing_area.clone();
+
+        primary.read_text_async(None::<&gio::Cancellable>, move |result| {
+            if let Ok(Some(text)) = result {
+                let mut term = terminal.lock();
+                // Use bracketed paste if enabled
+                let paste_text = if term.screen().modes.bracketed_paste {
+                    format!("\x1b[200~{}\x1b[201~", text)
+                } else {
+                    text.to_string()
+                };
+                let _ = term.write_str(&paste_text);
+                drawing_area.queue_draw();
+            }
+        });
+    }
+
     /// Trigger a resize to recalculate terminal dimensions
     fn trigger_resize(&self) {
         // Force a resize by getting current size
@@ -397,6 +496,7 @@ impl TerminalWidget {
     fn setup_input(&self) {
         let terminal = Arc::clone(&self.terminal);
         let drawing_area = self.drawing_area.clone();
+        let cell_dims = Rc::clone(&self.cell_dims);
 
         // Keyboard input
         let key_controller = EventControllerKey::new();
@@ -479,12 +579,135 @@ impl TerminalWidget {
 
         self.drawing_area.add_controller(key_controller);
 
-        // Mouse click for focus
+        // Selection state: tracks whether we're in a drag operation
+        let selecting = Rc::new(RefCell::new(false));
+
+        // Mouse click for selection
         let click_controller = GestureClick::new();
-        click_controller.connect_pressed(move |_, _, _, _| {
-            drawing_area.grab_focus();
+        click_controller.set_button(gdk::BUTTON_PRIMARY);
+
+        let terminal_click = Arc::clone(&terminal);
+        let cell_dims_click = Rc::clone(&cell_dims);
+        let drawing_area_click = self.drawing_area.clone();
+        let selecting_pressed = Rc::clone(&selecting);
+
+        click_controller.connect_pressed(move |_, n_press, x, y| {
+            drawing_area_click.grab_focus();
+
+            // Determine selection mode based on click count
+            let mode = match n_press {
+                2 => cterm_core::SelectionMode::Word,
+                3 => cterm_core::SelectionMode::Line,
+                _ => cterm_core::SelectionMode::Char,
+            };
+
+            // Start selection
+            let dims = cell_dims_click.borrow();
+            let col = (x / dims.width).floor() as usize;
+            let row = (y / dims.height).floor() as usize;
+            drop(dims);
+
+            let mut term = terminal_click.lock();
+            let line = term.screen().visible_row_to_absolute_line(row);
+            term.screen_mut().start_selection(line, col, mode);
+            drop(term);
+
+            *selecting_pressed.borrow_mut() = true;
+            drawing_area_click.queue_draw();
         });
+
+        let terminal_released = Arc::clone(&terminal);
+        let drawing_area_released = self.drawing_area.clone();
+        let selecting_released = Rc::clone(&selecting);
+
+        click_controller.connect_released(move |_, _n_press, _x, _y| {
+            *selecting_released.borrow_mut() = false;
+
+            // Check if selection is empty (same start and end) and clear it
+            let term = terminal_released.lock();
+            if let Some(selection) = &term.screen().selection {
+                if selection.anchor == selection.end {
+                    drop(term);
+                    let mut term = terminal_released.lock();
+                    term.screen_mut().clear_selection();
+                    drawing_area_released.queue_draw();
+                } else {
+                    // Copy selection to primary clipboard (Unix behavior)
+                    #[cfg(unix)]
+                    if let Some(text) = term.screen().get_selected_text() {
+                        if let Some(display) = gdk::Display::default() {
+                            let primary = display.primary_clipboard();
+                            primary.set_text(&text);
+                        }
+                    }
+                }
+            }
+        });
+
         self.drawing_area.add_controller(click_controller);
+
+        // Middle-click paste from primary selection (Unix only)
+        #[cfg(unix)]
+        {
+            let middle_click_controller = GestureClick::new();
+            middle_click_controller.set_button(gdk::BUTTON_MIDDLE);
+
+            let terminal_middle = Arc::clone(&terminal);
+            let drawing_area_middle = self.drawing_area.clone();
+
+            middle_click_controller.connect_pressed(move |_, _n_press, _x, _y| {
+                let Some(display) = gdk::Display::default() else {
+                    return;
+                };
+                let primary = display.primary_clipboard();
+                let terminal = Arc::clone(&terminal_middle);
+                let drawing_area = drawing_area_middle.clone();
+
+                primary.read_text_async(None::<&gio::Cancellable>, move |result| {
+                    if let Ok(Some(text)) = result {
+                        let mut term = terminal.lock();
+                        // Use bracketed paste if enabled
+                        let paste_text = if term.screen().modes.bracketed_paste {
+                            format!("\x1b[200~{}\x1b[201~", text)
+                        } else {
+                            text.to_string()
+                        };
+                        let _ = term.write_str(&paste_text);
+                        drawing_area.queue_draw();
+                    }
+                });
+            });
+
+            self.drawing_area.add_controller(middle_click_controller);
+        }
+
+        // Mouse motion for drag selection
+        let motion_controller = gtk4::EventControllerMotion::new();
+
+        let terminal_motion = Arc::clone(&terminal);
+        let cell_dims_motion = Rc::clone(&cell_dims);
+        let drawing_area_motion = self.drawing_area.clone();
+        let selecting_motion = Rc::clone(&selecting);
+
+        motion_controller.connect_motion(move |_, x, y| {
+            if !*selecting_motion.borrow() {
+                return;
+            }
+
+            let dims = cell_dims_motion.borrow();
+            let col = (x / dims.width).floor() as usize;
+            let row = (y / dims.height).floor() as usize;
+            drop(dims);
+
+            let mut term = terminal_motion.lock();
+            let line = term.screen().visible_row_to_absolute_line(row);
+            term.screen_mut().extend_selection(line, col);
+            drop(term);
+
+            drawing_area_motion.queue_draw();
+        });
+
+        self.drawing_area.add_controller(motion_controller);
 
         // Scroll handling
         let scroll_controller =
@@ -759,10 +982,14 @@ fn draw_terminal(
     // Draw cells
     let grid = screen.grid();
     let scroll_offset = screen.scroll_offset;
+    let scrollback_len = screen.scrollback().len();
 
     for row_idx in 0..grid.height() {
         if let Some(row) = grid.row(row_idx) {
             let y = row_idx as f64 * cell_height;
+
+            // Calculate absolute line for selection checking
+            let absolute_line = scrollback_len.saturating_sub(scroll_offset) + row_idx;
 
             for col_idx in 0..grid.width() {
                 let cell = &row[col_idx];
@@ -773,9 +1000,19 @@ fn draw_terminal(
                     continue;
                 }
 
-                // Draw background if not default
-                if cell.bg != Color::Default || cell.attrs.contains(CellAttrs::INVERSE) {
-                    let bg_color = if cell.attrs.contains(CellAttrs::INVERSE) {
+                // Check if this cell is selected
+                let is_selected = screen.is_selected(absolute_line, col_idx);
+
+                // Draw background
+                let needs_bg = cell.bg != Color::Default
+                    || cell.attrs.contains(CellAttrs::INVERSE)
+                    || is_selected;
+
+                if needs_bg {
+                    let bg_color = if is_selected {
+                        // Use selection color (inverted or theme selection color)
+                        palette.foreground
+                    } else if cell.attrs.contains(CellAttrs::INVERSE) {
                         cell.fg.to_rgb(palette)
                     } else {
                         cell.bg.to_rgb(palette)
@@ -796,7 +1033,10 @@ fn draw_terminal(
 
                 // Draw character
                 if cell.c != ' ' {
-                    let fg_color = if cell.attrs.contains(CellAttrs::INVERSE) {
+                    let fg_color = if is_selected {
+                        // Selected text uses background color (inverted)
+                        palette.background
+                    } else if cell.attrs.contains(CellAttrs::INVERSE) {
                         cell.bg.to_rgb(palette)
                     } else if cell.fg == Color::Default {
                         palette.foreground

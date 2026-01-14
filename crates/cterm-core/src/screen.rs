@@ -150,6 +150,112 @@ pub enum ColorQuery {
     Cursor,
 }
 
+/// A point in the terminal buffer (absolute line index + column)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionPoint {
+    /// Absolute line index (0 = oldest scrollback line)
+    pub line: usize,
+    /// Column position
+    pub col: usize,
+}
+
+impl SelectionPoint {
+    pub fn new(line: usize, col: usize) -> Self {
+        Self { line, col }
+    }
+
+    /// Returns true if self comes before other in reading order
+    pub fn is_before(&self, other: &SelectionPoint) -> bool {
+        self.line < other.line || (self.line == other.line && self.col < other.col)
+    }
+}
+
+impl PartialOrd for SelectionPoint {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SelectionPoint {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.line.cmp(&other.line) {
+            std::cmp::Ordering::Equal => self.col.cmp(&other.col),
+            ord => ord,
+        }
+    }
+}
+
+/// Text selection state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Selection {
+    /// Starting point of selection (where mouse was pressed)
+    pub anchor: SelectionPoint,
+    /// Current end point of selection (where mouse is now)
+    pub end: SelectionPoint,
+    /// Selection type (char, word, line)
+    pub mode: SelectionMode,
+}
+
+/// Selection granularity mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SelectionMode {
+    /// Character-by-character selection (single click drag)
+    #[default]
+    Char,
+    /// Word selection (double-click)
+    Word,
+    /// Line selection (triple-click)
+    Line,
+}
+
+impl Selection {
+    /// Create a new selection starting at a point
+    pub fn new(point: SelectionPoint, mode: SelectionMode) -> Self {
+        Self {
+            anchor: point,
+            end: point,
+            mode,
+        }
+    }
+
+    /// Get the start and end points in reading order (start <= end)
+    pub fn ordered(&self) -> (SelectionPoint, SelectionPoint) {
+        if self.anchor.is_before(&self.end) {
+            (self.anchor, self.end)
+        } else {
+            (self.end, self.anchor)
+        }
+    }
+
+    /// Check if a cell at (line, col) is within the selection
+    pub fn contains(&self, line: usize, col: usize) -> bool {
+        let (start, end) = self.ordered();
+
+        if line < start.line || line > end.line {
+            return false;
+        }
+
+        if start.line == end.line {
+            // Single line selection
+            col >= start.col && col <= end.col
+        } else if line == start.line {
+            // First line of multi-line selection
+            col >= start.col
+        } else if line == end.line {
+            // Last line of multi-line selection
+            col <= end.col
+        } else {
+            // Middle lines are fully selected
+            true
+        }
+    }
+
+    /// Update the end point of the selection
+    pub fn extend_to(&mut self, point: SelectionPoint) {
+        self.end = point;
+    }
+}
+
 /// Terminal screen state
 #[derive(Debug)]
 pub struct Screen {
@@ -191,6 +297,8 @@ pub struct Screen {
     pending_clipboard_ops: Vec<ClipboardOperation>,
     /// Pending color queries (OSC 10-12)
     pending_color_queries: Vec<ColorQuery>,
+    /// Current text selection (if any)
+    pub selection: Option<Selection>,
 }
 
 impl Screen {
@@ -234,6 +342,7 @@ impl Screen {
             pending_responses: Vec::new(),
             pending_clipboard_ops: Vec::new(),
             pending_color_queries: Vec::new(),
+            selection: None,
         }
     }
 
@@ -272,6 +381,7 @@ impl Screen {
             pending_responses: Vec::new(),
             pending_clipboard_ops: Vec::new(),
             pending_color_queries: Vec::new(),
+            selection: None,
         }
     }
 
@@ -925,6 +1035,234 @@ impl Screen {
         let scrollback_len = self.scrollback.len();
         // If line is in scrollback, return offset; otherwise 0 for visible area
         scrollback_len.saturating_sub(line_idx)
+    }
+
+    // ========== Selection Methods ==========
+
+    /// Check if a character is a word character (for word selection)
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Find word boundaries around a column position in a row
+    fn find_word_bounds(&self, line: usize, col: usize) -> (usize, usize) {
+        let row = match self.get_row_by_absolute_line(line) {
+            Some(r) => r,
+            None => return (col, col),
+        };
+
+        let row_len = row.len();
+        if row_len == 0 || col >= row_len {
+            return (col, col);
+        }
+
+        let center_char = row.get(col).map(|c| c.c).unwrap_or(' ');
+
+        // If we clicked on a non-word character, just select that character
+        if !Self::is_word_char(center_char) {
+            return (col, col);
+        }
+
+        // Find start of word
+        let mut start = col;
+        while start > 0 {
+            if let Some(cell) = row.get(start - 1) {
+                if Self::is_word_char(cell.c) {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Find end of word
+        let mut end = col;
+        while end < row_len - 1 {
+            if let Some(cell) = row.get(end + 1) {
+                if Self::is_word_char(cell.c) {
+                    end += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        (start, end)
+    }
+
+    /// Start a new selection at the given absolute line and column
+    pub fn start_selection(&mut self, line: usize, col: usize, mode: SelectionMode) {
+        match mode {
+            SelectionMode::Char => {
+                let point = SelectionPoint::new(line, col);
+                self.selection = Some(Selection::new(point, mode));
+            }
+            SelectionMode::Word => {
+                let (start_col, end_col) = self.find_word_bounds(line, col);
+                let anchor = SelectionPoint::new(line, start_col);
+                let end = SelectionPoint::new(line, end_col);
+                self.selection = Some(Selection {
+                    anchor,
+                    end,
+                    mode,
+                });
+            }
+            SelectionMode::Line => {
+                // Select entire line (use large end column to select to end of line)
+                let anchor = SelectionPoint::new(line, 0);
+                let end = SelectionPoint::new(line, usize::MAX);
+                self.selection = Some(Selection {
+                    anchor,
+                    end,
+                    mode,
+                });
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Extend the current selection to the given absolute line and column
+    pub fn extend_selection(&mut self, line: usize, col: usize) {
+        // Extract mode and anchor info before mutating
+        let (mode, anchor_line, anchor_col) = match &self.selection {
+            Some(s) => (s.mode, s.anchor.line, s.anchor.col),
+            None => return,
+        };
+
+        match mode {
+            SelectionMode::Char => {
+                if let Some(ref mut selection) = self.selection {
+                    selection.extend_to(SelectionPoint::new(line, col));
+                }
+            }
+            SelectionMode::Word => {
+                // Find word bounds before mutating selection
+                let (word_start, word_end) = self.find_word_bounds(line, col);
+                if let Some(ref mut selection) = self.selection {
+                    if line < anchor_line || (line == anchor_line && col < anchor_col) {
+                        // Extending backwards - use start of word
+                        selection.extend_to(SelectionPoint::new(line, word_start));
+                    } else {
+                        // Extending forwards - use end of word
+                        selection.extend_to(SelectionPoint::new(line, word_end));
+                    }
+                }
+            }
+            SelectionMode::Line => {
+                if let Some(ref mut selection) = self.selection {
+                    // Line mode extends to full lines
+                    if line < anchor_line {
+                        // Extending upward - start of new line to end of anchor line
+                        selection.end = SelectionPoint::new(line, 0);
+                    } else {
+                        // Extending downward - end of new line
+                        selection.end = SelectionPoint::new(line, usize::MAX);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Clear the current selection
+    pub fn clear_selection(&mut self) {
+        if self.selection.is_some() {
+            self.selection = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Check if a cell at the given absolute line and column is selected
+    pub fn is_selected(&self, line: usize, col: usize) -> bool {
+        self.selection
+            .as_ref()
+            .map(|s| s.contains(line, col))
+            .unwrap_or(false)
+    }
+
+    /// Convert visible row (accounting for scroll offset) to absolute line index
+    pub fn visible_row_to_absolute_line(&self, visible_row: usize) -> usize {
+        let scrollback_len = self.scrollback.len();
+        // When scroll_offset is 0, we see the most recent scrollback + current grid
+        // visible_row 0 = oldest visible line
+        // scrollback_len - scroll_offset = first visible scrollback line index
+        // After scrollback, grid rows start
+        scrollback_len.saturating_sub(self.scroll_offset) + visible_row
+    }
+
+    /// Get the selected text as a string
+    ///
+    /// Returns None if there's no selection or it's empty
+    pub fn get_selected_text(&self) -> Option<String> {
+        let selection = self.selection.as_ref()?;
+        let (start, end) = selection.ordered();
+
+        // Clamp to valid range
+        let total = self.total_lines();
+        if start.line >= total {
+            return None;
+        }
+
+        let mut result = String::new();
+        let end_line = end.line.min(total - 1);
+
+        for line_idx in start.line..=end_line {
+            let row = self.get_row_by_absolute_line(line_idx)?;
+
+            let start_col = if line_idx == start.line {
+                start.col
+            } else {
+                0
+            };
+            let end_col = if line_idx == end.line {
+                end.col.min(row.len().saturating_sub(1))
+            } else {
+                row.len().saturating_sub(1)
+            };
+
+            // Extract characters from this row
+            for col in start_col..=end_col {
+                if let Some(cell) = row.get(col) {
+                    // Skip wide character spacers
+                    if !cell.attrs.contains(crate::cell::CellAttrs::WIDE_SPACER) {
+                        result.push(cell.c);
+                    }
+                }
+            }
+
+            // Add newline between lines (but not after wrapped lines or at the very end)
+            if line_idx < end_line && !row.wrapped {
+                result.push('\n');
+            }
+        }
+
+        // Trim trailing whitespace from each line but keep newlines
+        let trimmed: String = result
+            .lines()
+            .map(|l| l.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    /// Get a row by absolute line index (0 = oldest scrollback line)
+    fn get_row_by_absolute_line(&self, line: usize) -> Option<&Row> {
+        let scrollback_len = self.scrollback.len();
+        if line < scrollback_len {
+            self.scrollback.get(line)
+        } else {
+            let grid_row = line - scrollback_len;
+            self.grid.row(grid_row)
+        }
     }
 }
 

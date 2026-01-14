@@ -272,10 +272,17 @@ impl CtermWindow {
 
         // Edit menu actions
         {
-            // Copy - placeholder until selection is implemented
+            // Copy selection to clipboard
+            let notebook_copy = notebook.clone();
+            let tabs_copy = Rc::clone(&tabs);
             let action = gio::SimpleAction::new("copy", None);
-            action.connect_activate(|_, _| {
-                log::info!("Copy action triggered - selection not yet implemented");
+            action.connect_activate(move |_, _| {
+                if let Some(page_idx) = notebook_copy.current_page() {
+                    let tabs = tabs_copy.borrow();
+                    if let Some(tab) = tabs.get(page_idx as usize) {
+                        tab.terminal.copy_selection();
+                    }
+                }
             });
             window.add_action(&action);
         }
