@@ -74,7 +74,7 @@ pub fn run() {
     if let Some(fd) = args.upgrade_receiver {
         log::info!("Running in upgrade receiver mode with FD {}", fd);
         let exit_code = upgrade_receiver::run_receiver(fd);
-        std::process::exit(exit_code.value() as i32);
+        std::process::exit(exit_code.value());
     }
 
     // Store args for later access
@@ -92,5 +92,5 @@ pub fn run() {
 
     // Run the application
     let exit_code = app.run();
-    std::process::exit(exit_code.value() as i32);
+    std::process::exit(exit_code.value());
 }

@@ -452,7 +452,7 @@ fn close_tab_by_id(
 }
 
 /// Set up window actions for menu items
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn setup_window_actions(
     window: &gtk4::ApplicationWindow,
     notebook: &gtk4::Notebook,
