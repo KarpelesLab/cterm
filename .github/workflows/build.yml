@@ -126,6 +126,45 @@ jobs:
           name: cterm-linux-x86_64
           path: release/cterm-linux-x86_64.tar.gz
 
+  build-linux-arm64:
+    name: Build Linux (ARM64)
+    runs-on: ubuntu-22.04-arm
+    needs: test-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libpango1.0-dev \
+            libcairo2-dev \
+            libglib2.0-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Create release archive
+        run: |
+          mkdir -p release/cterm-linux-arm64
+          cp target/release/cterm release/cterm-linux-arm64/
+          cp README.md LICENSE release/cterm-linux-arm64/
+          cd release && tar -czvf cterm-linux-arm64.tar.gz cterm-linux-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cterm-linux-arm64
+          path: release/cterm-linux-arm64.tar.gz
+
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest
@@ -316,7 +355,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-windows, build-macos-arm]
+    needs: [build-linux, build-linux-arm64, build-windows, build-macos-arm]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -335,6 +374,7 @@ jobs:
         with:
           files: |
             artifacts/cterm-linux-x86_64/cterm-linux-x86_64.tar.gz
+            artifacts/cterm-linux-arm64/cterm-linux-arm64.tar.gz
             artifacts/cterm-windows-x86_64/cterm-windows-x86_64.zip
             artifacts/cterm-macos-universal/cterm-macos-universal.tar.gz
           draft: false
