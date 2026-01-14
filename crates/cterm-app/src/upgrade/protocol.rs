@@ -195,7 +195,7 @@ pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeE
     let mut buf = [0u8; 1];
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => break, // EOF - parent closed its end
+            Ok(0) => break,    // EOF - parent closed its end
             Ok(_) => continue, // Ignore any data
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break, // Any other error, assume parent is gone
