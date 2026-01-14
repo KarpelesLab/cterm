@@ -291,11 +291,22 @@ jobs:
           # Rename output to standard name
           Move-Item "cterm-$version-setup.exe" "cterm-windows-x86_64-setup.exe"
 
-      - name: Upload artifact
+      - name: Create zip for auto-update
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release/cterm-windows-x86_64 -DestinationPath release/cterm-windows-x86_64.zip
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cterm-windows-installer
+          path: release/cterm-windows-x86_64-setup.exe
+
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-windows-x86_64
-          path: release/cterm-windows-x86_64-setup.exe
+          path: release/cterm-windows-x86_64.zip
 
   build-macos-intel:
     name: Build macOS (Intel)
@@ -410,11 +421,24 @@ jobs:
           # Rename to standard name for artifact
           mv "release/cterm-macos-$VERSION.dmg" "release/cterm-macos-universal.dmg"
 
-      - name: Upload artifact
+      - name: Create tar.gz for auto-update
+        run: |
+          mkdir -p release/cterm-macos-universal
+          cp universal-binary/cterm release/cterm-macos-universal/
+          cp README.md LICENSE release/cterm-macos-universal/
+          cd release && tar -czvf cterm-macos-universal.tar.gz cterm-macos-universal
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cterm-macos-dmg
+          path: release/cterm-macos-universal.dmg
+
+      - name: Upload tar.gz artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-macos-universal
-          path: release/cterm-macos-universal.dmg
+          path: release/cterm-macos-universal.tar.gz
 
   release:
     name: Create Release
@@ -438,8 +462,10 @@ jobs:
           files: |
             artifacts/cterm-linux-x86_64/cterm-linux-x86_64.tar.gz
             artifacts/cterm-linux-arm64/cterm-linux-arm64.tar.gz
-            artifacts/cterm-windows-x86_64/cterm-windows-x86_64-setup.exe
-            artifacts/cterm-macos-universal/cterm-macos-universal.dmg
+            artifacts/cterm-windows-x86_64/cterm-windows-x86_64.zip
+            artifacts/cterm-windows-installer/cterm-windows-x86_64-setup.exe
+            artifacts/cterm-macos-universal/cterm-macos-universal.tar.gz
+            artifacts/cterm-macos-dmg/cterm-macos-universal.dmg
           draft: false
           prerelease: false
           generate_release_notes: true
