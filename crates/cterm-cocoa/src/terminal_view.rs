@@ -1,12 +1,13 @@
 //! Terminal view implementation for macOS
 //!
-//! NSView subclass that renders the terminal using Metal.
+//! NSView subclass that renders the terminal using CoreGraphics.
 
 use std::cell::RefCell;
 use std::sync::Arc;
 
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadOnly};
+use objc2::runtime::AnyObject;
+use objc2::{class, define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{NSEvent, NSView};
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize};
 use parking_lot::Mutex;
@@ -16,18 +17,16 @@ use cterm_core::screen::ScreenConfig;
 use cterm_core::{Pty, PtyConfig, PtySize, Terminal};
 use cterm_ui::theme::Theme;
 
+use crate::cg_renderer::CGRenderer;
 use crate::keycode;
-use crate::metal_renderer::MetalRenderer;
 
 /// Terminal view state
 pub struct TerminalViewIvars {
     terminal: Arc<Mutex<Terminal>>,
     pty: RefCell<Option<Pty>>,
-    renderer: RefCell<Option<MetalRenderer>>,
-    config: Config,
-    theme: Theme,
-    cell_width: RefCell<f64>,
-    cell_height: RefCell<f64>,
+    renderer: RefCell<Option<CGRenderer>>,
+    cell_width: f64,
+    cell_height: f64,
 }
 
 define_class!(
@@ -57,19 +56,11 @@ define_class!(
             true
         }
 
-        #[unsafe(method(wantsLayer))]
-        fn wants_layer(&self) -> bool {
-            // Required for Metal rendering
-            true
-        }
-
         #[unsafe(method(drawRect:))]
-        fn draw_rect(&self, _dirty_rect: NSRect) {
-            // Rendering is done via Metal layer, not drawRect
-            // But we can use this as a fallback or for debugging
+        fn draw_rect(&self, dirty_rect: NSRect) {
             if let Some(ref renderer) = *self.ivars().renderer.borrow() {
                 let terminal = self.ivars().terminal.lock();
-                renderer.render(&terminal);
+                renderer.render(&terminal, dirty_rect);
             }
         }
 
@@ -93,27 +84,27 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            let location = unsafe { event.locationInWindow() };
+            let location = event.locationInWindow();
             log::trace!("Mouse down at: {:?}", location);
             // TODO: Handle mouse selection
         }
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            let location = unsafe { event.locationInWindow() };
+            let location = event.locationInWindow();
             log::trace!("Mouse up at: {:?}", location);
         }
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            let location = unsafe { event.locationInWindow() };
+            let location = event.locationInWindow();
             log::trace!("Mouse dragged at: {:?}", location);
             // TODO: Handle selection drag
         }
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
-            let delta_y = unsafe { event.scrollingDeltaY() };
+            let delta_y = event.scrollingDeltaY();
             log::trace!("Scroll wheel delta: {}", delta_y);
 
             // Scroll the terminal
@@ -128,18 +119,25 @@ define_class!(
             // Request redraw
             self.set_needs_display();
         }
+
+        #[unsafe(method(refreshTimerFired:))]
+        fn refresh_timer_fired(&self, _timer: &AnyObject) {
+            self.set_needs_display();
+        }
     }
 );
 
 impl TerminalView {
     pub fn new(mtm: MainThreadMarker, config: &Config, theme: &Theme) -> Retained<Self> {
+        // Create CoreGraphics renderer first to get cell dimensions
+        let font_name = &config.appearance.font.family;
+        let font_size = config.appearance.font.size;
+        let renderer = CGRenderer::new(mtm, font_name, font_size, theme);
+        let (cell_width, cell_height) = renderer.cell_size();
+
         // Create terminal with default size (will resize later)
         let terminal = Terminal::new(80, 24, ScreenConfig::default());
         let terminal = Arc::new(Mutex::new(terminal));
-
-        // Calculate cell dimensions based on font
-        let cell_width = config.appearance.font.size * 0.6;
-        let cell_height = config.appearance.font.size * 1.2;
 
         // Initial frame
         let frame = NSRect::new(NSPoint::ZERO, NSSize::new(800.0, 600.0));
@@ -149,24 +147,18 @@ impl TerminalView {
         let this = this.set_ivars(TerminalViewIvars {
             terminal: terminal.clone(),
             pty: RefCell::new(None),
-            renderer: RefCell::new(None),
-            config: config.clone(),
-            theme: theme.clone(),
-            cell_width: RefCell::new(cell_width),
-            cell_height: RefCell::new(cell_height),
+            renderer: RefCell::new(Some(renderer)),
+            cell_width,
+            cell_height,
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
 
-        // Initialize Metal renderer
-        if let Ok(renderer) = MetalRenderer::new(&this, theme) {
-            *this.ivars().renderer.borrow_mut() = Some(renderer);
-        } else {
-            log::warn!("Failed to create Metal renderer, using fallback");
-        }
-
         // Spawn shell
         this.spawn_shell(config);
+
+        // Start refresh timer for PTY updates
+        this.start_refresh_timer();
 
         this
     }
@@ -233,9 +225,6 @@ impl TerminalView {
                     let mut term = terminal.lock();
                     term.process(&buf[..n]);
                     drop(term);
-
-                    // TODO: Use dispatch_async to request redraw on main thread
-                    // For now, the view will refresh via timer or event
                 }
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::Interrupted {
@@ -250,11 +239,26 @@ impl TerminalView {
         std::mem::forget(file);
     }
 
+    /// Start a timer to periodically refresh the display
+    fn start_refresh_timer(&self) {
+        unsafe {
+            let interval: f64 = 1.0 / 60.0; // 60 FPS
+            let _: Retained<AnyObject> = msg_send![
+                class!(NSTimer),
+                scheduledTimerWithTimeInterval: interval,
+                target: self,
+                selector: sel!(refreshTimerFired:),
+                userInfo: std::ptr::null::<AnyObject>(),
+                repeats: true
+            ];
+        }
+    }
+
     /// Handle window resize
     pub fn handle_resize(&self) {
         let frame = self.frame();
-        let cell_width = *self.ivars().cell_width.borrow();
-        let cell_height = *self.ivars().cell_height.borrow();
+        let cell_width = self.ivars().cell_width;
+        let cell_height = self.ivars().cell_height;
 
         let cols = (frame.size.width / cell_width).floor() as usize;
         let rows = (frame.size.height / cell_height).floor() as usize;

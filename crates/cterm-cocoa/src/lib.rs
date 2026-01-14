@@ -4,6 +4,7 @@
 //! macOS AppKit and Metal rendering.
 
 pub mod app;
+pub mod cg_renderer;
 pub mod clipboard;
 pub mod dialogs;
 pub mod menu;
