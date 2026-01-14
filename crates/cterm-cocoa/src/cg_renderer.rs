@@ -19,7 +19,6 @@ pub struct CGRenderer {
     theme: Theme,
     cell_width: f64,
     cell_height: f64,
-    baseline_offset: f64,
 }
 
 impl CGRenderer {
@@ -33,14 +32,12 @@ impl CGRenderer {
         // Calculate cell dimensions using font metrics
         let cell_width = Self::get_advance_for_glyph(&font);
         let cell_height = font_size * 1.2; // Line height
-        let baseline_offset = font_size * 0.2; // Approximate descender
 
         Self {
             font,
             theme: theme.clone(),
             cell_width,
             cell_height,
-            baseline_offset,
         }
     }
 
@@ -153,8 +150,8 @@ impl CGRenderer {
                 count: 2usize
             ];
 
-            // Draw at position (y is flipped, so add cell_height - baseline_offset)
-            let point = NSPoint::new(x, y + self.cell_height - self.baseline_offset);
+            // In a flipped view, drawAtPoint places text with point as top-left of the text
+            let point = NSPoint::new(x, y);
             let _: () = msg_send![&*text, drawAtPoint: point, withAttributes: &*dict];
         }
     }
