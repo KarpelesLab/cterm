@@ -9,6 +9,7 @@ use objc2::{class, msg_send};
 use objc2_app_kit::{NSFont, NSGraphicsContext};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
+use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
 use cterm_core::Terminal;
 use cterm_ui::theme::Theme;
@@ -77,19 +78,46 @@ impl CGRenderer {
 
         // Draw cells
         for row in 0..rows {
+            // Get absolute line for selection checking
+            let absolute_line = screen.visible_row_to_absolute_line(row);
+
             for col in 0..cols {
                 if let Some(cell) = screen.get_cell(row, col) {
                     let x = col as f64 * self.cell_width;
                     let y = row as f64 * self.cell_height;
 
-                    // Draw cell background if not default
-                    if !cell.bg.is_default() {
-                        self.draw_cell_background(x, y, &cell.bg);
+                    // Check if cell is selected
+                    let is_selected = screen.is_selected(absolute_line, col);
+
+                    // XOR selection with INVERSE attribute to determine if colors should be inverted
+                    let is_inverted = cell.attrs.contains(CellAttrs::INVERSE) != is_selected;
+
+                    // Determine actual foreground and background colors
+                    let (fg_color, bg_color) = if is_inverted {
+                        // Inverted: swap foreground and background
+                        let fg = if cell.bg.is_default() {
+                            self.theme.colors.background
+                        } else {
+                            self.color_to_rgb(&cell.bg)
+                        };
+                        let bg = if cell.fg.is_default() {
+                            self.theme.colors.foreground
+                        } else {
+                            self.color_to_rgb(&cell.fg)
+                        };
+                        (fg, bg)
+                    } else {
+                        (self.color_to_rgb(&cell.fg), self.color_to_rgb(&cell.bg))
+                    };
+
+                    // Draw cell background if not default or if selected/inverted
+                    if !cell.bg.is_default() || is_inverted || is_selected {
+                        self.draw_cell_background_rgb(x, y, &bg_color);
                     }
 
                     // Draw character
                     if cell.c != ' ' && cell.c != '\0' {
-                        self.draw_char(cell.c, x, y, &cell.fg);
+                        self.draw_char_rgb(cell.c, x, y, &fg_color);
                     }
                 }
             }
@@ -115,6 +143,10 @@ impl CGRenderer {
 
     fn draw_cell_background(&self, x: f64, y: f64, color: &Color) {
         let rgb = self.color_to_rgb(color);
+        self.draw_cell_background_rgb(x, y, &rgb);
+    }
+
+    fn draw_cell_background_rgb(&self, x: f64, y: f64, rgb: &Rgb) {
         let rect = NSRect::new(
             NSPoint::new(x, y),
             NSSize::new(self.cell_width, self.cell_height),
@@ -128,6 +160,10 @@ impl CGRenderer {
 
     fn draw_char(&self, ch: char, x: f64, y: f64, color: &Color) {
         let rgb = self.color_to_rgb(color);
+        self.draw_char_rgb(ch, x, y, &rgb);
+    }
+
+    fn draw_char_rgb(&self, ch: char, x: f64, y: f64, rgb: &Rgb) {
         let text = NSString::from_str(&ch.to_string());
 
         unsafe {

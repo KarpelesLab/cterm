@@ -2,7 +2,7 @@
 //!
 //! NSView subclass that renders the terminal using CoreGraphics.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -13,12 +13,12 @@ use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSi
 use parking_lot::Mutex;
 
 use cterm_app::config::Config;
-use cterm_core::screen::ScreenConfig;
+use cterm_core::screen::{ScreenConfig, SelectionMode};
 use cterm_core::{Pty, PtyConfig, PtySize, Terminal};
 use cterm_ui::theme::Theme;
 
 use crate::cg_renderer::CGRenderer;
-use crate::keycode;
+use crate::{clipboard, keycode};
 
 /// Shared state between the view and PTY thread
 struct ViewState {
@@ -37,6 +37,8 @@ pub struct TerminalViewIvars {
     cell_height: f64,
     /// Shared state with PTY thread
     state: Arc<ViewState>,
+    /// Whether we're currently in a selection drag
+    is_selecting: Cell<bool>,
 }
 
 define_class!(
@@ -140,20 +142,83 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            let location = event.locationInWindow();
-            log::trace!("Mouse down at: {:?}", location);
+            // Convert window coordinates to view coordinates
+            let location_in_window = event.locationInWindow();
+            let location = self.convert_point_from_view(location_in_window, None);
+
+            // Calculate cell position
+            let col = (location.x / self.ivars().cell_width).floor() as usize;
+            let row = (location.y / self.ivars().cell_height).floor() as usize;
+
+            // Determine selection mode based on click count
+            let click_count = event.clickCount();
+            let mode = match click_count {
+                2 => SelectionMode::Word,
+                3 => SelectionMode::Line,
+                _ => SelectionMode::Char,
+            };
+
+            // Start selection
+            let mut terminal = self.ivars().terminal.lock();
+            let line = terminal.screen().visible_row_to_absolute_line(row);
+            terminal.screen_mut().start_selection(line, col, mode);
+            drop(terminal);
+
+            self.ivars().is_selecting.set(true);
+            self.set_needs_display();
+
+            log::trace!("Mouse down at row={}, col={}, mode={:?}", row, col, mode);
         }
 
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) {
-            let location = event.locationInWindow();
-            log::trace!("Mouse up at: {:?}", location);
+        fn mouse_up(&self, _event: &NSEvent) {
+            if !self.ivars().is_selecting.get() {
+                return;
+            }
+
+            self.ivars().is_selecting.set(false);
+
+            // Check if selection is empty and clear it, or copy to clipboard
+            let terminal = self.ivars().terminal.lock();
+            if let Some(selection) = &terminal.screen().selection {
+                if selection.anchor == selection.end {
+                    // Empty selection - clear it
+                    drop(terminal);
+                    let mut terminal = self.ivars().terminal.lock();
+                    terminal.screen_mut().clear_selection();
+                    self.set_needs_display();
+                } else {
+                    // Copy selection to clipboard
+                    if let Some(text) = terminal.screen().get_selected_text() {
+                        drop(terminal);
+                        clipboard::set_text(&text);
+                        log::debug!("Copied {} chars to clipboard", text.len());
+                    }
+                }
+            }
         }
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            let location = event.locationInWindow();
-            log::trace!("Mouse dragged at: {:?}", location);
+            if !self.ivars().is_selecting.get() {
+                return;
+            }
+
+            // Convert window coordinates to view coordinates
+            let location_in_window = event.locationInWindow();
+            let location = self.convert_point_from_view(location_in_window, None);
+
+            // Calculate cell position (clamp to valid range)
+            let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+            let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+
+            // Extend selection
+            let mut terminal = self.ivars().terminal.lock();
+            let line = terminal.screen().visible_row_to_absolute_line(row);
+            terminal.screen_mut().extend_selection(line, col);
+            drop(terminal);
+
+            self.set_needs_display();
         }
 
         #[unsafe(method(scrollWheel:))]
@@ -210,6 +275,7 @@ impl TerminalView {
             cell_width,
             cell_height,
             state: state.clone(),
+            is_selecting: Cell::new(false),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -402,5 +468,34 @@ impl TerminalView {
     /// Get frame rectangle
     fn frame(&self) -> NSRect {
         unsafe { msg_send![self, frame] }
+    }
+
+    /// Convert point from window coordinates to view coordinates
+    fn convert_point_from_view(&self, point: NSPoint, view: Option<&NSView>) -> NSPoint {
+        unsafe { msg_send![self, convertPoint: point, fromView: view] }
+    }
+
+    /// Copy current selection to clipboard
+    pub fn copy_selection(&self) {
+        let terminal = self.ivars().terminal.lock();
+        if let Some(text) = terminal.screen().get_selected_text() {
+            drop(terminal);
+            clipboard::set_text(&text);
+            log::debug!("Copied {} chars to clipboard", text.len());
+        }
+    }
+
+    /// Get selected text if any
+    pub fn get_selected_text(&self) -> Option<String> {
+        let terminal = self.ivars().terminal.lock();
+        terminal.screen().get_selected_text()
+    }
+
+    /// Clear current selection
+    pub fn clear_selection(&self) {
+        let mut terminal = self.ivars().terminal.lock();
+        terminal.screen_mut().clear_selection();
+        drop(terminal);
+        self.set_needs_display();
     }
 }
