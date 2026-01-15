@@ -3,7 +3,7 @@
 //! NSView subclass that renders the terminal using CoreGraphics.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use objc2::rc::Retained;
@@ -20,9 +20,11 @@ use cterm_ui::theme::Theme;
 use crate::cg_renderer::CGRenderer;
 use crate::keycode;
 
-// Global flag to signal need for redraw (simple approach)
-static NEEDS_REDRAW: AtomicBool = AtomicBool::new(false);
-static VIEW_PTR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+/// Shared state between the view and PTY thread
+struct ViewState {
+    needs_redraw: AtomicBool,
+    pty_closed: AtomicBool,
+}
 
 /// Terminal view state
 pub struct TerminalViewIvars {
@@ -31,6 +33,8 @@ pub struct TerminalViewIvars {
     renderer: RefCell<Option<CGRenderer>>,
     cell_width: f64,
     cell_height: f64,
+    /// Shared state with PTY thread
+    state: Arc<ViewState>,
 }
 
 define_class!(
@@ -71,7 +75,7 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, dirty_rect: NSRect) {
             // Clear the redraw flag
-            NEEDS_REDRAW.store(false, Ordering::Relaxed);
+            self.ivars().state.needs_redraw.store(false, Ordering::Relaxed);
 
             if let Some(ref renderer) = *self.ivars().renderer.borrow() {
                 let terminal = self.ivars().terminal.lock();
@@ -175,6 +179,12 @@ impl TerminalView {
         let terminal = Terminal::new(80, 24, ScreenConfig::default());
         let terminal = Arc::new(Mutex::new(terminal));
 
+        // Create shared state for PTY thread communication
+        let state = Arc::new(ViewState {
+            needs_redraw: AtomicBool::new(false),
+            pty_closed: AtomicBool::new(false),
+        });
+
         // Initial frame
         let frame = NSRect::new(NSPoint::ZERO, NSSize::new(800.0, 600.0));
 
@@ -186,37 +196,57 @@ impl TerminalView {
             renderer: RefCell::new(Some(renderer)),
             cell_width,
             cell_height,
+            state: state.clone(),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
 
-        // Store view pointer for PTY thread to signal redraws
-        VIEW_PTR.store(&*this as *const _ as *mut _, Ordering::Relaxed);
+        // Store view pointer as usize for thread-safe passing
+        // Safety: We only use this pointer on the main thread via dispatch
+        let view_ptr = &*this as *const _ as usize;
 
         // Spawn shell
-        this.spawn_shell(config);
+        this.spawn_shell(config, state.clone());
 
         // Start the redraw check loop
-        this.schedule_redraw_check();
+        this.schedule_redraw_check(view_ptr, state);
 
         this
     }
 
-    fn schedule_redraw_check(&self) {
+    fn schedule_redraw_check(&self, view_ptr: usize, state: Arc<ViewState>) {
         // Start a background thread that periodically triggers redraws on main thread
-        std::thread::spawn(|| {
+        std::thread::spawn(move || {
             // Wait briefly for app to initialize
             std::thread::sleep(std::time::Duration::from_millis(100));
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(16));
-                if NEEDS_REDRAW.swap(false, Ordering::Relaxed) {
+
+                // Check if PTY closed - if so, close the window
+                if state.pty_closed.load(Ordering::Relaxed) {
+                    log::info!("PTY closed, closing window");
+                    #[allow(deprecated)]
+                    dispatch2::Queue::main().exec_async(move || {
+                        if view_ptr != 0 {
+                            unsafe {
+                                let view = &*(view_ptr as *const TerminalView);
+                                if let Some(window) = view.window() {
+                                    window.close();
+                                }
+                            }
+                        }
+                    });
+                    break;
+                }
+
+                // Check for redraw
+                if state.needs_redraw.swap(false, Ordering::Relaxed) {
                     // Use dispatch to main queue
                     #[allow(deprecated)]
-                    dispatch2::Queue::main().exec_async(|| {
-                        let ptr = VIEW_PTR.load(Ordering::Relaxed);
-                        if !ptr.is_null() {
+                    dispatch2::Queue::main().exec_async(move || {
+                        if view_ptr != 0 {
                             unsafe {
-                                let view = &*(ptr as *const TerminalView);
+                                let view = &*(view_ptr as *const TerminalView);
                                 let _: () = msg_send![view, setNeedsDisplay: true];
                             }
                         }
@@ -227,7 +257,7 @@ impl TerminalView {
     }
 
     /// Spawn the shell process
-    fn spawn_shell(&self, config: &Config) {
+    fn spawn_shell(&self, config: &Config, state: Arc<ViewState>) {
         let shell =
             config.general.default_shell.clone().unwrap_or_else(|| {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
@@ -258,7 +288,7 @@ impl TerminalView {
                 let pty_fd = pty.raw_fd();
 
                 std::thread::spawn(move || {
-                    Self::read_pty_loop(pty_fd, terminal);
+                    Self::read_pty_loop(pty_fd, terminal, state);
                 });
 
                 *self.ivars().pty.borrow_mut() = Some(pty);
@@ -270,7 +300,7 @@ impl TerminalView {
     }
 
     /// Background thread to read from PTY
-    fn read_pty_loop(pty_fd: i32, terminal: Arc<Mutex<Terminal>>) {
+    fn read_pty_loop(pty_fd: i32, terminal: Arc<Mutex<Terminal>>, state: Arc<ViewState>) {
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
 
@@ -280,7 +310,7 @@ impl TerminalView {
         loop {
             match file.read(&mut buf) {
                 Ok(0) => {
-                    log::info!("PTY closed");
+                    log::info!("PTY closed (EOF)");
                     break;
                 }
                 Ok(n) => {
@@ -289,7 +319,7 @@ impl TerminalView {
                     drop(term);
 
                     // Signal that we need a redraw
-                    NEEDS_REDRAW.store(true, Ordering::Relaxed);
+                    state.needs_redraw.store(true, Ordering::Relaxed);
                 }
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::Interrupted {
@@ -299,6 +329,9 @@ impl TerminalView {
                 }
             }
         }
+
+        // Signal that PTY has closed - window should close
+        state.pty_closed.store(true, Ordering::Relaxed);
 
         // Don't close the fd - it's owned by the Pty struct
         std::mem::forget(file);

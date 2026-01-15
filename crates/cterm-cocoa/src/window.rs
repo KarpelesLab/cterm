@@ -39,6 +39,10 @@ define_class!(
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
             log::debug!("Window became key");
+            // Make the terminal view first responder so it can receive keyboard input
+            if let Some(terminal) = self.ivars().active_terminal.borrow().as_ref() {
+                self.makeFirstResponder(Some(terminal));
+            }
         }
 
         #[unsafe(method(windowDidResignKey:))]
