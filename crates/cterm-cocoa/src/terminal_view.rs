@@ -290,6 +290,57 @@ define_class!(
             self.set_needs_display();
         }
 
+        /// Handle modifier key changes (for secret debug menu)
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            use objc2_app_kit::NSEventModifierFlags;
+
+            let flags = event.modifierFlags();
+            let shift_pressed = flags.contains(NSEventModifierFlags::Shift);
+
+            // Show/hide debug menu based on Shift key state
+            crate::menu::set_debug_menu_visible(shift_pressed);
+        }
+
+        /// Debug: Re-launch cterm
+        #[unsafe(method(debugRelaunch:))]
+        fn action_debug_relaunch(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::info!("Debug: Re-launching cterm");
+
+            // Get the path to the current executable
+            if let Ok(exe_path) = std::env::current_exe() {
+                // Spawn a new instance
+                match std::process::Command::new(&exe_path).spawn() {
+                    Ok(_) => {
+                        log::info!("Spawned new cterm instance");
+                        // Terminate this instance
+                        let app = objc2_app_kit::NSApplication::sharedApplication(
+                            objc2_foundation::MainThreadMarker::from(self),
+                        );
+                        app.terminate(None);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to relaunch: {}", e);
+                    }
+                }
+            }
+        }
+
+        /// Debug: Dump terminal state
+        #[unsafe(method(debugDumpState:))]
+        fn action_debug_dump_state(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::info!("Debug: Dumping terminal state");
+
+            let terminal = self.ivars().terminal.lock();
+            let screen = terminal.screen();
+
+            log::info!("  Screen size: {}x{}", screen.width(), screen.height());
+            log::info!("  Cursor: row={}, col={}", screen.cursor.row, screen.cursor.col);
+            log::info!("  Total lines (with scrollback): {}", screen.total_lines());
+            log::info!("  Selection: {:?}", screen.selection);
+            log::info!("  Modes: {:?}", screen.modes);
+        }
+
         #[unsafe(method(triggerRedraw))]
         fn trigger_redraw(&self) {
             self.set_needs_display();

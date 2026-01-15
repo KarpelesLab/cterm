@@ -2,11 +2,45 @@
 //!
 //! Creates the standard macOS menu bar with File, Edit, View, etc.
 
+use std::cell::RefCell;
+
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::sel;
 use objc2_app_kit::{NSEventModifierFlags, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSString};
+
+// Thread-local storage for the debug menu item (must be accessed on main thread)
+thread_local! {
+    static DEBUG_MENU_ITEM: RefCell<Option<Retained<NSMenuItem>>> = const { RefCell::new(None) };
+}
+
+/// Store the debug menu item for later show/hide
+fn set_debug_menu_item(item: Retained<NSMenuItem>) {
+    DEBUG_MENU_ITEM.with(|cell| {
+        *cell.borrow_mut() = Some(item);
+    });
+}
+
+/// Show or hide the debug menu
+pub fn set_debug_menu_visible(visible: bool) {
+    DEBUG_MENU_ITEM.with(|cell| {
+        if let Some(ref item) = *cell.borrow() {
+            item.setHidden(!visible);
+        }
+    });
+}
+
+/// Check if the debug menu is currently visible
+pub fn is_debug_menu_visible() -> bool {
+    DEBUG_MENU_ITEM.with(|cell| {
+        if let Some(ref item) = *cell.borrow() {
+            !item.isHidden()
+        } else {
+            false
+        }
+    })
+}
 
 /// Create the main menu bar
 pub fn create_menu_bar(mtm: MainThreadMarker) -> Retained<NSMenu> {
@@ -369,6 +403,35 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
         Some(sel!(showHelp:)),
         "",
     ));
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+    // Debug submenu (hidden by default, shown when Shift is held)
+    let debug_menu = NSMenu::new(mtm);
+    debug_menu.setTitle(&NSString::from_str("Debug"));
+
+    debug_menu.addItem(&create_menu_item(
+        mtm,
+        "Re-launch cterm",
+        Some(sel!(debugRelaunch:)),
+        "",
+    ));
+
+    debug_menu.addItem(&create_menu_item(
+        mtm,
+        "Dump State",
+        Some(sel!(debugDumpState:)),
+        "",
+    ));
+
+    let debug_item = NSMenuItem::new(mtm);
+    debug_item.setTitle(&NSString::from_str("Debug"));
+    debug_item.setSubmenu(Some(&debug_menu));
+    debug_item.setHidden(true); // Hidden by default
+    menu.addItem(&debug_item);
+
+    // Store the debug menu item globally so we can show/hide it
+    set_debug_menu_item(debug_item);
 
     let menu_item = NSMenuItem::new(mtm);
     menu_item.setSubmenu(Some(&menu));
