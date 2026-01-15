@@ -24,6 +24,8 @@ use crate::keycode;
 struct ViewState {
     needs_redraw: AtomicBool,
     pty_closed: AtomicBool,
+    /// Set when the view is being deallocated - threads should stop
+    view_invalid: AtomicBool,
 }
 
 /// Terminal view state
@@ -69,6 +71,16 @@ define_class!(
             // Make ourselves first responder when added to window
             if let Some(window) = self.window() {
                 window.makeFirstResponder(Some(self));
+            }
+        }
+
+        #[unsafe(method(viewWillMoveToWindow:))]
+        fn view_will_move_to_window(&self, new_window: Option<&objc2_app_kit::NSWindow>) {
+            // If moving to nil window (being removed), mark view as invalid
+            // This tells background threads to stop using the view pointer
+            if new_window.is_none() {
+                log::debug!("View being removed from window, marking invalid");
+                self.ivars().state.view_invalid.store(true, Ordering::SeqCst);
             }
         }
 
@@ -183,6 +195,7 @@ impl TerminalView {
         let state = Arc::new(ViewState {
             needs_redraw: AtomicBool::new(false),
             pty_closed: AtomicBool::new(false),
+            view_invalid: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -222,35 +235,50 @@ impl TerminalView {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(16));
 
+                // Check if view has been invalidated (window closed)
+                if state.view_invalid.load(Ordering::SeqCst) {
+                    log::debug!("View invalidated, stopping redraw thread");
+                    break;
+                }
+
                 // Check if PTY closed - if so, close the window
                 if state.pty_closed.load(Ordering::Relaxed) {
                     log::info!("PTY closed, closing window");
-                    #[allow(deprecated)]
-                    dispatch2::Queue::main().exec_async(move || {
-                        if view_ptr != 0 {
-                            unsafe {
-                                let view = &*(view_ptr as *const TerminalView);
-                                if let Some(window) = view.window() {
-                                    window.close();
+                    // Only close if view is still valid
+                    if !state.view_invalid.load(Ordering::SeqCst) {
+                        let state_clone = state.clone();
+                        #[allow(deprecated)]
+                        dispatch2::Queue::main().exec_async(move || {
+                            // Double-check validity on main thread
+                            if !state_clone.view_invalid.load(Ordering::SeqCst) && view_ptr != 0 {
+                                unsafe {
+                                    let view = &*(view_ptr as *const TerminalView);
+                                    if let Some(window) = view.window() {
+                                        window.close();
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
+                    }
                     break;
                 }
 
                 // Check for redraw
                 if state.needs_redraw.swap(false, Ordering::Relaxed) {
-                    // Use dispatch to main queue
-                    #[allow(deprecated)]
-                    dispatch2::Queue::main().exec_async(move || {
-                        if view_ptr != 0 {
-                            unsafe {
-                                let view = &*(view_ptr as *const TerminalView);
-                                let _: () = msg_send![view, setNeedsDisplay: true];
+                    // Only dispatch if view is still valid
+                    if !state.view_invalid.load(Ordering::SeqCst) {
+                        let state_clone = state.clone();
+                        #[allow(deprecated)]
+                        dispatch2::Queue::main().exec_async(move || {
+                            // Double-check validity on main thread before accessing view
+                            if !state_clone.view_invalid.load(Ordering::SeqCst) && view_ptr != 0 {
+                                unsafe {
+                                    let view = &*(view_ptr as *const TerminalView);
+                                    let _: () = msg_send![view, setNeedsDisplay: true];
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
             }
         });
