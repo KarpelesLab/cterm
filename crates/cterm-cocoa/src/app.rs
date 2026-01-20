@@ -94,6 +94,19 @@ define_class!(
             true
         }
     }
+
+    // Menu action handlers
+    impl AppDelegate {
+        #[unsafe(method(showPreferences:))]
+        fn action_show_preferences(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            let config = self.ivars().config.clone();
+            crate::preferences::show_preferences(mtm, &config, |_new_config| {
+                // Config saved - could reload theme or apply changes here
+                log::info!("Preferences saved");
+            });
+        }
+    }
 );
 
 impl AppDelegate {

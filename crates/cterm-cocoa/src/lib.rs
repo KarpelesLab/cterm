@@ -9,6 +9,7 @@ pub mod clipboard;
 pub mod dialogs;
 pub mod menu;
 pub mod metal_renderer;
+pub mod preferences;
 pub mod tab_bar;
 pub mod terminal_view;
 #[cfg(unix)]
