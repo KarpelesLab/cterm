@@ -136,6 +136,16 @@ define_class!(
                 return;
             }
 
+            // Reset scroll offset when any key is pressed (return to current content)
+            {
+                let mut terminal = self.ivars().terminal.lock();
+                if terminal.screen().scroll_offset != 0 {
+                    terminal.screen_mut().scroll_offset = 0;
+                    drop(terminal);
+                    self.set_needs_display();
+                }
+            }
+
             // Convert macOS keycode to terminal Key
             let raw_keycode = event.keyCode();
             let key = match raw_keycode {
@@ -186,6 +196,28 @@ define_class!(
                 }
             }
 
+            // Handle Ctrl+key combinations - convert to control characters
+            if modifiers.contains(cterm_ui::events::Modifiers::CTRL) {
+                if let Some(chars) = keycode::characters_ignoring_modifiers(event) {
+                    for c in chars.chars() {
+                        // Convert letter to control character (Ctrl+C = 0x03, etc.)
+                        let ctrl_char = match c.to_ascii_lowercase() {
+                            'a'..='z' => (c.to_ascii_lowercase() as u8 - b'a' + 1) as char,
+                            '[' => '\x1b',      // Escape
+                            '\\' => '\x1c',     // File separator
+                            ']' => '\x1d',      // Group separator
+                            '^' => '\x1e',      // Record separator
+                            '_' => '\x1f',      // Unit separator
+                            '?' => '\x7f',      // Delete (Ctrl+?)
+                            _ => continue,
+                        };
+                        log::debug!("Ctrl+{} -> 0x{:02x}", c, ctrl_char as u8);
+                        self.write_to_pty(&[ctrl_char as u8]);
+                    }
+                }
+                return;
+            }
+
             // For regular characters, get the character from the event
             if let Some(chars) = keycode::characters_from_event(event) {
                 // Filter out special Unicode characters that macOS uses for function keys
@@ -196,21 +228,8 @@ define_class!(
                     .collect();
 
                 if !filtered.is_empty() {
-                    // Handle Ctrl+key combinations
-                    if modifiers.contains(cterm_ui::events::Modifiers::CTRL) {
-                        for c in filtered.chars() {
-                            let key = Key::Char(c);
-                            let terminal = self.ivars().terminal.lock();
-                            if let Some(data) = terminal.handle_key(key, core_mods) {
-                                drop(terminal);
-                                log::debug!("Ctrl+{}: {:?}", c, data);
-                                self.write_to_pty(&data);
-                            }
-                        }
-                    } else {
-                        log::debug!("Writing to PTY: {:?}", filtered);
-                        self.write_to_pty(filtered.as_bytes());
-                    }
+                    log::debug!("Writing to PTY: {:?}", filtered);
+                    self.write_to_pty(filtered.as_bytes());
                 }
             }
         }
