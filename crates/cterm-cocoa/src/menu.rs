@@ -467,6 +467,15 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
         "",
     ));
 
+    debug_menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+    debug_menu.addItem(&create_menu_item(
+        mtm,
+        "Crash (Test Recovery)",
+        Some(sel!(debugCrash:)),
+        "",
+    ));
+
     let debug_item = NSMenuItem::new(mtm);
     debug_item.setTitle(&NSString::from_str("Debug"));
     debug_item.setSubmenu(Some(&debug_menu));

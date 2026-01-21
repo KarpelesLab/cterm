@@ -505,6 +505,14 @@ define_class!(
             log::info!("  Modes: {:?}", screen.modes);
         }
 
+        /// Debug: Trigger a crash to test crash recovery
+        #[unsafe(method(debugCrash:))]
+        fn action_debug_crash(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::warn!("Debug: Triggering intentional crash for recovery testing");
+            // Use abort() to trigger a crash that the watchdog can detect
+            std::process::abort();
+        }
+
         #[unsafe(method(triggerRedraw))]
         fn trigger_redraw(&self) {
             self.set_needs_display();
