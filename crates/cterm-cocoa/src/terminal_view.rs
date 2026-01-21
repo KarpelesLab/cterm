@@ -320,11 +320,17 @@ define_class!(
             let delta_y = event.scrollingDeltaY();
             log::trace!("Scroll wheel delta: {}", delta_y);
 
+            // Reduce scroll speed by half
+            let scroll_lines = (delta_y.abs() / 2.0) as usize;
+            if scroll_lines == 0 {
+                return;
+            }
+
             let mut terminal = self.ivars().terminal.lock();
             if delta_y > 0.0 {
-                terminal.scroll_viewport_up(delta_y.abs() as usize);
+                terminal.scroll_viewport_up(scroll_lines);
             } else if delta_y < 0.0 {
-                terminal.scroll_viewport_down(delta_y.abs() as usize);
+                terminal.scroll_viewport_down(scroll_lines);
             }
             drop(terminal);
 
