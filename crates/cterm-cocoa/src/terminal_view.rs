@@ -78,7 +78,17 @@ define_class!(
             // Make ourselves first responder when added to window
             if let Some(window) = self.window() {
                 window.makeFirstResponder(Some(self));
+                // Trigger initial resize to match window content size
+                self.handle_resize();
             }
+        }
+
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size(&self, new_size: NSSize) {
+            // Call super
+            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            // Handle the resize
+            self.handle_resize();
         }
 
         #[unsafe(method(viewWillMoveToWindow:))]
@@ -901,6 +911,19 @@ impl TerminalView {
         let frame = self.frame();
         let cell_width = self.ivars().cell_width;
         let cell_height = self.ivars().cell_height;
+
+        log::debug!(
+            "handle_resize: frame={}x{}, cell={}x{}",
+            frame.size.width,
+            frame.size.height,
+            cell_width,
+            cell_height
+        );
+
+        if cell_width <= 0.0 || cell_height <= 0.0 {
+            log::warn!("Invalid cell dimensions: {}x{}", cell_width, cell_height);
+            return;
+        }
 
         let cols = (frame.size.width / cell_width).floor() as usize;
         let rows = (frame.size.height / cell_height).floor() as usize;

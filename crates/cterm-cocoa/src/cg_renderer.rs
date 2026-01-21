@@ -34,6 +34,13 @@ impl CGRenderer {
         let cell_width = Self::get_advance_for_glyph(&font);
         let cell_height = font_size * 1.2; // Line height
 
+        log::debug!(
+            "CGRenderer: font_size={}, cell_width={}, cell_height={}",
+            font_size,
+            cell_width,
+            cell_height
+        );
+
         Self {
             font,
             theme: theme.clone(),
