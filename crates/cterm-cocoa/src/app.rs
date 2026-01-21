@@ -52,6 +52,10 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub supervised: Option<i32>,
 
+    /// Recover from crash with FDs from watchdog (internal use)
+    #[arg(long, hide = true)]
+    pub crash_recovery: Option<i32>,
+
     /// Disable watchdog supervision (run directly without crash recovery)
     #[arg(long)]
     pub no_watchdog: bool,
@@ -69,6 +73,25 @@ static WATCHDOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32:
 pub fn get_watchdog_fd() -> Option<i32> {
     let fd = WATCHDOG_FD.load(std::sync::atomic::Ordering::SeqCst);
     if fd >= 0 { Some(fd) } else { None }
+}
+
+/// Thread-local storage for recovery FDs (used during crash recovery)
+#[cfg(unix)]
+thread_local! {
+    static RECOVERY_FDS: std::cell::RefCell<Vec<(u64, std::os::unix::io::RawFd)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take recovery FDs (consumes them)
+#[cfg(unix)]
+pub fn take_recovery_fds() -> Vec<(u64, std::os::unix::io::RawFd)> {
+    RECOVERY_FDS.with(|r| std::mem::take(&mut *r.borrow_mut()))
+}
+
+/// Check if we're in crash recovery mode
+#[cfg(unix)]
+pub fn is_crash_recovery() -> bool {
+    RECOVERY_FDS.with(|r| !r.borrow().is_empty())
 }
 
 /// Get the application arguments (call only after run())
@@ -241,7 +264,7 @@ pub fn run() {
 
     // Check if we should start with watchdog for crash recovery
     #[cfg(unix)]
-    if args.supervised.is_none() && !args.no_watchdog {
+    if args.supervised.is_none() && args.crash_recovery.is_none() && !args.no_watchdog {
         // We're not supervised and watchdog is not disabled - start watchdog
         log::info!("Starting watchdog for crash recovery...");
 
@@ -257,11 +280,39 @@ pub fn run() {
         }
     }
 
+    // Handle crash recovery mode - receive FDs from watchdog
+    #[cfg(unix)]
+    let recovery_fds = if let Some(fd) = args.crash_recovery {
+        log::info!("Running in crash recovery mode (FD {})", fd);
+        WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
+
+        match cterm_app::receive_recovery_fds(fd) {
+            Ok(fds) => {
+                log::info!("Received {} PTY FDs for recovery", fds.len());
+                Some(fds)
+            }
+            Err(e) => {
+                log::error!("Failed to receive recovery FDs: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     #[cfg(unix)]
     if let Some(fd) = args.supervised {
         log::info!("Running under watchdog supervision (FD {})", fd);
         // Store watchdog FD for later use (registering PTYs, shutdown notification)
         WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    // Store recovery FDs for use during window creation
+    #[cfg(unix)]
+    if let Some(fds) = recovery_fds {
+        RECOVERY_FDS.with(|r| {
+            *r.borrow_mut() = fds;
+        });
     }
 
     // Store args for later access

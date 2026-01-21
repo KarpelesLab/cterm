@@ -44,6 +44,9 @@ pub struct TerminalViewIvars {
     is_selecting: Cell<bool>,
     /// Template name (if this view was created from a template)
     template_name: RefCell<Option<String>>,
+    /// Watchdog FD ID (for crash recovery unregistration)
+    #[cfg(unix)]
+    watchdog_fd_id: Cell<u64>,
 }
 
 define_class!(
@@ -98,6 +101,10 @@ define_class!(
             if new_window.is_none() {
                 log::debug!("View being removed from window, marking invalid");
                 self.ivars().state.view_invalid.store(true, Ordering::SeqCst);
+
+                // Unregister PTY from watchdog when view is removed
+                #[cfg(unix)]
+                self.unregister_pty_from_watchdog();
             }
         }
 
@@ -539,6 +546,8 @@ impl TerminalView {
             state: state.clone(),
             is_selecting: Cell::new(false),
             template_name: RefCell::new(None),
+            #[cfg(unix)]
+            watchdog_fd_id: Cell::new(0),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -547,8 +556,9 @@ impl TerminalView {
         // Safety: We only use this pointer on the main thread via dispatch
         let view_ptr = &*this as *const _ as usize;
 
-        // Spawn shell
+        // Spawn shell and register with watchdog
         this.spawn_shell(config, state.clone());
+        this.register_pty_with_watchdog();
 
         // Start the redraw check loop
         this.schedule_redraw_check(view_ptr, state);
@@ -594,6 +604,8 @@ impl TerminalView {
             state: state.clone(),
             is_selecting: Cell::new(false),
             template_name: RefCell::new(Some(template.name.clone())),
+            #[cfg(unix)]
+            watchdog_fd_id: Cell::new(0),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -601,8 +613,9 @@ impl TerminalView {
         // Store view pointer as usize for thread-safe passing
         let view_ptr = &*this as *const _ as usize;
 
-        // Spawn shell from template
+        // Spawn shell from template and register with watchdog
         this.spawn_template_shell(config, template, state.clone());
+        this.register_pty_with_watchdog();
 
         // Start the redraw check loop
         this.schedule_redraw_check(view_ptr, state);
@@ -655,6 +668,8 @@ impl TerminalView {
             state: state.clone(),
             is_selecting: Cell::new(false),
             template_name: RefCell::new(None), // TODO: restore template name from state
+            #[cfg(unix)]
+            watchdog_fd_id: Cell::new(0),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -1079,5 +1094,50 @@ impl TerminalView {
             .borrow()
             .as_ref()
             .map(|pty| pty.child_pid())
+    }
+
+    /// Register PTY FD with watchdog for crash recovery
+    #[cfg(unix)]
+    fn register_pty_with_watchdog(&self) {
+        use std::os::unix::io::AsRawFd;
+
+        let Some(watchdog_fd) = crate::app::get_watchdog_fd() else {
+            return; // Not running under watchdog
+        };
+
+        let Some(pty_fd) = self.ivars().pty.borrow().as_ref().map(|p| p.as_raw_fd()) else {
+            return; // No PTY yet
+        };
+
+        match cterm_app::register_fd_with_watchdog(watchdog_fd, pty_fd) {
+            Ok(id) => {
+                self.ivars().watchdog_fd_id.set(id);
+                log::debug!("Registered PTY FD {} with watchdog (id={})", pty_fd, id);
+            }
+            Err(e) => {
+                log::error!("Failed to register PTY with watchdog: {}", e);
+            }
+        }
+    }
+
+    /// Unregister PTY FD from watchdog (called when terminal is closed)
+    #[cfg(unix)]
+    pub fn unregister_pty_from_watchdog(&self) {
+        let id = self.ivars().watchdog_fd_id.get();
+        if id == 0 {
+            return; // Not registered
+        }
+
+        let Some(watchdog_fd) = crate::app::get_watchdog_fd() else {
+            return; // Not running under watchdog
+        };
+
+        if let Err(e) = cterm_app::unregister_fd_with_watchdog(watchdog_fd, id) {
+            log::error!("Failed to unregister PTY from watchdog: {}", e);
+        } else {
+            log::debug!("Unregistered PTY from watchdog (id={})", id);
+        }
+
+        self.ivars().watchdog_fd_id.set(0);
     }
 }

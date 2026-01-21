@@ -19,4 +19,8 @@ pub use shortcuts::ShortcutManager;
 pub use upgrade::{execute_upgrade, receive_upgrade, UpgradeError};
 pub use upgrade::{UpdateError, UpdateInfo, Updater, UpgradeState};
 #[cfg(unix)]
-pub use crash_recovery::{run_watchdog, CrashState, write_crash_state, read_crash_state, crash_state_path};
+pub use crash_recovery::{
+    crash_marker_path, crash_state_path, notify_watchdog_shutdown, read_crash_marker,
+    read_crash_state, receive_recovery_fds, register_fd_with_watchdog, run_watchdog,
+    unregister_fd_with_watchdog, write_crash_state, CrashState, WatchdogError,
+};
