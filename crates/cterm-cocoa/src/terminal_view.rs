@@ -784,7 +784,9 @@ impl TerminalView {
         let cwd = template.working_directory.clone();
 
         // Merge environment variables
-        let env: Vec<(String, String)> = template.env.iter()
+        let env: Vec<(String, String)> = template
+            .env
+            .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -805,7 +807,11 @@ impl TerminalView {
 
         match Pty::new(&pty_config) {
             Ok(pty) => {
-                log::info!("Spawned template shell: {} (template: {})", shell, template.name);
+                log::info!(
+                    "Spawned template shell: {} (template: {})",
+                    shell,
+                    template.name
+                );
 
                 // Start reading from PTY in background
                 let pty_fd = pty.raw_fd();

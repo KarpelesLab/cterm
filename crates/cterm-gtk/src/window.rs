@@ -1099,7 +1099,9 @@ impl CtermWindow {
                                     if has_ctrl && !has_alt {
                                         // Ctrl+key - convert to control character
                                         let ctrl_char = match c.to_ascii_lowercase() {
-                                            'a'..='z' => Some((c.to_ascii_lowercase() as u8 - b'a' + 1) as char),
+                                            'a'..='z' => Some(
+                                                (c.to_ascii_lowercase() as u8 - b'a' + 1) as char,
+                                            ),
                                             '[' | '3' => Some('\x1b'), // Escape
                                             '\\' | '4' => Some('\x1c'),
                                             ']' | '5' => Some('\x1d'),

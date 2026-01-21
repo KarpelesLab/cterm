@@ -192,11 +192,7 @@ pub fn recv_fds(
     if data_len > buf.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "Data length {} exceeds buffer size {}",
-                data_len,
-                buf.len()
-            ),
+            format!("Data length {} exceeds buffer size {}", data_len, buf.len()),
         ));
     }
 

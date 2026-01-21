@@ -165,7 +165,10 @@ impl TabState {
 
     /// Check if this tab is a unique tab (only one instance allowed)
     pub fn is_unique(&self) -> bool {
-        self.sticky_config.as_ref().map(|c| c.unique).unwrap_or(false)
+        self.sticky_config
+            .as_ref()
+            .map(|c| c.unique)
+            .unwrap_or(false)
     }
 
     /// Convert to session state for persistence
@@ -303,7 +306,9 @@ impl WindowState {
     /// Find tab by template name (for unique tabs)
     pub fn find_tab_by_template(&self, template_name: &str) -> Option<usize> {
         self.tabs.iter().position(|t| {
-            t.template_name().map(|n| n == template_name).unwrap_or(false)
+            t.template_name()
+                .map(|n| n == template_name)
+                .unwrap_or(false)
         })
     }
 

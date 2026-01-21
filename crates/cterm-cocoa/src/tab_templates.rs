@@ -9,9 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSControlTextEditingDelegate, NSLayoutAttribute, NSPopUpButton,
-    NSStackView, NSStackViewGravity, NSTextField, NSTextFieldDelegate,
-    NSUserInterfaceLayoutOrientation, NSWindow, NSWindowStyleMask,
+    NSButton, NSControlTextEditingDelegate, NSLayoutAttribute, NSPopUpButton, NSStackView,
+    NSStackViewGravity, NSTextField, NSTextFieldDelegate, NSUserInterfaceLayoutOrientation,
+    NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -107,9 +107,8 @@ impl TabTemplatesWindow {
     pub fn new(mtm: MainThreadMarker, templates: Vec<StickyTabConfig>) -> Retained<Self> {
         let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(500.0, 450.0));
 
-        let style_mask = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Resizable;
+        let style_mask =
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
 
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TabTemplatesWindowIvars {
@@ -172,7 +171,8 @@ impl TabTemplatesWindow {
         selector_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         selector_row.setSpacing(10.0);
 
-        let selector_label = unsafe { NSTextField::labelWithString(&NSString::from_str("Template:"), mtm) };
+        let selector_label =
+            unsafe { NSTextField::labelWithString(&NSString::from_str("Template:"), mtm) };
 
         let popup = unsafe { NSPopUpButton::new(mtm) };
         popup.removeAllItems();
@@ -185,18 +185,22 @@ impl TabTemplatesWindow {
         unsafe { popup.setTarget(Some(self)) };
         unsafe { popup.setAction(Some(sel!(templateSelected:))) };
 
-        let add_btn = unsafe { NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("+"),
-            Some(self),
-            Some(sel!(addTemplate:)),
-            mtm,
-        ) };
-        let remove_btn = unsafe { NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("-"),
-            Some(self),
-            Some(sel!(removeTemplate:)),
-            mtm,
-        ) };
+        let add_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("+"),
+                Some(self),
+                Some(sel!(addTemplate:)),
+                mtm,
+            )
+        };
+        let remove_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("-"),
+                Some(self),
+                Some(sel!(removeTemplate:)),
+                mtm,
+            )
+        };
 
         selector_row.addView_inGravity(&selector_label, NSStackViewGravity::Leading);
         selector_row.addView_inGravity(&popup, NSStackViewGravity::Leading);
@@ -243,30 +247,36 @@ impl TabTemplatesWindow {
         *self.ivars().theme_field.borrow_mut() = Some(theme_row.1);
 
         // Checkboxes
-        let unique_cb = unsafe { NSButton::checkboxWithTitle_target_action(
-            &NSString::from_str("Unique (only one instance allowed)"),
-            Some(self),
-            Some(sel!(checkboxChanged:)),
-            mtm,
-        ) };
+        let unique_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Unique (only one instance allowed)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
         main_stack.addView_inGravity(&unique_cb, NSStackViewGravity::Top);
         *self.ivars().unique_checkbox.borrow_mut() = Some(unique_cb);
 
-        let auto_start_cb = unsafe { NSButton::checkboxWithTitle_target_action(
-            &NSString::from_str("Auto-start on launch"),
-            Some(self),
-            Some(sel!(checkboxChanged:)),
-            mtm,
-        ) };
+        let auto_start_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Auto-start on launch"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
         main_stack.addView_inGravity(&auto_start_cb, NSStackViewGravity::Top);
         *self.ivars().auto_start_checkbox.borrow_mut() = Some(auto_start_cb);
 
-        let keep_open_cb = unsafe { NSButton::checkboxWithTitle_target_action(
-            &NSString::from_str("Keep tab open after exit"),
-            Some(self),
-            Some(sel!(checkboxChanged:)),
-            mtm,
-        ) };
+        let keep_open_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Keep tab open after exit"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
         main_stack.addView_inGravity(&keep_open_cb, NSStackViewGravity::Top);
         *self.ivars().keep_open_checkbox.borrow_mut() = Some(keep_open_cb);
 
@@ -275,18 +285,22 @@ impl TabTemplatesWindow {
         bottom_stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         bottom_stack.setSpacing(10.0);
 
-        let cancel_btn = unsafe { NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("Cancel"),
-            Some(self),
-            Some(sel!(cancelClose:)),
-            mtm,
-        ) };
-        let save_btn = unsafe { NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("Save"),
-            Some(self),
-            Some(sel!(saveAndClose:)),
-            mtm,
-        ) };
+        let cancel_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Cancel"),
+                Some(self),
+                Some(sel!(cancelClose:)),
+                mtm,
+            )
+        };
+        let save_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Save"),
+                Some(self),
+                Some(sel!(saveAndClose:)),
+                mtm,
+            )
+        };
         unsafe { save_btn.setBezelStyle(objc2_app_kit::NSBezelStyle::Rounded) };
         unsafe { save_btn.setKeyEquivalent(&NSString::from_str("\r")) }; // Enter key
 
@@ -298,7 +312,12 @@ impl TabTemplatesWindow {
         self.setContentView(Some(&main_stack));
     }
 
-    fn create_field_row(&self, mtm: MainThreadMarker, label: &str, field_width: f64) -> (Retained<NSStackView>, Retained<NSTextField>) {
+    fn create_field_row(
+        &self,
+        mtm: MainThreadMarker,
+        label: &str,
+        field_width: f64,
+    ) -> (Retained<NSStackView>, Retained<NSTextField>) {
         let stack = unsafe { NSStackView::new(mtm) };
         stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         stack.setSpacing(10.0);
@@ -331,13 +350,17 @@ impl TabTemplatesWindow {
                 field.setStringValue(&NSString::from_str(&template.name));
             }
             if let Some(field) = self.ivars().command_field.borrow().as_ref() {
-                field.setStringValue(&NSString::from_str(template.command.as_deref().unwrap_or("")));
+                field.setStringValue(&NSString::from_str(
+                    template.command.as_deref().unwrap_or(""),
+                ));
             }
             if let Some(field) = self.ivars().args_field.borrow().as_ref() {
                 field.setStringValue(&NSString::from_str(&template.args.join(" ")));
             }
             if let Some(field) = self.ivars().path_field.borrow().as_ref() {
-                let path_str = template.working_directory.as_ref()
+                let path_str = template
+                    .working_directory
+                    .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
                 field.setStringValue(&NSString::from_str(&path_str));
@@ -507,13 +530,19 @@ impl TabTemplatesWindow {
         if let Err(e) = save_sticky_tabs(&templates) {
             log::error!("Failed to save tab templates: {}", e);
         } else {
-            log::info!("Tab templates saved successfully ({} templates)", templates.len());
+            log::info!(
+                "Tab templates saved successfully ({} templates)",
+                templates.len()
+            );
         }
     }
 }
 
 /// Show the tab templates window
-pub fn show_tab_templates(mtm: MainThreadMarker, templates: Vec<StickyTabConfig>) -> Retained<TabTemplatesWindow> {
+pub fn show_tab_templates(
+    mtm: MainThreadMarker,
+    templates: Vec<StickyTabConfig>,
+) -> Retained<TabTemplatesWindow> {
     let window = TabTemplatesWindow::new(mtm, templates);
     window.makeKeyAndOrderFront(None);
     window

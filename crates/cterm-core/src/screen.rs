@@ -1105,21 +1105,13 @@ impl Screen {
                 let (start_col, end_col) = self.find_word_bounds(line, col);
                 let anchor = SelectionPoint::new(line, start_col);
                 let end = SelectionPoint::new(line, end_col);
-                self.selection = Some(Selection {
-                    anchor,
-                    end,
-                    mode,
-                });
+                self.selection = Some(Selection { anchor, end, mode });
             }
             SelectionMode::Line => {
                 // Select entire line (use large end column to select to end of line)
                 let anchor = SelectionPoint::new(line, 0);
                 let end = SelectionPoint::new(line, usize::MAX);
-                self.selection = Some(Selection {
-                    anchor,
-                    end,
-                    mode,
-                });
+                self.selection = Some(Selection { anchor, end, mode });
             }
         }
         self.dirty = true;
@@ -1213,11 +1205,7 @@ impl Screen {
         for line_idx in start.line..=end_line {
             let row = self.get_row_by_absolute_line(line_idx)?;
 
-            let start_col = if line_idx == start.line {
-                start.col
-            } else {
-                0
-            };
+            let start_col = if line_idx == start.line { start.col } else { 0 };
             let end_col = if line_idx == end.line {
                 end.col.min(row.len().saturating_sub(1))
             } else {

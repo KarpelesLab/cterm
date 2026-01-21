@@ -166,7 +166,8 @@ impl AppDelegate {
         }
 
         // Create a new tab from the template
-        let window = CtermWindow::from_template(mtm, &self.ivars().config, &self.ivars().theme, template);
+        let window =
+            CtermWindow::from_template(mtm, &self.ivars().config, &self.ivars().theme, template);
         self.ivars().windows.borrow_mut().push(window.clone());
         window.makeKeyAndOrderFront(None);
         log::info!("Created new tab from template: {}", template.name);

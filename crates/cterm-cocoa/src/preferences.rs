@@ -177,7 +177,8 @@ impl PreferencesWindow {
         spacer.setDrawsBackground(false);
         spacer.setStringValue(&NSString::from_str(""));
         unsafe {
-            let _: () = msg_send![&spacer, setContentHuggingPriority: 1.0_f32, forOrientation: 0i64];
+            let _: () =
+                msg_send![&spacer, setContentHuggingPriority: 1.0_f32, forOrientation: 0i64];
         }
         unsafe {
             button_stack.addArrangedSubview(&spacer);
@@ -232,7 +233,11 @@ impl PreferencesWindow {
         self.setContentView(Some(&main_stack));
     }
 
-    fn create_general_tab(&self, mtm: MainThreadMarker, config: &Config) -> Retained<NSTabViewItem> {
+    fn create_general_tab(
+        &self,
+        mtm: MainThreadMarker,
+        config: &Config,
+    ) -> Retained<NSTabViewItem> {
         let tab = NSTabViewItem::new();
         tab.setLabel(&NSString::from_str("General"));
 
@@ -262,15 +267,19 @@ impl PreferencesWindow {
         }
 
         // Confirm close with running processes
-        let confirm_checkbox =
-            self.create_checkbox(mtm, "Confirm close with running processes", config.general.confirm_close_with_running);
+        let confirm_checkbox = self.create_checkbox(
+            mtm,
+            "Confirm close with running processes",
+            config.general.confirm_close_with_running,
+        );
         *self.ivars().confirm_close_checkbox.borrow_mut() = Some(confirm_checkbox.clone());
         unsafe {
             stack.addArrangedSubview(&confirm_checkbox);
         }
 
         // Copy on select
-        let copy_checkbox = self.create_checkbox(mtm, "Copy on select", config.general.copy_on_select);
+        let copy_checkbox =
+            self.create_checkbox(mtm, "Copy on select", config.general.copy_on_select);
         *self.ivars().copy_on_select_checkbox.borrow_mut() = Some(copy_checkbox.clone());
         unsafe {
             stack.addArrangedSubview(&copy_checkbox);
@@ -310,7 +319,8 @@ impl PreferencesWindow {
             ("dracula", "Dracula"),
             ("nord", "Nord"),
         ];
-        let theme_row = self.create_label_popup_row(mtm, "Theme:", &themes, &config.appearance.theme);
+        let theme_row =
+            self.create_label_popup_row(mtm, "Theme:", &themes, &config.appearance.theme);
         *self.ivars().theme_popup.borrow_mut() = Some(theme_row.1.clone());
         unsafe {
             stack.addArrangedSubview(&theme_row.0);
@@ -324,8 +334,11 @@ impl PreferencesWindow {
         }
 
         // Font size
-        let size_row =
-            self.create_label_field_row(mtm, "Font size:", &config.appearance.font.size.to_string());
+        let size_row = self.create_label_field_row(
+            mtm,
+            "Font size:",
+            &config.appearance.font.size.to_string(),
+        );
         *self.ivars().font_size_field.borrow_mut() = Some(size_row.1.clone());
         unsafe {
             stack.addArrangedSubview(&size_row.0);
@@ -342,29 +355,35 @@ impl PreferencesWindow {
             CursorStyleConfig::Underline => "underline",
             CursorStyleConfig::Bar => "bar",
         };
-        let cursor_row = self.create_label_popup_row(mtm, "Cursor style:", &cursor_styles, cursor_id);
+        let cursor_row =
+            self.create_label_popup_row(mtm, "Cursor style:", &cursor_styles, cursor_id);
         *self.ivars().cursor_popup.borrow_mut() = Some(cursor_row.1.clone());
         unsafe {
             stack.addArrangedSubview(&cursor_row.0);
         }
 
         // Cursor blink
-        let blink_checkbox = self.create_checkbox(mtm, "Cursor blink", config.appearance.cursor_blink);
+        let blink_checkbox =
+            self.create_checkbox(mtm, "Cursor blink", config.appearance.cursor_blink);
         *self.ivars().cursor_blink_checkbox.borrow_mut() = Some(blink_checkbox.clone());
         unsafe {
             stack.addArrangedSubview(&blink_checkbox);
         }
 
         // Opacity slider
-        let opacity_row = self.create_label_slider_row(mtm, "Opacity:", config.appearance.opacity, 0.0, 1.0);
+        let opacity_row =
+            self.create_label_slider_row(mtm, "Opacity:", config.appearance.opacity, 0.0, 1.0);
         *self.ivars().opacity_slider.borrow_mut() = Some(opacity_row.1.clone());
         unsafe {
             stack.addArrangedSubview(&opacity_row.0);
         }
 
         // Bold is bright
-        let bold_checkbox =
-            self.create_checkbox(mtm, "Bold text uses bright colors", config.appearance.bold_is_bright);
+        let bold_checkbox = self.create_checkbox(
+            mtm,
+            "Bold text uses bright colors",
+            config.appearance.bold_is_bright,
+        );
         *self.ivars().bold_bright_checkbox.borrow_mut() = Some(bold_checkbox.clone());
         unsafe {
             stack.addArrangedSubview(&bold_checkbox);
@@ -435,8 +454,11 @@ impl PreferencesWindow {
         }
 
         // Show close button
-        let close_checkbox =
-            self.create_checkbox(mtm, "Show close button on tabs", config.tabs.show_close_button);
+        let close_checkbox = self.create_checkbox(
+            mtm,
+            "Show close button on tabs",
+            config.tabs.show_close_button,
+        );
         *self.ivars().show_close_checkbox.borrow_mut() = Some(close_checkbox.clone());
         unsafe {
             stack.addArrangedSubview(&close_checkbox);
@@ -562,7 +584,12 @@ impl PreferencesWindow {
         (row, slider)
     }
 
-    fn create_checkbox(&self, mtm: MainThreadMarker, title: &str, checked: bool) -> Retained<NSButton> {
+    fn create_checkbox(
+        &self,
+        mtm: MainThreadMarker,
+        title: &str,
+        checked: bool,
+    ) -> Retained<NSButton> {
         let checkbox = unsafe {
             let btn = NSButton::checkboxWithTitle_target_action(
                 &NSString::from_str(title),
@@ -685,7 +712,11 @@ impl PreferencesWindow {
 }
 
 /// Show the preferences window
-pub fn show_preferences(mtm: MainThreadMarker, config: &Config, on_save: impl Fn(Config) + 'static) {
+pub fn show_preferences(
+    mtm: MainThreadMarker,
+    config: &Config,
+    on_save: impl Fn(Config) + 'static,
+) {
     let window = PreferencesWindow::new(mtm, config, on_save);
     window.center();
     window.makeKeyAndOrderFront(None);

@@ -141,7 +141,12 @@ impl TabBar {
         self.addView_inGravity(&button, NSStackViewGravity::Leading);
 
         let count_after = self.views().len();
-        log::info!("Tab {} added - views after: {}, hidden: {}", id, count_after, self.isHidden());
+        log::info!(
+            "Tab {} added - views after: {}, hidden: {}",
+            id,
+            count_after,
+            self.isHidden()
+        );
     }
 
     /// Remove a tab
