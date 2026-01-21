@@ -84,11 +84,13 @@ define_class!(
         #[unsafe(method(saveAndClose:))]
         fn action_save_and_close(&self, _sender: Option<&AnyObject>) {
             self.save_templates();
+            self.clear_delegates();
             self.close();
         }
 
         #[unsafe(method(cancelClose:))]
         fn action_cancel(&self, _sender: Option<&AnyObject>) {
+            self.clear_delegates();
             self.close();
         }
 
@@ -534,6 +536,33 @@ impl TabTemplatesWindow {
                 "Tab templates saved successfully ({} templates)",
                 templates.len()
             );
+        }
+    }
+
+    /// Clear delegates to prevent use-after-free when window closes
+    fn clear_delegates(&self) {
+        // Clear text field delegates
+        if let Some(field) = self.ivars().name_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        if let Some(field) = self.ivars().command_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        if let Some(field) = self.ivars().args_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        if let Some(field) = self.ivars().path_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        if let Some(field) = self.ivars().color_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        if let Some(field) = self.ivars().theme_field.borrow().as_ref() {
+            unsafe { field.setDelegate(None) };
+        }
+        // Clear popup button target
+        if let Some(popup) = self.ivars().template_selector.borrow().as_ref() {
+            unsafe { popup.setTarget(None) };
         }
     }
 }
