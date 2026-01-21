@@ -196,6 +196,20 @@ pub fn run() {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Install signal handler for better crash debugging
+    #[cfg(unix)]
+    unsafe {
+        use std::io::Write;
+        extern "C" fn crash_handler(sig: libc::c_int) {
+            let _ = writeln!(std::io::stderr(), "\n=== CRASH: Signal {} ===", sig);
+            let bt = std::backtrace::Backtrace::force_capture();
+            let _ = writeln!(std::io::stderr(), "{}", bt);
+            std::process::abort();
+        }
+        libc::signal(libc::SIGSEGV, crash_handler as libc::sighandler_t);
+        libc::signal(libc::SIGBUS, crash_handler as libc::sighandler_t);
+    }
+
     log::info!("Starting cterm (native macOS)");
 
     // Check if we're in upgrade receiver mode

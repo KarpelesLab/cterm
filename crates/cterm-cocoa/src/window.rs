@@ -151,6 +151,9 @@ impl CtermWindow {
         // Set minimum size
         this.setMinSize(NSSize::new(400.0, 200.0));
 
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
+
         // Enable native macOS window tabbing
         this.setTabbingMode(NSWindowTabbingMode::Preferred);
 
@@ -218,6 +221,9 @@ impl CtermWindow {
 
         // Set minimum size
         this.setMinSize(NSSize::new(400.0, 200.0));
+
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
 
         // Enable native macOS window tabbing
         this.setTabbingMode(NSWindowTabbingMode::Preferred);
@@ -315,6 +321,9 @@ impl CtermWindow {
 
         // Set minimum size
         this.setMinSize(NSSize::new(400.0, 200.0));
+
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
 
         // Enable native macOS window tabbing
         this.setTabbingMode(NSWindowTabbingMode::Preferred);
