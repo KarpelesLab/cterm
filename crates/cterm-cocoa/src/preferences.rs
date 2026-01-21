@@ -122,6 +122,8 @@ impl PreferencesWindow {
         };
 
         this.setTitle(&NSString::from_str("Preferences"));
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
         this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
 
         // Create the tab view
