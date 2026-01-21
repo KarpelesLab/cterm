@@ -7,7 +7,7 @@
 //! 4. On crash, relaunches and passes the saved FDs to the new process
 
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -41,7 +41,8 @@ pub enum WatchdogMessage {
     UnregisterFd = 2,
     /// Graceful shutdown (no restart on exit)
     Shutdown = 3,
-    /// Heartbeat
+    /// Heartbeat (reserved for future use)
+    #[allow(dead_code)]
     Heartbeat = 4,
     /// Registration response (watchdog sends u64 ID back)
     RegisteredFd = 5,
@@ -267,11 +268,8 @@ fn monitor_child(
 
     loop {
         // Check if child has exited
-        match child.try_wait()? {
-            Some(status) => {
-                return Ok(status.code());
-            }
-            None => {}
+        if let Some(status) = child.try_wait()? {
+            return Ok(status.code());
         }
 
         // Use poll to check if data is available (with 50ms timeout)
