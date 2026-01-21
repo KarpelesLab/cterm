@@ -1255,4 +1255,52 @@ impl TerminalView {
 
         self.ivars().watchdog_fd_id.set(0);
     }
+
+    /// Get the watchdog FD ID (for crash state saving)
+    #[cfg(unix)]
+    pub fn watchdog_fd_id(&self) -> u64 {
+        self.ivars().watchdog_fd_id.get()
+    }
+
+    /// Restore terminal display state from saved crash state
+    #[cfg(unix)]
+    pub fn restore_display_state(&self, state: &TerminalUpgradeState) {
+        let mut terminal = self.ivars().terminal.lock();
+
+        // Restore scrollback and screen content
+        let screen_config = cterm_core::screen::ScreenConfig {
+            scrollback_lines: 10000, // Default, could get from config
+        };
+
+        let restored_screen = cterm_core::Screen::from_upgrade_state(
+            state.grid.clone(),
+            state.scrollback.clone(),
+            state.alternate_grid.clone(),
+            state.cursor.clone(),
+            state.saved_cursor.clone(),
+            state.alt_saved_cursor.clone(),
+            state.scroll_region,
+            state.style.clone(),
+            state.modes.clone(),
+            state.title.clone(),
+            state.scroll_offset,
+            state.tab_stops.clone(),
+            screen_config,
+        );
+
+        // Replace the terminal's screen with the restored one
+        terminal.restore_screen(restored_screen);
+
+        drop(terminal);
+
+        // Trigger a redraw to show the restored content
+        self.set_needs_display();
+
+        log::info!(
+            "Restored display state: {}x{}, {} scrollback lines",
+            state.cols,
+            state.rows,
+            state.scrollback.len()
+        );
+    }
 }

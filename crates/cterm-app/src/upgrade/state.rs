@@ -95,6 +95,9 @@ pub struct TabUpgradeState {
     pub child_pid: i32,
     /// Working directory of the shell
     pub cwd: Option<String>,
+    /// Watchdog FD ID (for crash recovery matching)
+    #[cfg(unix)]
+    pub watchdog_fd_id: u64,
 }
 
 impl TabUpgradeState {
@@ -109,6 +112,27 @@ impl TabUpgradeState {
             pty_fd_index,
             child_pid,
             cwd: None,
+            watchdog_fd_id: 0,
+        }
+    }
+
+    /// Create a new tab upgrade state with watchdog FD ID
+    #[cfg(unix)]
+    pub fn with_watchdog_fd_id(
+        id: u64,
+        pty_fd_index: usize,
+        child_pid: i32,
+        watchdog_fd_id: u64,
+    ) -> Self {
+        Self {
+            id,
+            title: String::new(),
+            color: None,
+            terminal: TerminalUpgradeState::default(),
+            pty_fd_index,
+            child_pid,
+            cwd: None,
+            watchdog_fd_id,
         }
     }
 }

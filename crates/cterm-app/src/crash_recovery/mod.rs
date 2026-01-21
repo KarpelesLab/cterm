@@ -13,8 +13,8 @@ mod watchdog;
 
 #[cfg(unix)]
 pub use state::{
-    crash_marker_path, crash_state_path, read_crash_marker, read_crash_state, write_crash_state,
-    CrashState,
+    clear_crash_state, crash_marker_path, crash_state_path, read_crash_marker, read_crash_state,
+    write_crash_state, CrashState,
 };
 #[cfg(unix)]
 pub use watchdog::{

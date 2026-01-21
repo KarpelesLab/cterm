@@ -127,6 +127,14 @@ impl Terminal {
         self.pty.as_mut()
     }
 
+    /// Restore the screen state (for crash recovery)
+    ///
+    /// Replaces the current screen with the provided one, preserving the PTY.
+    pub fn restore_screen(&mut self, screen: Screen) {
+        self.last_title = screen.title.clone();
+        self.screen = screen;
+    }
+
     /// Process input from the PTY and update the screen
     pub fn process(&mut self, data: &[u8]) -> Vec<TerminalEvent> {
         let mut events = Vec::new();

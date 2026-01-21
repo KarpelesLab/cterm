@@ -130,6 +130,29 @@ define_class!(
             if !recovery_fds.is_empty() {
                 log::info!("Recovering {} terminals from crash", recovery_fds.len());
 
+                // Try to read saved crash state for display restoration
+                let saved_state = cterm_app::read_crash_state().ok();
+
+                // Build a map from watchdog FD ID to saved terminal state
+                let state_map: std::collections::HashMap<u64, &cterm_app::upgrade::TabUpgradeState> =
+                    if let Some(ref state) = saved_state {
+                        state
+                            .state
+                            .windows
+                            .iter()
+                            .flat_map(|w| w.tabs.iter())
+                            .filter(|t| t.watchdog_fd_id > 0)
+                            .map(|t| (t.watchdog_fd_id, t))
+                            .collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+
+                log::info!(
+                    "Found {} saved terminal states to restore",
+                    state_map.len()
+                );
+
                 // Check for crash marker to show recovery message
                 if let Some((signal, pid)) = cterm_app::read_crash_marker() {
                     log::warn!(
@@ -159,6 +182,17 @@ define_class!(
                         recovered,
                     );
 
+                    // Try to restore display state if we have saved state for this FD
+                    if let Some(tab_state) = state_map.get(&recovered.id) {
+                        if let Some(terminal_view) = window.active_terminal() {
+                            terminal_view.restore_display_state(&tab_state.terminal);
+                            log::info!(
+                                "Restored display state for terminal (watchdog_fd_id={})",
+                                recovered.id
+                            );
+                        }
+                    }
+
                     self.ivars().windows.borrow_mut().push(window.clone());
 
                     if i == 0 {
@@ -176,6 +210,12 @@ define_class!(
                     }
                 }
 
+                // Clear crash state file after successful recovery
+                let _ = cterm_app::clear_crash_state();
+
+                // Start periodic state saving
+                self.start_state_save_timer(mtm);
+
                 return;
             }
 
@@ -187,6 +227,12 @@ define_class!(
 
             // Show the window
             window.makeKeyAndOrderFront(None);
+
+            // Start periodic state saving (only if running under watchdog)
+            #[cfg(unix)]
+            if get_watchdog_fd().is_some() {
+                self.start_state_save_timer(mtm);
+            }
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -197,6 +243,12 @@ define_class!(
 
     // Menu action handlers
     impl AppDelegate {
+        /// Timer callback for periodic state saving
+        #[unsafe(method(saveStateTimer:))]
+        fn save_state_timer(&self, _timer: Option<&objc2::runtime::AnyObject>) {
+            self.save_crash_state();
+        }
+
         #[unsafe(method(showPreferences:))]
         fn action_show_preferences(&self, _sender: Option<&objc2::runtime::AnyObject>) {
             let mtm = MainThreadMarker::from(self);
@@ -271,6 +323,100 @@ impl AppDelegate {
         self.ivars().windows.borrow_mut().push(window.clone());
         window.makeKeyAndOrderFront(None);
         log::info!("Created new tab from template: {}", template.name);
+    }
+
+    /// Save crash recovery state to disk
+    #[cfg(unix)]
+    pub fn save_crash_state(&self) {
+        use cterm_app::upgrade::{TabUpgradeState, UpgradeState, WindowUpgradeState};
+        use cterm_app::crash_recovery::{write_crash_state, CrashState};
+
+        let windows = self.ivars().windows.borrow();
+
+        // Build upgrade state from all windows
+        let mut upgrade_state = UpgradeState::new(env!("CARGO_PKG_VERSION"));
+
+        for window in windows.iter() {
+            let mut window_state = WindowUpgradeState::new();
+
+            // Get window frame
+            let frame = window.frame();
+            window_state.x = frame.origin.x as i32;
+            window_state.y = frame.origin.y as i32;
+            window_state.width = frame.size.width as i32;
+            window_state.height = frame.size.height as i32;
+
+            // Get terminal state
+            if let Some(terminal_view) = window.active_terminal() {
+                let watchdog_fd_id = terminal_view.watchdog_fd_id();
+
+                // Only save if registered with watchdog
+                if watchdog_fd_id > 0 {
+                    let terminal_state = terminal_view.export_state();
+
+                    let terminal = terminal_view.terminal();
+                    let term = terminal.lock();
+                    let child_pid = term.child_pid().unwrap_or(0);
+                    drop(term);
+
+                    let mut tab_state = TabUpgradeState::with_watchdog_fd_id(
+                        0, // Tab ID not used for crash recovery
+                        0, // FD index not used (we use watchdog_fd_id instead)
+                        child_pid,
+                        watchdog_fd_id,
+                    );
+                    tab_state.terminal = terminal_state;
+                    tab_state.title = window.title().to_string();
+
+                    window_state.tabs.push(tab_state);
+                }
+            }
+
+            if !window_state.tabs.is_empty() {
+                upgrade_state.windows.push(window_state);
+            }
+        }
+
+        // Only write if we have state to save
+        if upgrade_state.windows.is_empty() {
+            return;
+        }
+
+        let crash_state = CrashState::new(upgrade_state);
+
+        if let Err(e) = write_crash_state(&crash_state) {
+            log::error!("Failed to save crash state: {}", e);
+        } else {
+            log::trace!(
+                "Saved crash state: {} windows",
+                crash_state.state.windows.len()
+            );
+        }
+    }
+
+    /// Start the periodic state saving timer
+    #[cfg(unix)]
+    pub fn start_state_save_timer(&self, mtm: MainThreadMarker) {
+        use objc2::sel;
+        use objc2_foundation::NSTimer;
+
+        // Save state every 5 seconds
+        let interval = 5.0;
+
+        unsafe {
+            let timer = NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                interval,
+                self,
+                sel!(saveStateTimer:),
+                None,
+                true,
+            );
+
+            // Keep timer alive by adding to run loop (it's already added by scheduledTimer...)
+            let _ = timer;
+        }
+
+        log::info!("Started crash state save timer (interval: {}s)", interval);
     }
 }
 
