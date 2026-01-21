@@ -934,9 +934,15 @@ impl TerminalView {
             terminal.resize(cols, rows);
             drop(terminal);
 
-            // Also resize standalone pty if we have one (old code path)
+            // Also resize standalone pty if we have one (normal code path)
+            // Note: pty.resize takes (rows, cols) not (cols, rows)
             if let Some(ref mut pty) = *self.ivars().pty.borrow_mut() {
-                let _ = pty.resize(cols as u16, rows as u16);
+                match pty.resize(rows as u16, cols as u16) {
+                    Ok(()) => log::debug!("PTY resized to {}x{}", cols, rows),
+                    Err(e) => log::error!("Failed to resize PTY: {}", e),
+                }
+            } else {
+                log::debug!("No standalone PTY to resize");
             }
 
             log::debug!("Resized terminal to {}x{}", cols, rows);
