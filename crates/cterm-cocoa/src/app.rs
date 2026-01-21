@@ -78,13 +78,13 @@ pub fn get_watchdog_fd() -> Option<i32> {
 /// Thread-local storage for recovery FDs (used during crash recovery)
 #[cfg(unix)]
 thread_local! {
-    static RECOVERY_FDS: std::cell::RefCell<Vec<(u64, std::os::unix::io::RawFd)>> =
+    static RECOVERY_FDS: std::cell::RefCell<Vec<cterm_app::RecoveredFd>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Take recovery FDs (consumes them)
 #[cfg(unix)]
-pub fn take_recovery_fds() -> Vec<(u64, std::os::unix::io::RawFd)> {
+pub fn take_recovery_fds() -> Vec<cterm_app::RecoveredFd> {
     RECOVERY_FDS.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
@@ -120,8 +120,66 @@ define_class!(
         fn application_did_finish_launching(&self, _notification: &NSNotification) {
             log::info!("Application did finish launching");
 
-            // Create the main window
             let mtm = MainThreadMarker::from(self);
+
+            // Check for crash recovery
+            #[cfg(unix)]
+            let recovery_fds = take_recovery_fds();
+
+            #[cfg(unix)]
+            if !recovery_fds.is_empty() {
+                log::info!("Recovering {} terminals from crash", recovery_fds.len());
+
+                // Check for crash marker to show recovery message
+                if let Some((signal, pid)) = cterm_app::read_crash_marker() {
+                    log::warn!(
+                        "Recovered from crash: signal {}, previous PID {}",
+                        signal,
+                        pid
+                    );
+                    // Show crash recovery dialog
+                    let wants_report = crate::dialogs::show_crash_recovery(
+                        mtm,
+                        signal,
+                        pid as i32,
+                        recovery_fds.len(),
+                    );
+                    if wants_report {
+                        log::info!("User wants to report crash - TODO: implement crash reporting");
+                        // TODO: Implement actual crash reporting (e.g., open GitHub issue URL)
+                    }
+                }
+
+                // Create windows for recovered terminals
+                for (i, recovered) in recovery_fds.iter().enumerate() {
+                    let window = CtermWindow::from_recovered_fd(
+                        mtm,
+                        &self.ivars().config,
+                        &self.ivars().theme,
+                        recovered,
+                    );
+
+                    self.ivars().windows.borrow_mut().push(window.clone());
+
+                    if i == 0 {
+                        // Make first window key
+                        window.makeKeyAndOrderFront(None);
+                    } else {
+                        // Add additional windows as tabs
+                        if let Some(first_window) = self.ivars().windows.borrow().first() {
+                            first_window.addTabbedWindow_ordered(
+                                &window,
+                                objc2_app_kit::NSWindowOrderingMode::Above,
+                            );
+                        }
+                        window.orderFront(None);
+                    }
+                }
+
+                return;
+            }
+
+            // Normal startup - create the main window
             let window = CtermWindow::new(mtm, &self.ivars().config, &self.ivars().theme);
 
             // Store window reference

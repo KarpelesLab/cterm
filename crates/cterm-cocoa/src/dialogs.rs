@@ -99,6 +99,47 @@ pub fn show_about(mtm: MainThreadMarker) {
     alert.runModal();
 }
 
+/// Show crash recovery dialog
+/// Returns true if user wants to report the crash
+#[cfg(unix)]
+pub fn show_crash_recovery(
+    mtm: MainThreadMarker,
+    signal: i32,
+    previous_pid: i32,
+    recovered_count: usize,
+) -> bool {
+    let alert = NSAlert::new(mtm);
+    alert.setAlertStyle(NSAlertStyle::Warning);
+    alert.setMessageText(&NSString::from_str("cterm recovered from a crash"));
+
+    let signal_name = match signal {
+        11 => "SIGSEGV (segmentation fault)",
+        10 => "SIGBUS (bus error)",
+        6 => "SIGABRT (abort)",
+        4 => "SIGILL (illegal instruction)",
+        8 => "SIGFPE (floating point exception)",
+        _ => "unknown signal",
+    };
+
+    let info = format!(
+        "The previous cterm process (PID {}) crashed with {}.\n\n\
+        {} terminal session{} {} been recovered and should continue working normally.\n\n\
+        Would you like to report this crash to help improve cterm?",
+        previous_pid,
+        signal_name,
+        recovered_count,
+        if recovered_count == 1 { "" } else { "s" },
+        if recovered_count == 1 { "has" } else { "have" }
+    );
+    alert.setInformativeText(&NSString::from_str(&info));
+
+    alert.addButtonWithTitle(&NSString::from_str("Report Crash"));
+    alert.addButtonWithTitle(&NSString::from_str("Don't Report"));
+
+    let response = alert.runModal();
+    response == NSAlertFirstButtonReturn
+}
+
 /// Dialogs wrapper implementing cterm-ui traits
 pub struct Dialogs {
     mtm: MainThreadMarker,

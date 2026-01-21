@@ -239,6 +239,69 @@ impl CtermWindow {
         this
     }
 
+    /// Create a window from a recovered FD (for crash recovery)
+    #[cfg(unix)]
+    pub fn from_recovered_fd(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        recovered: &cterm_app::RecoveredFd,
+    ) -> Retained<Self> {
+        // Calculate initial window size for 80x24 terminal
+        let cell_width = config.appearance.font.size * 0.6;
+        let cell_height = config.appearance.font.size * 1.2;
+        let width = cell_width * 80.0;
+        let height = cell_height * 24.0;
+
+        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(width, height));
+
+        let style_mask = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable;
+
+        // Allocate and initialize
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(CtermWindowIvars {
+            config: config.clone(),
+            theme: theme.clone(),
+            shortcuts: ShortcutManager::from_config(&config.shortcuts),
+            active_terminal: RefCell::new(None),
+        });
+
+        let this: Retained<Self> = unsafe {
+            msg_send![
+                super(this),
+                initWithContentRect: content_rect,
+                styleMask: style_mask,
+                backing: 2u64,
+                defer: false
+            ]
+        };
+
+        // Set window title for recovered terminal
+        this.setTitle(&NSString::from_str("cterm (recovered)"));
+
+        // Set minimum size
+        this.setMinSize(NSSize::new(400.0, 200.0));
+
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
+
+        // Enable native macOS window tabbing
+        this.setTabbingMode(NSWindowTabbingMode::Preferred);
+
+        // Set self as delegate
+        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+
+        // Create the terminal view from the recovered FD
+        let terminal_view = TerminalView::from_recovered_fd(mtm, config, theme, recovered);
+        this.setContentView(Some(&terminal_view));
+        *this.ivars().active_terminal.borrow_mut() = Some(terminal_view);
+
+        this
+    }
+
     /// Create a new tab (using native macOS window tabbing)
     pub fn create_new_tab(&self) {
         let mtm = MainThreadMarker::from(self);

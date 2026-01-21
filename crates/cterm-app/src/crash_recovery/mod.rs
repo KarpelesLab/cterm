@@ -19,5 +19,5 @@ pub use state::{
 #[cfg(unix)]
 pub use watchdog::{
     notify_watchdog_shutdown, receive_recovery_fds, register_fd_with_watchdog, run_watchdog,
-    unregister_fd_with_watchdog, WatchdogError,
+    unregister_fd_with_watchdog, RecoveredFd, WatchdogError,
 };

@@ -140,9 +140,6 @@ pub fn run_watchdog(binary_path: &Path, args: &[String]) -> Result<i32, Watchdog
             }
         }
 
-        // Set socket to non-blocking for interleaved read/wait
-        watchdog_sock.set_nonblocking(true)?;
-
         // Monitor loop
         let exit_status = monitor_child(
             &mut child,
@@ -219,22 +216,42 @@ pub fn run_watchdog(binary_path: &Path, args: &[String]) -> Result<i32, Watchdog
 
 /// Send recovery FDs to the new process
 fn send_recovery_fds(sock: &UnixStream, pty_fds: &HashMap<u64, HeldFd>) -> io::Result<()> {
-    // Build list of (id, fd) pairs
+    // Build list of (id, fd, pid) tuples
     let fds: Vec<RawFd> = pty_fds.values().map(|h| h.fd).collect();
-    let ids: Vec<u64> = pty_fds.keys().copied().collect();
+    let entries: Vec<(u64, i32)> = pty_fds
+        .iter()
+        .map(|(&id, h)| (id, h.child_pid))
+        .collect();
 
-    // Send count first
+    // Send count first, then id + pid pairs
     let count = fds.len() as u32;
-    let mut header = Vec::with_capacity(4 + ids.len() * 8);
+    let mut header = Vec::with_capacity(4 + entries.len() * 12);
     header.extend_from_slice(&count.to_le_bytes());
-    for id in &ids {
+    for (id, pid) in &entries {
         header.extend_from_slice(&id.to_le_bytes());
+        header.extend_from_slice(&pid.to_le_bytes());
     }
 
     // Send header and FDs together
     fd_passing::send_fds(sock, &fds, &header)?;
 
     Ok(())
+}
+
+/// Check if socket has data available using poll
+fn socket_has_data(sock: &UnixStream, timeout_ms: i32) -> io::Result<bool> {
+    let mut pollfd = libc::pollfd {
+        fd: sock.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+
+    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(ret > 0 && (pollfd.revents & libc::POLLIN) != 0)
 }
 
 /// Monitor the child process and handle messages
@@ -248,6 +265,9 @@ fn monitor_child(
 ) -> Result<Option<i32>, WatchdogError> {
     let mut buf = [0u8; 1024];
 
+    // Keep socket in blocking mode for recv_fds to work properly
+    sock.set_nonblocking(false)?;
+
     loop {
         // Check if child has exited
         match child.try_wait()? {
@@ -257,49 +277,59 @@ fn monitor_child(
             None => {}
         }
 
-        // Try to read a message (non-blocking)
-        let sock_ref: &UnixStream = sock;
-        match Read::read(&mut &*sock_ref, &mut buf) {
-            Ok(0) => {
-                // Child closed socket, wait for exit
-                let status = child.wait()?;
-                return Ok(status.code());
+        // Use poll to check if data is available (with 50ms timeout)
+        match socket_has_data(sock, 50) {
+            Ok(false) => {
+                // No data available, continue loop to check child status
+                continue;
             }
-            Ok(n) => {
+            Ok(true) => {
+                // Data available, receive it
+            }
+            Err(e) => {
+                return Err(WatchdogError::Io(e));
+            }
+        }
+
+        // Receive message with potential FDs
+        // We must use recv_fds for ALL reads because SCM_RIGHTS ancillary data
+        // is attached to the message - a regular read() would discard any FDs.
+        match fd_passing::recv_fds(sock, 16, &mut buf) {
+            Ok((fds, data_len)) => {
+                if data_len == 0 && fds.is_empty() {
+                    // Child closed socket, wait for exit
+                    let status = child.wait()?;
+                    return Ok(status.code());
+                }
+
                 // Process message
-                if n >= 1 {
+                if data_len >= 1 {
                     match buf[0] {
                         1 => {
-                            // RegisterFd - receive FD via SCM_RIGHTS
-                            let mut fd_buf = [0u8; 64];
-                            match fd_passing::recv_fds(sock, 1, &mut fd_buf) {
-                                Ok((fds, _)) => {
-                                    if let Some(&fd) = fds.first() {
-                                        let id = *next_fd_id;
-                                        *next_fd_id += 1;
-                                        pty_fds.insert(id, HeldFd { fd, child_pid });
-                                        log::debug!(
-                                            "Watchdog: registered FD {} with id {} (total: {})",
-                                            fd,
-                                            id,
-                                            pty_fds.len()
-                                        );
+                            // RegisterFd - FD should be in the fds we just received
+                            if let Some(&fd) = fds.first() {
+                                let id = *next_fd_id;
+                                *next_fd_id += 1;
+                                pty_fds.insert(id, HeldFd { fd, child_pid });
+                                log::debug!(
+                                    "Watchdog: registered FD {} with id {} (total: {})",
+                                    fd,
+                                    id,
+                                    pty_fds.len()
+                                );
 
-                                        // Send ID back to child
-                                        let mut response = [0u8; 9];
-                                        response[0] = WatchdogMessage::RegisteredFd as u8;
-                                        response[1..9].copy_from_slice(&id.to_le_bytes());
-                                        let _ = Write::write(&mut &*sock, &response);
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("Watchdog: failed to receive FD: {}", e);
-                                }
+                                // Send ID back to child using same protocol
+                                let mut response = [0u8; 9];
+                                response[0] = WatchdogMessage::RegisteredFd as u8;
+                                response[1..9].copy_from_slice(&id.to_le_bytes());
+                                let _ = fd_passing::send_fds(sock, &[], &response);
+                            } else {
+                                log::error!("Watchdog: RegisterFd message but no FD received");
                             }
                         }
                         2 => {
                             // UnregisterFd - close the FD
-                            if n >= 9 {
+                            if data_len >= 9 {
                                 let id = u64::from_le_bytes(buf[1..9].try_into().unwrap());
                                 if let Some(held) = pty_fds.remove(&id) {
                                     unsafe { libc::close(held.fd) };
@@ -310,25 +340,43 @@ fn monitor_child(
                                     );
                                 }
                             }
+                            // Close any unexpected FDs that came with this message
+                            for &fd in &fds {
+                                unsafe { libc::close(fd) };
+                            }
                         }
                         3 => {
                             // Shutdown
                             *graceful_shutdown = true;
                             log::debug!("Watchdog: shutdown requested");
+                            // Close any unexpected FDs
+                            for &fd in &fds {
+                                unsafe { libc::close(fd) };
+                            }
                         }
                         4 => {
                             // Heartbeat
                             log::trace!("Watchdog: heartbeat from child");
+                            // Close any unexpected FDs
+                            for &fd in &fds {
+                                unsafe { libc::close(fd) };
+                            }
                         }
-                        _ => {}
+                        _ => {
+                            // Close any unexpected FDs
+                            for &fd in &fds {
+                                unsafe { libc::close(fd) };
+                            }
+                        }
                     }
                 }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // No data available, sleep briefly
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
             Err(e) => {
+                // On EOF (socket closed), wait for child exit
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    let status = child.wait()?;
+                    return Ok(status.code());
+                }
                 return Err(WatchdogError::Io(e));
             }
         }
@@ -339,16 +387,15 @@ fn monitor_child(
 pub fn register_fd_with_watchdog(watchdog_fd: RawFd, pty_fd: RawFd) -> io::Result<u64> {
     let sock = unsafe { UnixStream::from_raw_fd(watchdog_fd) };
 
-    // Send register message with FD
+    // Send register message with FD (using same protocol as upgrade)
     let msg = [WatchdogMessage::RegisterFd as u8];
     fd_passing::send_fds(&sock, &[pty_fd], &msg)?;
 
-    // Wait for response with ID
-    sock.set_nonblocking(false)?;
-    let mut response = [0u8; 9];
-    Read::read_exact(&mut &sock, &mut response)?;
+    // Wait for response with ID (using same protocol)
+    let mut response = [0u8; 64];
+    let (_, data_len) = fd_passing::recv_fds(&sock, 0, &mut response)?;
 
-    if response[0] != WatchdogMessage::RegisteredFd as u8 {
+    if data_len < 9 || response[0] != WatchdogMessage::RegisteredFd as u8 {
         // Don't close the socket - it's borrowed
         std::mem::forget(sock);
         return Err(io::Error::new(
@@ -359,8 +406,7 @@ pub fn register_fd_with_watchdog(watchdog_fd: RawFd, pty_fd: RawFd) -> io::Resul
 
     let id = u64::from_le_bytes(response[1..9].try_into().unwrap());
 
-    // Restore non-blocking and don't close the socket
-    sock.set_nonblocking(true)?;
+    // Don't close the socket - it's borrowed
     std::mem::forget(sock);
 
     Ok(id)
@@ -374,7 +420,8 @@ pub fn unregister_fd_with_watchdog(watchdog_fd: RawFd, fd_id: u64) -> io::Result
     msg[0] = WatchdogMessage::UnregisterFd as u8;
     msg[1..9].copy_from_slice(&fd_id.to_le_bytes());
 
-    Write::write_all(&mut &sock, &msg)?;
+    // Use send_fds with empty FDs to match the protocol
+    fd_passing::send_fds(&sock, &[], &msg)?;
 
     // Don't close the socket - it's borrowed
     std::mem::forget(sock);
@@ -386,7 +433,8 @@ pub fn unregister_fd_with_watchdog(watchdog_fd: RawFd, fd_id: u64) -> io::Result
 pub fn notify_watchdog_shutdown(watchdog_fd: RawFd) -> io::Result<()> {
     let sock = unsafe { UnixStream::from_raw_fd(watchdog_fd) };
 
-    Write::write_all(&mut &sock, &[WatchdogMessage::Shutdown as u8])?;
+    // Use send_fds with empty FDs to match the protocol
+    fd_passing::send_fds(&sock, &[], &[WatchdogMessage::Shutdown as u8])?;
 
     // Don't close the socket - it's borrowed
     std::mem::forget(sock);
@@ -394,8 +442,18 @@ pub fn notify_watchdog_shutdown(watchdog_fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+/// Recovery FD info
+pub struct RecoveredFd {
+    /// Watchdog-assigned ID
+    pub id: u64,
+    /// PTY master file descriptor
+    pub fd: RawFd,
+    /// Child process ID
+    pub child_pid: i32,
+}
+
 /// Receive recovery FDs from watchdog (called on crash recovery startup)
-pub fn receive_recovery_fds(watchdog_fd: RawFd) -> io::Result<Vec<(u64, RawFd)>> {
+pub fn receive_recovery_fds(watchdog_fd: RawFd) -> io::Result<Vec<RecoveredFd>> {
     let sock = unsafe { UnixStream::from_raw_fd(watchdog_fd) };
 
     // Receive the header and FDs
@@ -412,26 +470,32 @@ pub fn receive_recovery_fds(watchdog_fd: RawFd) -> io::Result<Vec<(u64, RawFd)>>
 
     let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
 
-    if count != fds.len() || data_len < 4 + count * 8 {
+    // Each entry is 8 bytes (id) + 4 bytes (pid) = 12 bytes
+    if count != fds.len() || data_len < 4 + count * 12 {
         std::mem::forget(sock);
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "FD count mismatch: expected {} FDs with {} bytes, got {} FDs with {} bytes",
                 count,
-                4 + count * 8,
+                4 + count * 12,
                 fds.len(),
                 data_len
             ),
         ));
     }
 
-    // Parse IDs
+    // Parse IDs and PIDs
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
-        let id_offset = 4 + i * 8;
-        let id = u64::from_le_bytes(buf[id_offset..id_offset + 8].try_into().unwrap());
-        result.push((id, fds[i]));
+        let offset = 4 + i * 12;
+        let id = u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap());
+        let child_pid = i32::from_le_bytes(buf[offset + 8..offset + 12].try_into().unwrap());
+        result.push(RecoveredFd {
+            id,
+            fd: fds[i],
+            child_pid,
+        });
     }
 
     log::info!("Received {} recovery FDs from watchdog", result.len());

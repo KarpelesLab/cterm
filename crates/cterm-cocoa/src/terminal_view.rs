@@ -623,6 +623,113 @@ impl TerminalView {
         this
     }
 
+    /// Create a terminal view from a recovered PTY FD (for crash recovery)
+    ///
+    /// This creates a fresh terminal screen but reuses the existing PTY connection.
+    #[cfg(unix)]
+    pub fn from_recovered_fd(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        recovered: &cterm_app::RecoveredFd,
+    ) -> Retained<Self> {
+        use cterm_core::screen::{Screen, ScreenConfig};
+        use std::io::Read;
+        use std::os::unix::io::RawFd;
+
+        // Create CoreGraphics renderer first to get cell dimensions
+        let font_name = &config.appearance.font.family;
+        let font_size = config.appearance.font.size;
+        let renderer = CGRenderer::new(mtm, font_name, font_size, theme);
+        let (cell_width, cell_height) = renderer.cell_size();
+
+        // Create a fresh screen (we don't preserve screen state in crash recovery)
+        let screen = Screen::new(80, 24, ScreenConfig::default());
+
+        // Create Terminal from the recovered FD
+        let terminal =
+            unsafe { Terminal::from_restored_fd(screen, recovered.fd, recovered.child_pid) };
+
+        // Get a reader for the PTY before wrapping terminal in Arc<Mutex>
+        let pty_reader = terminal.pty_reader();
+
+        // Wrap terminal in Arc<Mutex> for sharing
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        // Create shared state for PTY thread communication
+        let state = Arc::new(ViewState {
+            needs_redraw: AtomicBool::new(false),
+            pty_closed: AtomicBool::new(false),
+            view_invalid: AtomicBool::new(false),
+        });
+
+        // Initial frame
+        let frame = NSRect::new(NSPoint::ZERO, NSSize::new(800.0, 600.0));
+
+        // Allocate and initialize
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(TerminalViewIvars {
+            terminal: terminal.clone(),
+            pty: RefCell::new(None), // PTY is owned by Terminal
+            renderer: RefCell::new(Some(renderer)),
+            cell_width,
+            cell_height,
+            state: state.clone(),
+            is_selecting: Cell::new(false),
+            template_name: RefCell::new(None),
+            watchdog_fd_id: Cell::new(recovered.id), // Already registered with watchdog
+        });
+
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Store view pointer for thread-safe passing
+        let view_ptr = &*this as *const _ as usize;
+
+        // Start the PTY read loop if we have a reader
+        if let Some(mut reader) = pty_reader {
+            let terminal_clone = terminal.clone();
+            let state_clone = state.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => {
+                            log::info!("PTY closed (EOF) - recovered terminal");
+                            break;
+                        }
+                        Ok(n) => {
+                            let mut term = terminal_clone.lock();
+                            term.process(&buf[..n]);
+                            drop(term);
+                            state_clone.needs_redraw.store(true, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            if e.kind() != std::io::ErrorKind::Interrupted {
+                                log::error!("PTY read error (recovered): {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                state_clone.pty_closed.store(true, Ordering::Relaxed);
+            });
+        } else {
+            log::warn!("Recovered terminal has no PTY reader");
+        }
+
+        // Start the redraw check loop
+        this.schedule_redraw_check(view_ptr, state);
+
+        log::info!(
+            "Created recovered terminal (FD {}, PID {}, watchdog_id {})",
+            recovered.fd,
+            recovered.child_pid,
+            recovered.id
+        );
+
+        this
+    }
+
     /// Create a terminal view from a restored Terminal (for seamless upgrades)
     ///
     /// The Terminal should already have its PTY attached via `Terminal::from_restored()`.

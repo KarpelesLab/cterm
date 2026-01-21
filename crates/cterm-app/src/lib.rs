@@ -22,5 +22,5 @@ pub use upgrade::{UpdateError, UpdateInfo, Updater, UpgradeState};
 pub use crash_recovery::{
     crash_marker_path, crash_state_path, notify_watchdog_shutdown, read_crash_marker,
     read_crash_state, receive_recovery_fds, register_fd_with_watchdog, run_watchdog,
-    unregister_fd_with_watchdog, write_crash_state, CrashState, WatchdogError,
+    unregister_fd_with_watchdog, write_crash_state, CrashState, RecoveredFd, WatchdogError,
 };
