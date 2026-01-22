@@ -260,6 +260,10 @@ define_class!(
                 // Start periodic state saving
                 self.start_state_save_timer(mtm);
 
+                // Activate the app to bring window to front
+                #[allow(deprecated)]
+                NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+
                 return;
             }
 
@@ -271,6 +275,10 @@ define_class!(
 
             // Show the window
             window.makeKeyAndOrderFront(None);
+
+            // Activate the app to bring window to front
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
 
             // Start periodic state saving (only if running under watchdog)
             #[cfg(unix)]
@@ -665,10 +673,6 @@ pub fn run() {
     // Create the menu bar
     let menu_bar = menu::create_menu_bar(mtm);
     app.setMainMenu(Some(&menu_bar));
-
-    // Activate the app
-    #[allow(deprecated)]
-    app.activateIgnoringOtherApps(true);
 
     log::info!("Starting main run loop");
 
