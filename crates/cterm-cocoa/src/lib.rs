@@ -17,5 +17,6 @@ pub mod upgrade_receiver;
 pub mod window;
 
 mod keycode;
+mod mouse;
 
 pub use app::run;

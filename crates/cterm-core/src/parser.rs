@@ -774,9 +774,9 @@ impl ScreenPerformer<'_> {
             // Focus Events
             1004 => self.screen.modes.focus_events = set,
             // UTF-8 Mouse Mode
-            1005 => { /* UTF-8 encoding for mouse coordinates */ }
-            // SGR Mouse Mode
-            1006 => { /* SGR encoding for mouse coordinates */ }
+            1005 => { /* UTF-8 encoding for mouse coordinates - not implemented */ }
+            // SGR Mouse Mode (extended coordinates)
+            1006 => self.screen.modes.sgr_mouse = set,
             // Alternate Screen Buffer
             1047 => {
                 if set {

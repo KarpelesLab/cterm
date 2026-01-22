@@ -79,6 +79,8 @@ pub struct TerminalModes {
     pub show_cursor: bool,
     /// Mouse reporting mode
     pub mouse_mode: MouseMode,
+    /// SGR mouse encoding (mode 1006) - uses CSI < format instead of X10
+    pub sgr_mouse: bool,
     /// Bracketed paste mode
     pub bracketed_paste: bool,
     /// Focus events reporting

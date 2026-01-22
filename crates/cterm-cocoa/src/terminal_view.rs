@@ -20,11 +20,12 @@ use cterm_app::config::Config;
 use cterm_app::upgrade::{
     execute_upgrade, TabUpgradeState, TerminalUpgradeState, UpgradeState, WindowUpgradeState,
 };
-use cterm_core::screen::{ScreenConfig, SelectionMode};
+use cterm_core::screen::{MouseMode, ScreenConfig, SelectionMode};
 use cterm_core::{Pty, PtyConfig, PtySize, Terminal};
 use cterm_ui::theme::Theme;
 
 use crate::cg_renderer::CGRenderer;
+use crate::mouse::{self, MouseButton, MouseModifiers};
 use crate::{clipboard, keycode};
 
 /// Shared state between the view and PTY thread
@@ -276,9 +277,42 @@ define_class!(
             let location = self.convert_point_from_view(location_in_window, None);
 
             // Calculate cell position
-            let col = (location.x / self.ivars().cell_width).floor() as usize;
-            let row = (location.y / self.ivars().cell_height).floor() as usize;
+            let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+            let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
 
+            // Check if mouse reporting is active
+            let terminal = self.ivars().terminal.lock();
+            let mouse_mode = terminal.screen().modes.mouse_mode;
+            let sgr_mouse = terminal.screen().modes.sgr_mouse;
+            drop(terminal);
+
+            if mouse::should_capture_mouse(mouse_mode) {
+                // Send mouse event to application
+                let button = match event.buttonNumber() {
+                    0 => MouseButton::Left,
+                    1 => MouseButton::Right,
+                    2 => MouseButton::Middle,
+                    _ => MouseButton::Left,
+                };
+                let modifiers = self.get_mouse_modifiers(event);
+
+                if let Some(seq) = mouse::encode_mouse_event(
+                    mouse_mode,
+                    sgr_mouse,
+                    button,
+                    col,
+                    row,
+                    modifiers,
+                    false,
+                ) {
+                    self.write_to_pty(&seq);
+                }
+                // Store that we're in a mouse reporting drag
+                self.ivars().is_selecting.set(true);
+                return;
+            }
+
+            // Normal selection mode
             // Determine selection mode based on click count
             let click_count = event.clickCount();
             let mode = match click_count {
@@ -300,14 +334,42 @@ define_class!(
         }
 
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, _event: &NSEvent) {
+        fn mouse_up(&self, event: &NSEvent) {
             if !self.ivars().is_selecting.get() {
                 return;
             }
 
             self.ivars().is_selecting.set(false);
 
-            // Check if selection is empty and clear it, or copy to clipboard
+            // Check if mouse reporting is active
+            let terminal = self.ivars().terminal.lock();
+            let mouse_mode = terminal.screen().modes.mouse_mode;
+            let sgr_mouse = terminal.screen().modes.sgr_mouse;
+            drop(terminal);
+
+            if mouse::should_capture_mouse(mouse_mode) {
+                // Send mouse release event to application
+                let location_in_window = event.locationInWindow();
+                let location = self.convert_point_from_view(location_in_window, None);
+                let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+                let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+                let modifiers = self.get_mouse_modifiers(event);
+
+                if let Some(seq) = mouse::encode_mouse_event(
+                    mouse_mode,
+                    sgr_mouse,
+                    MouseButton::Release,
+                    col,
+                    row,
+                    modifiers,
+                    false,
+                ) {
+                    self.write_to_pty(&seq);
+                }
+                return;
+            }
+
+            // Normal selection mode - check if selection is empty and clear it, or copy to clipboard
             let terminal = self.ivars().terminal.lock();
             if let Some(selection) = &terminal.screen().selection {
                 if selection.anchor == selection.end {
@@ -341,7 +403,37 @@ define_class!(
             let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
             let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
 
-            // Extend selection
+            // Check if mouse reporting is active
+            let terminal = self.ivars().terminal.lock();
+            let mouse_mode = terminal.screen().modes.mouse_mode;
+            let sgr_mouse = terminal.screen().modes.sgr_mouse;
+            drop(terminal);
+
+            if mouse::should_capture_mouse(mouse_mode) {
+                // Send drag event to application (ButtonEvent or AnyEvent mode)
+                let button = match event.buttonNumber() {
+                    0 => MouseButton::Left,
+                    1 => MouseButton::Right,
+                    2 => MouseButton::Middle,
+                    _ => MouseButton::Left,
+                };
+                let modifiers = self.get_mouse_modifiers(event);
+
+                if let Some(seq) = mouse::encode_mouse_event(
+                    mouse_mode,
+                    sgr_mouse,
+                    button,
+                    col,
+                    row,
+                    modifiers,
+                    true, // is_drag
+                ) {
+                    self.write_to_pty(&seq);
+                }
+                return;
+            }
+
+            // Normal selection mode - extend selection
             let mut terminal = self.ivars().terminal.lock();
             let line = terminal.screen().visible_row_to_absolute_line(row);
             terminal.screen_mut().extend_selection(line, col);
@@ -355,7 +447,47 @@ define_class!(
             let delta_y = event.scrollingDeltaY();
             log::trace!("Scroll wheel delta: {}", delta_y);
 
-            // Reduce scroll speed by half
+            // Check if mouse reporting is active
+            let terminal = self.ivars().terminal.lock();
+            let mouse_mode = terminal.screen().modes.mouse_mode;
+            let sgr_mouse = terminal.screen().modes.sgr_mouse;
+            let in_alternate_screen = terminal.screen().modes.alternate_screen;
+            drop(terminal);
+
+            // If mouse reporting is active (and we're in alternate screen like vim/less),
+            // send scroll events to the application
+            if mouse::should_capture_mouse(mouse_mode) && in_alternate_screen {
+                let location_in_window = event.locationInWindow();
+                let location = self.convert_point_from_view(location_in_window, None);
+                let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+                let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+                let modifiers = self.get_mouse_modifiers(event);
+
+                // Send multiple scroll events based on delta
+                let scroll_count = (delta_y.abs() / 2.0).max(1.0) as usize;
+                let button = if delta_y > 0.0 {
+                    MouseButton::WheelUp
+                } else {
+                    MouseButton::WheelDown
+                };
+
+                for _ in 0..scroll_count {
+                    if let Some(seq) = mouse::encode_mouse_event(
+                        mouse_mode,
+                        sgr_mouse,
+                        button,
+                        col,
+                        row,
+                        modifiers,
+                        false,
+                    ) {
+                        self.write_to_pty(&seq);
+                    }
+                }
+                return;
+            }
+
+            // Normal scrollback mode
             let scroll_lines = (delta_y.abs() / 2.0) as usize;
             if scroll_lines == 0 {
                 return;
@@ -1402,6 +1534,18 @@ impl TerminalView {
     /// Convert point from window coordinates to view coordinates
     fn convert_point_from_view(&self, point: NSPoint, view: Option<&NSView>) -> NSPoint {
         unsafe { msg_send![self, convertPoint: point, fromView: view] }
+    }
+
+    /// Get mouse modifiers from NSEvent
+    fn get_mouse_modifiers(&self, event: &NSEvent) -> MouseModifiers {
+        use objc2_app_kit::NSEventModifierFlags;
+
+        let flags = event.modifierFlags();
+        MouseModifiers {
+            shift: flags.contains(NSEventModifierFlags::Shift),
+            alt: flags.contains(NSEventModifierFlags::Option),
+            ctrl: flags.contains(NSEventModifierFlags::Control),
+        }
     }
 
     /// Copy current selection to clipboard
