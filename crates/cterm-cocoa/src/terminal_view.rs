@@ -2083,10 +2083,7 @@ impl TerminalView {
                     &empty_dict,
                 ) {
                     pasteboard.clearContents();
-                    pasteboard.setData_forType(
-                        Some(&*png_data),
-                        &NSString::from_str("public.png"),
-                    );
+                    pasteboard.setData_forType(Some(&*png_data), &NSString::from_str("public.png"));
                     log::debug!("Copied image to pasteboard");
                 }
             }
@@ -2112,7 +2109,12 @@ impl TerminalView {
         let file = std::fs::File::create(path)?;
         let encoder = image::codecs::png::PngEncoder::new(file);
         encoder
-            .write_image(&img, width as u32, height as u32, image::ExtendedColorType::Rgba8)
+            .write_image(
+                &img,
+                width as u32,
+                height as u32,
+                image::ExtendedColorType::Rgba8,
+            )
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         Ok(())

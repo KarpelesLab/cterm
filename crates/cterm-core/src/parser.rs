@@ -11,13 +11,13 @@ use vte::Params;
 
 use crate::cell::{CellAttrs, Hyperlink};
 use crate::color::{AnsiColor, Color, Rgb};
+use crate::drcs::DecdldDecoder;
+use crate::image_decode::decode_image;
+use crate::iterm2::{Iterm2Dimension, Iterm2FileParams};
 use crate::screen::{
     ClearMode, ClipboardOperation, ClipboardSelection, CursorStyle, LineClearMode, MouseMode,
     Screen,
 };
-use crate::drcs::DecdldDecoder;
-use crate::image_decode::decode_image;
-use crate::iterm2::{Iterm2Dimension, Iterm2FileParams};
 use crate::sixel::{SixelDecoder, SixelImage};
 use crate::streaming_file::StreamingFileReceiver;
 
@@ -32,9 +32,7 @@ enum DcsState {
         start_row: usize,
     },
     /// DECDLD (soft font download) in progress
-    Decdld {
-        decoder: DecdldDecoder,
-    },
+    Decdld { decoder: DecdldDecoder },
 }
 
 /// State for intercepting OSC 1337 File transfers before VTE buffers them
@@ -437,7 +435,9 @@ impl vte::Perform for ScreenPerformer<'_> {
     fn put(&mut self, byte: u8) {
         // DCS data - feed to the appropriate decoder
         match self.dcs_state {
-            DcsState::Sixel { ref mut decoder, .. } => {
+            DcsState::Sixel {
+                ref mut decoder, ..
+            } => {
                 decoder.put(byte);
             }
             DcsState::Decdld { ref mut decoder } => {
@@ -481,8 +481,13 @@ impl vte::Perform for ScreenPerformer<'_> {
                     let cols_spanned = self.screen.image_cols_for_width(image.width);
 
                     // Store the image in the screen (this also clears grid cells underneath)
-                    self.screen
-                        .add_image_with_size(img_col, img_row, cols_spanned, rows_spanned, image);
+                    self.screen.add_image_with_size(
+                        img_col,
+                        img_row,
+                        cols_spanned,
+                        rows_spanned,
+                        image,
+                    );
 
                     // Handle cursor positioning based on DECSDM mode
                     if self.screen.modes.sixel_scrolling {
@@ -1108,9 +1113,7 @@ impl ScreenPerformer<'_> {
 
             // If only width or height specified, calculate the other
             match (&params.width, &params.height) {
-                (Iterm2Dimension::Auto, Iterm2Dimension::Auto) => {
-                    (decoded.width, decoded.height)
-                }
+                (Iterm2Dimension::Auto, Iterm2Dimension::Auto) => (decoded.width, decoded.height),
                 (Iterm2Dimension::Auto, _) => {
                     let w = (target_height as f64 * aspect_ratio).round() as usize;
                     (w, target_height)

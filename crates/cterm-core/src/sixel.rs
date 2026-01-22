@@ -98,15 +98,15 @@ impl SixelDecoder {
         let mut palette = [[0, 0, 0, 255]; 256];
 
         // VT340 default 16 colors
-        palette[0] = [0, 0, 0, 255];       // Black
-        palette[1] = [51, 51, 204, 255];   // Blue
-        palette[2] = [204, 51, 51, 255];   // Red
-        palette[3] = [51, 204, 51, 255];   // Green
-        palette[4] = [204, 51, 204, 255];  // Magenta
-        palette[5] = [51, 204, 204, 255];  // Cyan
-        palette[6] = [204, 204, 51, 255];  // Yellow
+        palette[0] = [0, 0, 0, 255]; // Black
+        palette[1] = [51, 51, 204, 255]; // Blue
+        palette[2] = [204, 51, 51, 255]; // Red
+        palette[3] = [51, 204, 51, 255]; // Green
+        palette[4] = [204, 51, 204, 255]; // Magenta
+        palette[5] = [51, 204, 204, 255]; // Cyan
+        palette[6] = [204, 204, 51, 255]; // Yellow
         palette[7] = [204, 204, 204, 255]; // White
-        palette[8] = [51, 51, 51, 255];    // Bright Black (Gray)
+        palette[8] = [51, 51, 51, 255]; // Bright Black (Gray)
         palette[9] = [102, 102, 255, 255]; // Bright Blue
         palette[10] = [255, 102, 102, 255]; // Bright Red
         palette[11] = [102, 255, 102, 255]; // Bright Green
@@ -171,7 +171,10 @@ impl SixelDecoder {
     fn put_repeat(&mut self, byte: u8) {
         match byte {
             b'0'..=b'9' => {
-                self.accum = self.accum.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                self.accum = self
+                    .accum
+                    .saturating_mul(10)
+                    .saturating_add((byte - b'0') as usize);
             }
             // Sixel data ends repeat mode
             63..=126 => {
@@ -192,7 +195,10 @@ impl SixelDecoder {
     fn put_color(&mut self, byte: u8) {
         match byte {
             b'0'..=b'9' => {
-                self.accum = self.accum.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                self.accum = self
+                    .accum
+                    .saturating_mul(10)
+                    .saturating_add((byte - b'0') as usize);
             }
             b';' => {
                 // Store accumulated value and switch to color definition mode
@@ -225,7 +231,10 @@ impl SixelDecoder {
     fn put_color_def(&mut self, byte: u8) {
         match byte {
             b'0'..=b'9' => {
-                self.accum = self.accum.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                self.accum = self
+                    .accum
+                    .saturating_mul(10)
+                    .saturating_add((byte - b'0') as usize);
             }
             b';' => {
                 if self.color_param_idx < 5 {
@@ -517,7 +526,7 @@ mod tests {
         // First pixel should be the defined color
         assert_eq!(image.data[0], 255); // R (100% = 255)
         assert_eq!(image.data[1], 127); // G (50% ≈ 127)
-        assert_eq!(image.data[2], 0);   // B (0% = 0)
+        assert_eq!(image.data[2], 0); // B (0% = 0)
     }
 
     #[test]

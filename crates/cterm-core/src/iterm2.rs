@@ -120,8 +120,7 @@ impl Iterm2FileParams {
                 match key {
                     "name" => {
                         // Name is base64 encoded
-                        if let Ok(decoded) =
-                            base64::engine::general_purpose::STANDARD.decode(value)
+                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(value)
                         {
                             if let Ok(s) = String::from_utf8(decoded) {
                                 params.name = Some(s);
@@ -162,9 +161,15 @@ mod tests {
     fn test_dimension_parse() {
         assert_eq!(Iterm2Dimension::parse("auto"), Iterm2Dimension::Auto);
         assert_eq!(Iterm2Dimension::parse(""), Iterm2Dimension::Auto);
-        assert_eq!(Iterm2Dimension::parse("100px"), Iterm2Dimension::Pixels(100));
+        assert_eq!(
+            Iterm2Dimension::parse("100px"),
+            Iterm2Dimension::Pixels(100)
+        );
         assert_eq!(Iterm2Dimension::parse("10"), Iterm2Dimension::Cells(10));
-        assert_eq!(Iterm2Dimension::parse("50%"), Iterm2Dimension::Percent(50.0));
+        assert_eq!(
+            Iterm2Dimension::parse("50%"),
+            Iterm2Dimension::Percent(50.0)
+        );
     }
 
     #[test]

@@ -201,18 +201,16 @@ impl StreamingFileReceiver {
                 buffer.extend_from_slice(data);
                 true
             }
-            StorageState::File { writer, size, .. } => {
-                match writer.write_all(data) {
-                    Ok(()) => {
-                        *size += data.len();
-                        true
-                    }
-                    Err(e) => {
-                        self.error = Some(format!("Failed to write to temp file: {}", e));
-                        false
-                    }
+            StorageState::File { writer, size, .. } => match writer.write_all(data) {
+                Ok(()) => {
+                    *size += data.len();
+                    true
                 }
-            }
+                Err(e) => {
+                    self.error = Some(format!("Failed to write to temp file: {}", e));
+                    false
+                }
+            },
         }
     }
 
@@ -269,7 +267,11 @@ impl StreamingFileReceiver {
 
         let data = match self.storage {
             StorageState::Memory(buffer) => StreamingFileData::Memory(buffer),
-            StorageState::File { path, mut writer, size } => {
+            StorageState::File {
+                path,
+                mut writer,
+                size,
+            } => {
                 // Flush the writer
                 if let Err(e) = writer.flush() {
                     return Err(format!("Failed to flush temp file: {}", e));

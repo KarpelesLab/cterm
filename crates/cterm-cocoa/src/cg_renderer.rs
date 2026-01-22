@@ -12,8 +12,8 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
 use cterm_core::drcs::DrcsGlyph;
-use cterm_core::TerminalImage;
 use cterm_core::Terminal;
+use cterm_core::TerminalImage;
 use cterm_ui::theme::Theme;
 
 /// CoreGraphics renderer for terminal display
@@ -256,15 +256,15 @@ impl CGRenderer {
             let cg_image = CGImageCreate(
                 image.pixel_width,
                 image.pixel_height,
-                8,                          // bits per component
-                32,                         // bits per pixel
-                image.pixel_width * 4,      // bytes per row
+                8,                     // bits per component
+                32,                    // bits per pixel
+                image.pixel_width * 4, // bytes per row
                 cg_color_space,
                 K_CG_IMAGE_ALPHA_LAST,
                 provider,
-                std::ptr::null(),           // no decode array
-                true,                       // interpolate
-                0,                          // rendering intent (default)
+                std::ptr::null(), // no decode array
+                true,             // interpolate
+                0,                // rendering intent (default)
             );
 
             CGDataProviderRelease(provider);

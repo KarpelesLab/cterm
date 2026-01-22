@@ -138,7 +138,11 @@ mod tests {
         ).unwrap();
 
         let result = decode_image(&png_data);
-        assert!(result.is_ok(), "Failed to decode minimal PNG: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to decode minimal PNG: {:?}",
+            result.err()
+        );
 
         let img = result.unwrap();
         assert_eq!(img.width, 1);

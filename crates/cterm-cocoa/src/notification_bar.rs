@@ -287,8 +287,11 @@ impl NotificationBar {
             let objects: [&objc2::runtime::AnyObject; 1] = [&*white];
             let attrs = NSDictionary::from_slices(&keys, &objects);
 
-            let attr_title =
-                NSAttributedString::initWithString_attributes(mtm.alloc(), &title_str, Some(&attrs));
+            let attr_title = NSAttributedString::initWithString_attributes(
+                mtm.alloc(),
+                &title_str,
+                Some(&attrs),
+            );
 
             button.setAttributedTitle(&attr_title);
             button.setTarget(None);

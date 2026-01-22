@@ -160,8 +160,8 @@ impl DecdldDecoder {
         // Determine cell dimensions
         // Pcmw: 0 = default (10 for 80-col, 6 for 132-col), 2-4 = VT200 compat, 5-10 = VT510
         let cell_width = match pcmw {
-            0 => 10,      // Default
-            2 => 5,       // VT200 compatibility (doubled height)
+            0 => 10, // Default
+            2 => 5,  // VT200 compatibility (doubled height)
             3 => 6,
             4 => 7,
             w @ 5..=10 => w as usize,
@@ -400,7 +400,7 @@ mod tests {
         // First sixel row (y=0-5)
         decoder.put(b'~');
         decoder.put(b'/'); // Row separator
-        // Second sixel row (y=6-11)
+                           // Second sixel row (y=6-11)
         decoder.put(b'~');
 
         let font = decoder.finish().unwrap();

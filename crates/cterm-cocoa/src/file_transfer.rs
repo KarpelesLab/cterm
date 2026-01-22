@@ -12,10 +12,7 @@ pub enum FileData {
     /// Data is in memory
     Memory(Vec<u8>),
     /// Data is in a temp file (for large streaming transfers)
-    TempFile {
-        path: PathBuf,
-        size: usize,
-    },
+    TempFile { path: PathBuf, size: usize },
 }
 
 impl FileData {

@@ -23,16 +23,16 @@ pub mod term;
 
 pub use cell::{Cell, CellAttrs};
 pub use color::{AnsiColor, Color, Rgb};
+pub use drcs::{DecdldDecoder, DrcsFont, DrcsGlyph};
 pub use grid::Grid;
+pub use image_decode::{decode_image, DecodedImage, ImageDecodeError};
+pub use iterm2::{Iterm2Dimension, Iterm2FileParams};
 pub use parser::Parser;
 pub use pty::{Pty, PtyConfig, PtyError, PtySize};
 pub use screen::{
     ClipboardOperation, ClipboardSelection, ColorQuery, FileTransferOperation, Screen,
     SearchResult, Selection, SelectionMode, SelectionPoint, TerminalImage,
 };
-pub use image_decode::{decode_image, DecodedImage, ImageDecodeError};
-pub use iterm2::{Iterm2Dimension, Iterm2FileParams};
 pub use sixel::{SixelDecoder, SixelImage};
 pub use streaming_file::{StreamingFileData, StreamingFileReceiver, StreamingFileResult};
-pub use drcs::{DecdldDecoder, DrcsFont, DrcsGlyph};
 pub use term::Terminal;

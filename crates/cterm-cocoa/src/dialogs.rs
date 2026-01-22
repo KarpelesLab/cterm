@@ -175,10 +175,9 @@ pub fn show_save_panel(
     let response = panel.runModal();
 
     if response == NSModalResponseOK {
-        panel.URL().and_then(|url| {
-            url.path()
-                .map(|path| PathBuf::from(path.to_string()))
-        })
+        panel
+            .URL()
+            .and_then(|url| url.path().map(|path| PathBuf::from(path.to_string())))
     } else {
         None
     }
