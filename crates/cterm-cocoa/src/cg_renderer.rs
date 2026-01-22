@@ -261,4 +261,67 @@ impl CGRenderer {
     pub fn set_theme(&mut self, theme: &Theme) {
         self.theme = theme.clone();
     }
+
+    /// Render IME marked text (composition text) at cursor position
+    pub fn render_marked_text(&self, text: &str, cursor_row: usize, cursor_col: usize) {
+        if text.is_empty() {
+            return;
+        }
+
+        let x = cursor_col as f64 * self.cell_width;
+        let y = cursor_row as f64 * self.cell_height;
+
+        // Calculate the width of the marked text
+        let char_count: usize = text.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        let text_width = char_count as f64 * self.cell_width;
+
+        // Draw background for marked text (slightly different from regular background)
+        let bg_rect = NSRect::new(
+            NSPoint::new(x, y),
+            NSSize::new(text_width, self.cell_height),
+        );
+        unsafe {
+            // Use a light yellow background for marked text
+            let bg_color = Self::ns_color_alpha(255, 255, 200, 0.9);
+            let _: () = msg_send![&*bg_color, setFill];
+            let _: () = msg_send![class!(NSBezierPath), fillRect: bg_rect];
+        }
+
+        // Draw the marked text
+        let ns_text = NSString::from_str(text);
+        unsafe {
+            // Use dark text color for marked text
+            let text_color = Self::ns_color(0, 0, 0);
+
+            let font_key = NSString::from_str("NSFont");
+            let color_key = NSString::from_str("NSColor");
+
+            let keys: [&AnyObject; 2] = [
+                std::mem::transmute::<&NSString, &AnyObject>(&font_key),
+                std::mem::transmute::<&NSString, &AnyObject>(&color_key),
+            ];
+            let values: [&AnyObject; 2] = [&*self.font, &*text_color];
+
+            let dict: Retained<AnyObject> = msg_send![
+                class!(NSDictionary),
+                dictionaryWithObjects: values.as_ptr(),
+                forKeys: keys.as_ptr(),
+                count: 2usize
+            ];
+
+            let point = NSPoint::new(x, y);
+            let _: () = msg_send![&*ns_text, drawAtPoint: point, withAttributes: &*dict];
+        }
+
+        // Draw underline to indicate composition
+        let underline_rect = NSRect::new(
+            NSPoint::new(x, y + self.cell_height - 2.0),
+            NSSize::new(text_width, 2.0),
+        );
+        unsafe {
+            let underline_color = Self::ns_color(0, 100, 200);
+            let _: () = msg_send![&*underline_color, setFill];
+            let _: () = msg_send![class!(NSBezierPath), fillRect: underline_rect];
+        }
+    }
 }

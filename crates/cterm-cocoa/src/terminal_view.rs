@@ -7,9 +7,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
-use objc2_app_kit::{NSEvent, NSView};
-use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_app_kit::{NSEvent, NSTextInputClient, NSView};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSAttributedString, NSObjectProtocol, NSPoint, NSRange, NSRect,
+    NSSize, NSString,
+};
 use parking_lot::Mutex;
 
 use cterm_app::config::Config;
@@ -47,6 +51,8 @@ pub struct TerminalViewIvars {
     /// Watchdog FD ID (for crash recovery unregistration)
     #[cfg(unix)]
     watchdog_fd_id: Cell<u64>,
+    /// Marked text for IME input (Japanese, Chinese, etc.)
+    marked_text: RefCell<String>,
 }
 
 define_class!(
@@ -116,6 +122,13 @@ define_class!(
             if let Some(ref renderer) = *self.ivars().renderer.borrow() {
                 let terminal = self.ivars().terminal.lock();
                 renderer.render(&terminal, dirty_rect);
+
+                // Render IME marked text if present
+                let marked_text = self.ivars().marked_text.borrow();
+                if !marked_text.is_empty() {
+                    let cursor = &terminal.screen().cursor;
+                    renderer.render_marked_text(&marked_text, cursor.row, cursor.col);
+                }
             }
         }
 
@@ -144,12 +157,26 @@ define_class!(
         fn key_down(&self, event: &NSEvent) {
             use cterm_core::term::Key;
 
+            log::debug!("keyDown: keyCode={}, modifiers={:?}", event.keyCode(), event.modifierFlags());
+
             let modifiers = keycode::modifiers_from_event(event);
 
             // Let Command+key combinations pass through to the menu system
             // Command is never part of terminal sequences
             if modifiers.contains(cterm_ui::events::Modifiers::SUPER) {
                 // Don't handle - let the responder chain process it for menu shortcuts
+                return;
+            }
+
+            // Check if IME composition is in progress (has marked text)
+            let has_marked_text = !self.ivars().marked_text.borrow().is_empty();
+
+            // If IME composition is in progress, route ALL keys through the input method system
+            // This allows Enter to confirm composition, arrow keys to navigate candidates, etc.
+            if has_marked_text {
+                log::debug!("IME composition in progress, routing through interpretKeyEvents");
+                let events = NSArray::from_slice(&[event]);
+                self.interpretKeyEvents(&events);
                 return;
             }
 
@@ -235,20 +262,11 @@ define_class!(
                 return;
             }
 
-            // For regular characters, get the character from the event
-            if let Some(chars) = keycode::characters_from_event(event) {
-                // Filter out special Unicode characters that macOS uses for function keys
-                // (U+F700-U+F8FF is the Private Use Area where macOS puts these)
-                let filtered: String = chars
-                    .chars()
-                    .filter(|c| !('\u{F700}'..='\u{F8FF}').contains(c))
-                    .collect();
-
-                if !filtered.is_empty() {
-                    log::debug!("Writing to PTY: {:?}", filtered);
-                    self.write_to_pty(filtered.as_bytes());
-                }
-            }
+            // Route through input method system for IME support (Japanese, Chinese, etc.)
+            // This will call insertText: for regular characters or setMarkedText: for composing
+            log::debug!("Routing key event through interpretKeyEvents for IME");
+            let events = NSArray::from_slice(&[event]);
+            self.interpretKeyEvents(&events);
         }
 
         #[unsafe(method(mouseDown:))]
@@ -580,6 +598,179 @@ define_class!(
             self.set_needs_display();
         }
     }
+
+    // NSTextInputClient protocol for IME support (Japanese, Chinese, Korean, etc.)
+    unsafe impl NSTextInputClient for TerminalView {
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text_replacement_range(
+            &self,
+            string: &AnyObject,
+            _replacement_range: NSRange,
+        ) {
+            log::debug!("NSTextInputClient: insertText:replacementRange: called");
+
+            // Clear marked text
+            self.ivars().marked_text.borrow_mut().clear();
+
+            // Get the string content (could be NSString or NSAttributedString)
+            let text: String = unsafe {
+                if msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)] {
+                    let attr_str: &NSAttributedString = &*(string as *const _ as *const _);
+                    attr_str.string().to_string()
+                } else {
+                    let ns_str: &NSString = &*(string as *const _ as *const _);
+                    ns_str.to_string()
+                }
+            };
+
+            if !text.is_empty() {
+                log::debug!("IME insert text: {:?}", text);
+                self.write_to_pty(text.as_bytes());
+            }
+        }
+
+        /// Called when the input method wants to perform a command (e.g., delete, move cursor)
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command_by_selector(&self, selector: objc2::runtime::Sel) {
+            log::debug!("NSTextInputClient: doCommandBySelector: {:?}", selector.name());
+            // For "noop:" selector, just ignore - this is sent for unhandled keys
+            if selector.name().to_str() == Ok("noop:") {
+                return;
+            }
+            // We don't handle any commands - let the responder chain handle them
+            // This is important: we need to call super or the input system won't work
+            let _: () = unsafe { msg_send![super(self), doCommandBySelector: selector] };
+        }
+
+        /// Older insertText: method (some input methods use this instead of insertText:replacementRange:)
+        #[unsafe(method(insertText:))]
+        fn insert_text(&self, string: &AnyObject) {
+            log::debug!("NSTextInputClient: insertText: called (old method)");
+            // Clear marked text and send the text
+            self.ivars().marked_text.borrow_mut().clear();
+
+            // Get the string content (could be NSString or NSAttributedString)
+            let text: String = unsafe {
+                if msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)] {
+                    let attr_str: &NSAttributedString = &*(string as *const _ as *const _);
+                    attr_str.string().to_string()
+                } else {
+                    let ns_str: &NSString = &*(string as *const _ as *const _);
+                    ns_str.to_string()
+                }
+            };
+
+            if !text.is_empty() {
+                log::debug!("IME insert text (old method): {:?}", text);
+                self.write_to_pty(text.as_bytes());
+            }
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text_selected_range_replacement_range(
+            &self,
+            string: &AnyObject,
+            _selected_range: NSRange,
+            _replacement_range: NSRange,
+        ) {
+            // Get the string content
+            let text: String = unsafe {
+                if msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)] {
+                    let attr_str: &NSAttributedString = &*(string as *const _ as *const _);
+                    attr_str.string().to_string()
+                } else {
+                    let ns_str: &NSString = &*(string as *const _ as *const _);
+                    ns_str.to_string()
+                }
+            };
+
+            log::debug!("NSTextInputClient: setMarkedText: {:?}", text);
+            *self.ivars().marked_text.borrow_mut() = text;
+            // Trigger redraw to show the composition text
+            self.set_needs_display();
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            log::debug!("NSTextInputClient: unmarkText");
+            self.ivars().marked_text.borrow_mut().clear();
+        }
+
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            log::trace!("NSTextInputClient: selectedRange");
+            NSRange::new(0, 0)
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            let marked = self.ivars().marked_text.borrow();
+            log::trace!("NSTextInputClient: markedRange (len={})", marked.len());
+            if marked.is_empty() {
+                NSRange::new(usize::MAX, 0) // NSNotFound
+            } else {
+                NSRange::new(0, marked.len())
+            }
+        }
+
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            let has = !self.ivars().marked_text.borrow().is_empty();
+            log::trace!("NSTextInputClient: hasMarkedText -> {}", has);
+            has
+        }
+
+        #[unsafe(method(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring_for_proposed_range_actual_range(
+            &self,
+            _range: NSRange,
+            _actual_range: *mut NSRange,
+        ) -> *mut NSAttributedString {
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(validAttributesForMarkedText))]
+        fn valid_attributes_for_marked_text(&self) -> *mut NSArray<NSString> {
+            // Return an empty array - we don't support any special attributes
+            Retained::into_raw(NSArray::new())
+        }
+
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect_for_character_range_actual_range(
+            &self,
+            _range: NSRange,
+            _actual_range: *mut NSRange,
+        ) -> NSRect {
+            // Return the rect where the IME candidate window should appear
+            // Use cursor position
+            let terminal = self.ivars().terminal.lock();
+            let cursor = &terminal.screen().cursor;
+            let cell_width = self.ivars().cell_width;
+            let cell_height = self.ivars().cell_height;
+
+            let x = cursor.col as f64 * cell_width;
+            let y = cursor.row as f64 * cell_height;
+            drop(terminal);
+
+            // Convert to screen coordinates
+            let view_rect = NSRect::new(
+                NSPoint::new(x, y + cell_height),
+                NSSize::new(cell_width, cell_height),
+            );
+
+            if let Some(window) = self.window() {
+                let window_rect = self.convertRect_toView(view_rect, None);
+                window.convertRectToScreen(window_rect)
+            } else {
+                view_rect
+            }
+        }
+
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index_for_point(&self, _point: NSPoint) -> usize {
+            0
+        }
+    }
 );
 
 impl TerminalView {
@@ -618,6 +809,7 @@ impl TerminalView {
             template_name: RefCell::new(None),
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
+            marked_text: RefCell::new(String::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -676,6 +868,7 @@ impl TerminalView {
             template_name: RefCell::new(Some(template.name.clone())),
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
+            marked_text: RefCell::new(String::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -748,6 +941,7 @@ impl TerminalView {
             is_selecting: Cell::new(false),
             template_name: RefCell::new(None),
             watchdog_fd_id: Cell::new(recovered.id), // Already registered with watchdog
+            marked_text: RefCell::new(String::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -847,6 +1041,7 @@ impl TerminalView {
             template_name: RefCell::new(None), // Caller should use set_template_name() if needed
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
+            marked_text: RefCell::new(String::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
