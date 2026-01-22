@@ -4,9 +4,12 @@
 //! and scroll operations.
 
 use crate::cell::{Cell, CellStyle};
+use crate::drcs::{DrcsFont, DrcsGlyph};
 use crate::grid::{Grid, Row};
+use crate::sixel::SixelImage;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 /// Configuration for the screen
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +92,14 @@ pub struct TerminalModes {
     pub alternate_screen: bool,
     /// Active charset (true = G1, false = G0) - controlled by SO/SI
     pub charset_g1_active: bool,
+    /// Sixel scrolling mode (DECSDM, mode 80)
+    /// When true (default), sixel images start at cursor and can scroll
+    /// When false, sixel images start at top-left and don't scroll
+    pub sixel_scrolling: bool,
+    /// G0 character set designator (None = standard ASCII)
+    pub charset_g0: Option<String>,
+    /// G1 character set designator (None = standard)
+    pub charset_g1: Option<String>,
 }
 
 /// Character set designations
@@ -258,6 +269,27 @@ impl Selection {
     }
 }
 
+/// A terminal image (from Sixel or other protocols)
+#[derive(Debug, Clone)]
+pub struct TerminalImage {
+    /// Unique image ID
+    pub id: u64,
+    /// Column position (cell coordinates)
+    pub col: usize,
+    /// Absolute line number (scrollback.len() + row at time of creation)
+    pub line: usize,
+    /// Width in cells
+    pub cell_width: usize,
+    /// Height in cells
+    pub cell_height: usize,
+    /// RGBA pixel data
+    pub data: Arc<Vec<u8>>,
+    /// Pixel width
+    pub pixel_width: usize,
+    /// Pixel height
+    pub pixel_height: usize,
+}
+
 /// Terminal screen state
 #[derive(Debug)]
 pub struct Screen {
@@ -301,6 +333,16 @@ pub struct Screen {
     pending_color_queries: Vec<ColorQuery>,
     /// Current text selection (if any)
     pub selection: Option<Selection>,
+    /// Terminal images (Sixel, etc.)
+    images: HashMap<u64, TerminalImage>,
+    /// Next image ID
+    next_image_id: u64,
+    /// Cell height hint in pixels (set by UI layer for image row calculations)
+    cell_height_hint: f64,
+    /// Cell width hint in pixels (set by UI layer for image column calculations)
+    cell_width_hint: f64,
+    /// DRCS fonts (soft fonts) keyed by designator
+    drcs_fonts: HashMap<String, DrcsFont>,
 }
 
 impl Screen {
@@ -345,6 +387,11 @@ impl Screen {
             pending_clipboard_ops: Vec::new(),
             pending_color_queries: Vec::new(),
             selection: None,
+            images: HashMap::new(),
+            next_image_id: 0,
+            cell_height_hint: 16.0, // Default assumption
+            cell_width_hint: 8.0,   // Default assumption
+            drcs_fonts: HashMap::new(),
         }
     }
 
@@ -353,6 +400,7 @@ impl Screen {
         let modes = TerminalModes {
             auto_wrap: true,
             show_cursor: true,
+            sixel_scrolling: true, // Sixel scrolling enabled by default
             ..Default::default()
         };
 
@@ -384,6 +432,11 @@ impl Screen {
             pending_clipboard_ops: Vec::new(),
             pending_color_queries: Vec::new(),
             selection: None,
+            images: HashMap::new(),
+            next_image_id: 0,
+            cell_height_hint: 16.0, // Default assumption
+            cell_width_hint: 8.0,   // Default assumption
+            drcs_fonts: HashMap::new(),
         }
     }
 
@@ -920,12 +973,15 @@ impl Screen {
         self.modes = TerminalModes {
             auto_wrap: true,
             show_cursor: true,
+            sixel_scrolling: true,
             ..Default::default()
         };
         self.title.clear();
         self.icon_name.clear();
         self.dirty = true;
         self.scroll_offset = 0;
+        self.images.clear();
+        self.drcs_fonts.clear();
     }
 
     /// Search for text in scrollback and visible buffer
@@ -1037,6 +1093,274 @@ impl Screen {
         let scrollback_len = self.scrollback.len();
         // If line is in scrollback, return offset; otherwise 0 for visible area
         scrollback_len.saturating_sub(line_idx)
+    }
+
+    // ========== Image Methods ==========
+
+    /// Add an image at the specified position (legacy method)
+    ///
+    /// The image is stored with an absolute line number that includes scrollback,
+    /// so it will scroll with the content.
+    pub fn add_image(&mut self, col: usize, row: usize, sixel_image: SixelImage) {
+        let cols = self.image_cols_for_width(sixel_image.width);
+        let rows = self.image_rows_for_height(sixel_image.height);
+        self.add_image_with_size(col, row, cols, rows, sixel_image);
+    }
+
+    /// Add an image at the specified position with known cell dimensions
+    ///
+    /// This also clears the grid cells underneath the image (xterm behavior).
+    pub fn add_image_with_size(
+        &mut self,
+        col: usize,
+        row: usize,
+        cell_cols: usize,
+        cell_rows: usize,
+        sixel_image: SixelImage,
+    ) {
+        let id = self.next_image_id;
+        self.next_image_id += 1;
+
+        // Calculate absolute line (scrollback + visible row)
+        let absolute_line = self.scrollback.len() + row;
+
+        let image = TerminalImage {
+            id,
+            col,
+            line: absolute_line,
+            cell_width: cell_cols,
+            cell_height: cell_rows,
+            data: Arc::new(sixel_image.data),
+            pixel_width: sixel_image.width,
+            pixel_height: sixel_image.height,
+        };
+
+        // Clear grid cells underneath the image (xterm behavior)
+        // This ensures text doesn't show through the image
+        self.clear_cells_for_image(col, row, cell_cols, cell_rows);
+
+        self.images.insert(id, image);
+        self.dirty = true;
+
+        // Prune old images that have scrolled too far
+        self.prune_old_images();
+    }
+
+    /// Clear grid cells that will be covered by an image
+    fn clear_cells_for_image(&mut self, col: usize, row: usize, cols: usize, rows: usize) {
+        let width = self.width();
+        let height = self.height();
+
+        for r in row..row + rows {
+            if r >= height {
+                break;
+            }
+            if let Some(grid_row) = self.grid.row_mut(r) {
+                for c in col..col + cols {
+                    if c >= width {
+                        break;
+                    }
+                    // Clear the cell but keep it as a space (not truly empty)
+                    grid_row[c].c = ' ';
+                    grid_row[c].attrs = crate::cell::CellAttrs::empty();
+                }
+            }
+        }
+    }
+
+    /// Get images visible in the current viewport
+    ///
+    /// Returns images that overlap with the currently visible portion of the screen.
+    pub fn visible_images(&self) -> Vec<&TerminalImage> {
+        let scrollback_len = self.scrollback.len();
+        let height = self.height();
+
+        // Calculate the range of absolute lines currently visible
+        let first_visible_line = scrollback_len.saturating_sub(self.scroll_offset);
+        let last_visible_line = first_visible_line + height;
+
+        self.images
+            .values()
+            .filter(|img| {
+                // Image is visible if any part of it overlaps with the viewport
+                let img_top = img.line;
+                let img_rows = self.image_rows_for_height(img.pixel_height).max(1);
+                let img_bottom = img.line + img_rows;
+
+                img_bottom > first_visible_line && img_top < last_visible_line
+            })
+            .collect()
+    }
+
+    /// Calculate the visible row for an image (relative to current viewport)
+    ///
+    /// Returns None if the image is not in the visible area.
+    pub fn image_visible_row(&self, image: &TerminalImage) -> Option<usize> {
+        let scrollback_len = self.scrollback.len();
+        let first_visible_line = scrollback_len.saturating_sub(self.scroll_offset);
+
+        if image.line >= first_visible_line && image.line < first_visible_line + self.height() {
+            Some(image.line - first_visible_line)
+        } else {
+            None
+        }
+    }
+
+    /// Prune images that have scrolled off the top of the scrollback buffer
+    fn prune_old_images(&mut self) {
+        // Remove images whose line is before the start of our scrollback
+        // When scrollback is at max capacity and lines are removed,
+        // images at the oldest lines should also be removed
+        let max_scrollback = self.config.scrollback_lines;
+        let scrollback_len = self.scrollback.len();
+
+        // If we're at max scrollback, images at line 0 are about to scroll off
+        if scrollback_len >= max_scrollback {
+            // Calculate the minimum valid line
+            let min_valid_line = scrollback_len.saturating_sub(max_scrollback);
+
+            self.images.retain(|_, img| img.line >= min_valid_line);
+        }
+    }
+
+    /// Clear all images (called on screen clear)
+    pub fn clear_images(&mut self) {
+        self.images.clear();
+    }
+
+    /// Set the cell height hint (call from UI layer when font metrics are known)
+    pub fn set_cell_height_hint(&mut self, height: f64) {
+        self.cell_height_hint = height;
+    }
+
+    /// Get the cell height hint
+    pub fn cell_height_hint(&self) -> f64 {
+        self.cell_height_hint
+    }
+
+    /// Calculate how many terminal rows an image of given pixel height will span
+    pub fn image_rows_for_height(&self, pixel_height: usize) -> usize {
+        if self.cell_height_hint <= 0.0 {
+            // Fallback: assume roughly 1 row per 6 pixels (one sixel band)
+            (pixel_height + 5) / 6
+        } else {
+            ((pixel_height as f64) / self.cell_height_hint).ceil() as usize
+        }
+    }
+
+    /// Set the cell width hint (call from UI layer when font metrics are known)
+    pub fn set_cell_width_hint(&mut self, width: f64) {
+        self.cell_width_hint = width;
+    }
+
+    /// Get the cell width hint
+    pub fn cell_width_hint(&self) -> f64 {
+        self.cell_width_hint
+    }
+
+    /// Calculate how many terminal columns an image of given pixel width will span
+    pub fn image_cols_for_width(&self, pixel_width: usize) -> usize {
+        if self.cell_width_hint <= 0.0 {
+            // Fallback: assume roughly 1 col per pixel (very conservative)
+            pixel_width
+        } else {
+            ((pixel_width as f64) / self.cell_width_hint).ceil() as usize
+        }
+    }
+
+    // ========== DRCS (Soft Font) Methods ==========
+
+    /// Add or replace a DRCS font
+    ///
+    /// The erase_control parameter determines what to erase:
+    /// - 0: Erase all characters in DRCS buffer with matching width/rendition
+    /// - 1: Erase only locations being reloaded
+    /// - 2: Erase all renditions
+    pub fn add_drcs_font(&mut self, font: DrcsFont, erase_control: u8, _font_number: u8) {
+        let designator = font.designator.clone();
+
+        match erase_control {
+            0 | 2 => {
+                // Erase all existing fonts with same designator
+                self.drcs_fonts.remove(&designator);
+            }
+            1 => {
+                // Only erase/replace specific glyphs being loaded
+                // (handled by HashMap insert below)
+            }
+            _ => {}
+        }
+
+        // Insert the new font (or merge glyphs if erase_control == 1)
+        if erase_control == 1 {
+            if let Some(existing) = self.drcs_fonts.get_mut(&designator) {
+                // Merge glyphs into existing font
+                for (pos, glyph) in font.glyphs {
+                    existing.glyphs.insert(pos, glyph);
+                }
+                return;
+            }
+        }
+
+        self.drcs_fonts.insert(designator, font);
+        self.dirty = true;
+    }
+
+    /// Get a DRCS glyph by designator and character position
+    pub fn get_drcs_glyph(&self, designator: &str, char_pos: u8) -> Option<&DrcsGlyph> {
+        self.drcs_fonts
+            .get(designator)
+            .and_then(|font| font.get_glyph(char_pos))
+    }
+
+    /// Get a DRCS font by designator
+    pub fn get_drcs_font(&self, designator: &str) -> Option<&DrcsFont> {
+        self.drcs_fonts.get(designator)
+    }
+
+    /// Get all DRCS fonts
+    pub fn drcs_fonts(&self) -> &HashMap<String, DrcsFont> {
+        &self.drcs_fonts
+    }
+
+    /// Clear all DRCS fonts
+    pub fn clear_drcs_fonts(&mut self) {
+        self.drcs_fonts.clear();
+    }
+
+    /// Designate a character set to G0 or G1
+    ///
+    /// The designator is the DRCS designator string (e.g., " @" for user-defined).
+    /// Pass None to reset to standard ASCII.
+    pub fn designate_charset(&mut self, g_set: u8, designator: Option<String>) {
+        match g_set {
+            0 => self.modes.charset_g0 = designator,
+            1 => self.modes.charset_g1 = designator,
+            _ => {}
+        }
+    }
+
+    /// Get the currently active character set designator
+    pub fn active_charset_designator(&self) -> Option<&str> {
+        if self.modes.charset_g1_active {
+            self.modes.charset_g1.as_deref()
+        } else {
+            self.modes.charset_g0.as_deref()
+        }
+    }
+
+    /// Check if a character should be rendered as DRCS and get its glyph
+    pub fn get_drcs_for_char(&self, c: char) -> Option<&DrcsGlyph> {
+        // DRCS characters are typically in the range 0x21-0x7E (33-126)
+        // mapped to positions 0-93 (or 0-95 for 96-char sets)
+        if let Some(designator) = self.active_charset_designator() {
+            let char_code = c as u32;
+            if (0x21..=0x7E).contains(&char_code) {
+                let pos = (char_code - 0x21) as u8;
+                return self.get_drcs_glyph(designator, pos);
+            }
+        }
+        None
     }
 
     // ========== Selection Methods ==========

@@ -11,6 +11,8 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
+use cterm_core::drcs::DrcsGlyph;
+use cterm_core::TerminalImage;
 use cterm_core::Terminal;
 use cterm_ui::theme::Theme;
 
@@ -124,11 +126,19 @@ impl CGRenderer {
 
                     // Draw character
                     if cell.c != ' ' && cell.c != '\0' {
-                        self.draw_char_rgb(cell.c, x, y, &fg_color);
+                        // Check if this should be a DRCS glyph
+                        if let Some(glyph) = screen.get_drcs_for_char(cell.c) {
+                            self.draw_drcs_glyph(glyph, x, y, &fg_color);
+                        } else {
+                            self.draw_char_rgb(cell.c, x, y, &fg_color);
+                        }
                     }
                 }
             }
         }
+
+        // Draw images (Sixel, etc.)
+        self.render_images(screen);
 
         // Draw cursor (only when not scrolled back)
         let cursor = &screen.cursor;
@@ -136,6 +146,159 @@ impl CGRenderer {
             let cursor_x = cursor.col as f64 * self.cell_width;
             let cursor_y = cursor.row as f64 * self.cell_height;
             self.draw_cursor(cursor_x, cursor_y);
+        }
+    }
+
+    /// Render terminal images (Sixel graphics, etc.)
+    fn render_images(&self, screen: &cterm_core::Screen) {
+        for image in screen.visible_images() {
+            if let Some(visible_row) = screen.image_visible_row(image) {
+                let x = image.col as f64 * self.cell_width;
+                let y = visible_row as f64 * self.cell_height;
+
+                // Calculate display size (preserve aspect ratio, fit to pixel dimensions)
+                let width = image.pixel_width as f64;
+                let height = image.pixel_height as f64;
+
+                self.draw_image(image, x, y, width, height);
+            }
+        }
+    }
+
+    /// Draw a terminal image at the specified position
+    fn draw_image(&self, image: &TerminalImage, x: f64, y: f64, width: f64, height: f64) {
+        // CoreGraphics FFI declarations
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGPoint {
+            x: f64,
+            y: f64,
+        }
+
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGRect {
+            origin: CGPoint,
+            size: CGSize,
+        }
+
+        extern "C" {
+            fn CGDataProviderCreateWithData(
+                info: *mut std::ffi::c_void,
+                data: *const u8,
+                size: usize,
+                release_callback: *const std::ffi::c_void,
+            ) -> *mut std::ffi::c_void;
+
+            fn CGImageCreate(
+                width: usize,
+                height: usize,
+                bits_per_component: usize,
+                bits_per_pixel: usize,
+                bytes_per_row: usize,
+                color_space: *mut std::ffi::c_void,
+                bitmap_info: u32,
+                provider: *mut std::ffi::c_void,
+                decode: *const f64,
+                should_interpolate: bool,
+                intent: u32,
+            ) -> *mut std::ffi::c_void;
+
+            fn CGContextDrawImage(
+                context: *mut std::ffi::c_void,
+                rect: CGRect,
+                image: *mut std::ffi::c_void,
+            );
+
+            fn CGImageRelease(image: *mut std::ffi::c_void);
+            fn CGDataProviderRelease(provider: *mut std::ffi::c_void);
+            fn CGColorSpaceCreateDeviceRGB() -> *mut std::ffi::c_void;
+            fn CGColorSpaceRelease(color_space: *mut std::ffi::c_void);
+            fn CGContextSaveGState(context: *mut std::ffi::c_void);
+            fn CGContextRestoreGState(context: *mut std::ffi::c_void);
+            fn CGContextTranslateCTM(context: *mut std::ffi::c_void, tx: f64, ty: f64);
+            fn CGContextScaleCTM(context: *mut std::ffi::c_void, sx: f64, sy: f64);
+        }
+
+        unsafe {
+            let data_ptr = image.data.as_ptr();
+            let data_len = image.data.len();
+
+            let cg_color_space = CGColorSpaceCreateDeviceRGB();
+            if cg_color_space.is_null() {
+                log::warn!("Failed to create CGColorSpace");
+                return;
+            }
+
+            let provider = CGDataProviderCreateWithData(
+                std::ptr::null_mut(),
+                data_ptr,
+                data_len,
+                std::ptr::null(),
+            );
+
+            if provider.is_null() {
+                log::warn!("Failed to create CGDataProvider for image");
+                CGColorSpaceRelease(cg_color_space);
+                return;
+            }
+
+            // Create CGImage
+            // kCGImageAlphaLast = 3, kCGBitmapByteOrderDefault = 0
+            const K_CG_IMAGE_ALPHA_LAST: u32 = 3;
+            let cg_image = CGImageCreate(
+                image.pixel_width,
+                image.pixel_height,
+                8,                          // bits per component
+                32,                         // bits per pixel
+                image.pixel_width * 4,      // bytes per row
+                cg_color_space,
+                K_CG_IMAGE_ALPHA_LAST,
+                provider,
+                std::ptr::null(),           // no decode array
+                true,                       // interpolate
+                0,                          // rendering intent (default)
+            );
+
+            CGDataProviderRelease(provider);
+            CGColorSpaceRelease(cg_color_space);
+
+            if cg_image.is_null() {
+                log::warn!("Failed to create CGImage");
+                return;
+            }
+
+            // Get current graphics context
+            if let Some(context) = NSGraphicsContext::currentContext() {
+                let cg_context: *mut std::ffi::c_void = msg_send![&context, CGContext];
+
+                if !cg_context.is_null() {
+                    CGContextSaveGState(cg_context);
+
+                    // In a flipped view, we need to flip the image back
+                    // Since our view is flipped (origin at top-left), but CGImage
+                    // draws with origin at bottom-left, we need to flip vertically
+                    CGContextTranslateCTM(cg_context, x, y + height);
+                    CGContextScaleCTM(cg_context, 1.0, -1.0);
+
+                    let draw_rect = CGRect {
+                        origin: CGPoint { x: 0.0, y: 0.0 },
+                        size: CGSize { width, height },
+                    };
+
+                    CGContextDrawImage(cg_context, draw_rect, cg_image);
+                    CGContextRestoreGState(cg_context);
+                }
+            }
+
+            CGImageRelease(cg_image);
         }
     }
 
@@ -196,6 +359,33 @@ impl CGRenderer {
             // In a flipped view, drawAtPoint places text with point as top-left of the text
             let point = NSPoint::new(x, y);
             let _: () = msg_send![&*text, drawAtPoint: point, withAttributes: &*dict];
+        }
+    }
+
+    /// Draw a DRCS (soft font) glyph
+    fn draw_drcs_glyph(&self, glyph: &DrcsGlyph, x: f64, y: f64, rgb: &Rgb) {
+        // Calculate scaling factors to fit glyph into cell
+        let scale_x = self.cell_width / glyph.width as f64;
+        let scale_y = self.cell_height / glyph.height as f64;
+
+        unsafe {
+            let ns_color = Self::ns_color(rgb.r, rgb.g, rgb.b);
+            let _: () = msg_send![&*ns_color, setFill];
+
+            // Draw each pixel of the glyph as a small rectangle
+            for gy in 0..glyph.height {
+                for gx in 0..glyph.width {
+                    if glyph.get_pixel(gx, gy) {
+                        let px = x + gx as f64 * scale_x;
+                        let py = y + gy as f64 * scale_y;
+                        let rect = NSRect::new(
+                            NSPoint::new(px, py),
+                            NSSize::new(scale_x.ceil(), scale_y.ceil()),
+                        );
+                        let _: () = msg_send![class!(NSBezierPath), fillRect: rect];
+                    }
+                }
+            }
         }
     }
 

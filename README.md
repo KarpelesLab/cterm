@@ -24,6 +24,7 @@ A high-performance, customizable terminal emulator built in pure Rust. Features 
 - **Clipboard**: OSC 52 clipboard integration for remote copy/paste
 - **Color Queries**: OSC 10/11 color query support for theme-aware applications
 - **Alternate Screen**: Full alternate screen buffer support (for vim, less, etc.)
+- **Sixel Graphics**: Inline image display with DEC Sixel protocol support
 
 ### System Integration
 - **Native PTY**: Cross-platform PTY implementation (Unix openpty, Windows ConPTY ready)
@@ -106,6 +107,66 @@ See [docs/configuration.md](docs/configuration.md) for detailed configuration op
 | Scroll Up | Shift+PageUp |
 | Scroll Down | Shift+PageDown |
 
+## Terminal Compatibility
+
+### Supported DEC Private Modes (DECSET/DECRST)
+
+| Mode | Name | Description |
+|------|------|-------------|
+| 1 | DECCKM | Application cursor keys |
+| 6 | DECOM | Origin mode (cursor addressing relative to scroll region) |
+| 7 | DECAWM | Auto-wrap mode |
+| 9 | X10 Mouse | X10 mouse reporting (button press only) |
+| 25 | DECTCEM | Show/hide cursor |
+| 80 | DECSDM | Sixel display mode (scrolling control) |
+| 1000 | — | Normal mouse tracking (button press/release) |
+| 1002 | — | Button-event mouse tracking (press/release/motion with button) |
+| 1003 | — | Any-event mouse tracking (all motion events) |
+| 1004 | — | Focus event reporting |
+| 1006 | — | SGR extended mouse coordinates |
+| 1047 | — | Alternate screen buffer |
+| 1048 | — | Save/restore cursor |
+| 1049 | — | Alternate screen buffer with cursor save/restore |
+| 2004 | — | Bracketed paste mode |
+
+### Supported ANSI Modes (SM/RM)
+
+| Mode | Name | Description |
+|------|------|-------------|
+| 4 | IRM | Insert mode |
+| 20 | LNM | Line feed/new line mode |
+
+### Supported OSC Sequences
+
+| OSC | Description |
+|-----|-------------|
+| 0 | Set window title and icon name |
+| 1 | Set icon name |
+| 2 | Set window title |
+| 8 | Hyperlinks |
+| 10 | Query/set foreground color |
+| 11 | Query/set background color |
+| 12 | Query/set cursor color |
+| 52 | Clipboard operations |
+
+### Sixel Graphics
+
+cterm supports DEC Sixel graphics for inline image display:
+- Full color palette support (up to 256 colors)
+- RGB and HLS color definitions
+- DECSDM mode for controlling image placement and scrolling
+- Images scroll with terminal content
+- Grid cells under images are cleared (xterm-compatible behavior)
+
+Test with:
+```bash
+# Using ImageMagick
+convert image.png -resize 200x200 sixel:-
+
+# Using libsixel
+img2sixel image.png
+```
+
 ## Architecture
 
 ```
@@ -140,9 +201,10 @@ Custom themes can be added as TOML files in the `themes/` configuration subdirec
 
 - [x] Text selection and copy/paste
 - [x] Crash recovery (macOS)
+- [x] Sixel graphics support
 - [ ] Split panes
 - [ ] Qt backend
-- [ ] Sixel/iTerm2 graphics support
+- [ ] iTerm2 graphics protocol
 - [ ] Session save/restore across restarts
 - [ ] Plugin system
 

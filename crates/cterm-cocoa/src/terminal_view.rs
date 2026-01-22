@@ -915,7 +915,10 @@ impl TerminalView {
         let (cell_width, cell_height) = renderer.cell_size();
 
         // Create terminal with default size (will resize later)
-        let terminal = Terminal::new(80, 24, ScreenConfig::default());
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        // Set cell height hint for sixel image positioning
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
         let terminal = Arc::new(Mutex::new(terminal));
 
         // Create shared state for PTY thread communication
@@ -974,7 +977,10 @@ impl TerminalView {
         let (cell_width, cell_height) = renderer.cell_size();
 
         // Create terminal with default size (will resize later)
-        let terminal = Terminal::new(80, 24, ScreenConfig::default());
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        // Set cell height hint for sixel image positioning
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
         let terminal = Arc::new(Mutex::new(terminal));
 
         // Create shared state for PTY thread communication
@@ -1039,7 +1045,10 @@ impl TerminalView {
         let (cell_width, cell_height) = renderer.cell_size();
 
         // Create a fresh screen (we don't preserve screen state in crash recovery)
-        let screen = Screen::new(80, 24, ScreenConfig::default());
+        let mut screen = Screen::new(80, 24, ScreenConfig::default());
+        // Set cell height hint for sixel image positioning
+        screen.set_cell_height_hint(cell_height);
+        screen.set_cell_width_hint(cell_width);
 
         // Create Terminal from the recovered FD
         let terminal =
@@ -1134,7 +1143,7 @@ impl TerminalView {
         mtm: MainThreadMarker,
         config: &Config,
         theme: &Theme,
-        terminal: Terminal,
+        mut terminal: Terminal,
     ) -> Retained<Self> {
         use std::io::Read;
 
@@ -1143,6 +1152,10 @@ impl TerminalView {
         let font_size = config.appearance.font.size;
         let renderer = CGRenderer::new(mtm, font_name, font_size, theme);
         let (cell_width, cell_height) = renderer.cell_size();
+
+        // Set cell height hint for sixel image positioning
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
 
         // Get a reader for the PTY before wrapping terminal in Arc<Mutex>
         let pty_reader = terminal.pty_reader();

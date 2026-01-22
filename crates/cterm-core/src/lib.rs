@@ -8,12 +8,14 @@
 
 pub mod cell;
 pub mod color;
+pub mod drcs;
 #[cfg(unix)]
 pub mod fd_passing;
 pub mod grid;
 pub mod parser;
 pub mod pty;
 pub mod screen;
+pub mod sixel;
 pub mod term;
 
 pub use cell::{Cell, CellAttrs};
@@ -23,6 +25,8 @@ pub use parser::Parser;
 pub use pty::{Pty, PtyConfig, PtyError, PtySize};
 pub use screen::{
     ClipboardOperation, ClipboardSelection, ColorQuery, Screen, SearchResult, Selection,
-    SelectionMode, SelectionPoint,
+    SelectionMode, SelectionPoint, TerminalImage,
 };
+pub use sixel::{SixelDecoder, SixelImage};
+pub use drcs::{DecdldDecoder, DrcsFont, DrcsGlyph};
 pub use term::Terminal;

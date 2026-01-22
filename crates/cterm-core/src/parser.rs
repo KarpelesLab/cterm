@@ -12,10 +12,29 @@ use crate::screen::{
     ClearMode, ClipboardOperation, ClipboardSelection, CursorStyle, LineClearMode, MouseMode,
     Screen,
 };
+use crate::drcs::DecdldDecoder;
+use crate::sixel::SixelDecoder;
+
+/// DCS (Device Control String) state for handling multi-byte sequences
+enum DcsState {
+    /// No DCS sequence active
+    None,
+    /// Sixel graphics sequence in progress
+    Sixel {
+        decoder: SixelDecoder,
+        start_col: usize,
+        start_row: usize,
+    },
+    /// DECDLD (soft font download) in progress
+    Decdld {
+        decoder: DecdldDecoder,
+    },
+}
 
 /// Parser wraps the vte parser and applies actions to a Screen
 pub struct Parser {
     state_machine: vte::Parser,
+    dcs_state: DcsState,
 }
 
 impl Default for Parser {
@@ -28,12 +47,16 @@ impl Parser {
     pub fn new() -> Self {
         Self {
             state_machine: vte::Parser::new(),
+            dcs_state: DcsState::None,
         }
     }
 
     /// Parse input bytes and apply actions to the screen
     pub fn parse(&mut self, screen: &mut Screen, bytes: &[u8]) {
-        let mut performer = ScreenPerformer { screen };
+        let mut performer = ScreenPerformer {
+            screen,
+            dcs_state: &mut self.dcs_state,
+        };
         for byte in bytes {
             self.state_machine.advance(&mut performer, *byte);
         }
@@ -43,6 +66,7 @@ impl Parser {
 /// Performer that applies VTE actions to a Screen
 struct ScreenPerformer<'a> {
     screen: &'a mut Screen,
+    dcs_state: &'a mut DcsState,
 }
 
 impl vte::Perform for ScreenPerformer<'_> {
@@ -101,14 +125,126 @@ impl vte::Perform for ScreenPerformer<'_> {
             intermediates,
             action
         );
+
+        let params_vec: Vec<u16> = params
+            .iter()
+            .flat_map(|subparams| subparams.iter().map(|&p| p))
+            .collect();
+
+        match action {
+            // Sixel graphics: DCS Pn1 ; Pn2 ; Pn3 q
+            'q' if intermediates.is_empty() => {
+                log::debug!("Starting Sixel graphics sequence, params: {:?}", params_vec);
+
+                *self.dcs_state = DcsState::Sixel {
+                    decoder: SixelDecoder::with_params(&params_vec),
+                    start_col: self.screen.cursor.col,
+                    start_row: self.screen.cursor.row,
+                };
+            }
+            // DECDLD (soft font download): DCS Pfn;Pcn;Pe;Pcmw;Pss;Pt;Pcmh;Pcss {
+            '{' if intermediates.is_empty() => {
+                log::debug!("Starting DECDLD sequence, params: {:?}", params_vec);
+
+                *self.dcs_state = DcsState::Decdld {
+                    decoder: DecdldDecoder::new(&params_vec),
+                };
+            }
+            _ => {
+                log::trace!("Unhandled DCS action: {:?}", action);
+            }
+        }
     }
 
-    fn put(&mut self, _byte: u8) {
-        // DCS data - used for things like sixel graphics
+    fn put(&mut self, byte: u8) {
+        // DCS data - feed to the appropriate decoder
+        match self.dcs_state {
+            DcsState::Sixel { ref mut decoder, .. } => {
+                decoder.put(byte);
+            }
+            DcsState::Decdld { ref mut decoder } => {
+                decoder.put(byte);
+            }
+            DcsState::None => {}
+        }
     }
 
     fn unhook(&mut self) {
-        // End of DCS sequence
+        // End of DCS sequence - finalize and store the result
+        let old_state = std::mem::replace(self.dcs_state, DcsState::None);
+
+        match old_state {
+            DcsState::Sixel {
+                decoder,
+                start_col,
+                start_row,
+            } => {
+                if let Some(image) = decoder.finish() {
+                    // Determine image position based on DECSDM mode
+                    let (img_col, img_row) = if self.screen.modes.sixel_scrolling {
+                        // Scrolling enabled: image at cursor position
+                        (start_col, start_row)
+                    } else {
+                        // Scrolling disabled: image at top-left
+                        (0, 0)
+                    };
+
+                    log::debug!(
+                        "Sixel complete: {}x{} at ({}, {}), scrolling={}",
+                        image.width,
+                        image.height,
+                        img_col,
+                        img_row,
+                        self.screen.modes.sixel_scrolling
+                    );
+
+                    // Calculate how many rows/cols the image spans
+                    let rows_spanned = self.screen.image_rows_for_height(image.height);
+                    let cols_spanned = self.screen.image_cols_for_width(image.width);
+
+                    // Store the image in the screen (this also clears grid cells underneath)
+                    self.screen
+                        .add_image_with_size(img_col, img_row, cols_spanned, rows_spanned, image);
+
+                    // Handle cursor positioning based on DECSDM mode
+                    if self.screen.modes.sixel_scrolling {
+                        // Sixel scrolling enabled: cursor moves to last row of image, column 0
+                        // VT340 behavior: cursor at first column of last image row
+                        let last_image_row = img_row + rows_spanned.saturating_sub(1);
+
+                        if last_image_row >= self.screen.height() {
+                            // Image extends past bottom - scroll and position at bottom
+                            let scroll_amount = last_image_row - self.screen.height() + 1;
+                            self.screen.scroll_up(scroll_amount);
+                            self.screen.cursor.row = self.screen.height() - 1;
+                        } else {
+                            self.screen.cursor.row = last_image_row;
+                        }
+                        self.screen.cursor.col = 0;
+                    }
+                    // If sixel_scrolling is false, cursor stays where it was (start_col, start_row)
+                }
+            }
+            DcsState::Decdld { decoder } => {
+                let erase_control = decoder.erase_control();
+                let font_number = decoder.font_number();
+
+                if let Some(font) = decoder.finish() {
+                    log::debug!(
+                        "DECDLD complete: font {} designator '{}' with {} glyphs ({}x{})",
+                        font.font_number,
+                        font.designator,
+                        font.glyphs.len(),
+                        font.cell_width,
+                        font.cell_height
+                    );
+
+                    // Store the font in the screen
+                    self.screen.add_drcs_font(font, erase_control, font_number);
+                }
+            }
+            DcsState::None => {}
+        }
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
@@ -546,6 +682,32 @@ impl vte::Perform for ScreenPerformer<'_> {
             (b'H', []) => {
                 self.screen.set_tab_stop();
             }
+            // SCS - Select Character Set (G0)
+            // ESC ( Dscs - Designate G0
+            (final_char @ 0x30..=0x7E, [b'(']) => {
+                let designator = Self::parse_scs_designator(&[], final_char);
+                log::debug!("SCS G0: {:?}", designator);
+                self.screen.designate_charset(0, designator);
+            }
+            // ESC ( I Dscs - Designate G0 with intermediate
+            (final_char @ 0x30..=0x7E, [b'(', i]) => {
+                let designator = Self::parse_scs_designator(&[*i], final_char);
+                log::debug!("SCS G0: {:?}", designator);
+                self.screen.designate_charset(0, designator);
+            }
+            // SCS - Select Character Set (G1)
+            // ESC ) Dscs - Designate G1
+            (final_char @ 0x30..=0x7E, [b')']) => {
+                let designator = Self::parse_scs_designator(&[], final_char);
+                log::debug!("SCS G1: {:?}", designator);
+                self.screen.designate_charset(1, designator);
+            }
+            // ESC ) I Dscs - Designate G1 with intermediate
+            (final_char @ 0x30..=0x7E, [b')', i]) => {
+                let designator = Self::parse_scs_designator(&[*i], final_char);
+                log::debug!("SCS G1: {:?}", designator);
+                self.screen.designate_charset(1, designator);
+            }
             _ => {
                 log::trace!(
                     "Unhandled ESC: byte=0x{:02x} ({:?}), intermediates={:?}",
@@ -559,6 +721,26 @@ impl vte::Perform for ScreenPerformer<'_> {
 }
 
 impl ScreenPerformer<'_> {
+    /// Parse SCS designator from intermediates and final character
+    fn parse_scs_designator(intermediates: &[u8], final_char: u8) -> Option<String> {
+        // Standard character sets return None (use built-in)
+        // B = ASCII, 0 = DEC Special Graphics, etc.
+        match (intermediates, final_char) {
+            ([], b'B') => None, // ASCII
+            ([], b'0') => None, // DEC Special Graphics (handled separately)
+            ([], b'A') => None, // UK
+            _ => {
+                // Build designator string for DRCS lookup
+                let mut designator = String::new();
+                for &i in intermediates {
+                    designator.push(i as char);
+                }
+                designator.push(final_char as char);
+                Some(designator)
+            }
+        }
+    }
+
     /// Handle SGR (Select Graphic Rendition) sequences
     fn handle_sgr(&mut self, params: &[usize]) {
         if params.is_empty() {
@@ -747,6 +929,11 @@ impl ScreenPerformer<'_> {
             }
             // DECTCEM - Show Cursor
             25 => self.screen.modes.show_cursor = set,
+            // DECSDM - Sixel Display Mode (mode 80)
+            // Note: The VT340 manual was wrong - 'set' actually DISABLES scrolling
+            // When set (h): sixel scrolling OFF (image at top-left, no scroll)
+            // When reset (l): sixel scrolling ON (image at cursor, can scroll)
+            80 => self.screen.modes.sixel_scrolling = !set,
             // Normal Mouse Tracking
             1000 => {
                 self.screen.modes.mouse_mode = if set {
