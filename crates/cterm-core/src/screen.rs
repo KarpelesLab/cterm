@@ -163,6 +163,23 @@ pub enum ColorQuery {
     Cursor,
 }
 
+/// File transfer operation for iTerm2 OSC 1337 protocol
+///
+/// When inline=0, the protocol sends files that should be offered
+/// to the user for saving rather than displayed inline.
+#[derive(Debug, Clone)]
+pub enum FileTransferOperation {
+    /// A file was received and should be offered for saving
+    FileReceived {
+        /// Unique ID for this transfer
+        id: u64,
+        /// Filename (if provided)
+        name: Option<String>,
+        /// File data
+        data: Vec<u8>,
+    },
+}
+
 /// A point in the terminal buffer (absolute line index + column)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectionPoint {
@@ -337,6 +354,10 @@ pub struct Screen {
     images: HashMap<u64, TerminalImage>,
     /// Next image ID
     next_image_id: u64,
+    /// Pending file transfer operations (iTerm2 OSC 1337 with inline=0)
+    pending_file_transfers: Vec<FileTransferOperation>,
+    /// Next file transfer ID
+    next_file_transfer_id: u64,
     /// Cell height hint in pixels (set by UI layer for image row calculations)
     cell_height_hint: f64,
     /// Cell width hint in pixels (set by UI layer for image column calculations)
@@ -389,6 +410,8 @@ impl Screen {
             selection: None,
             images: HashMap::new(),
             next_image_id: 0,
+            pending_file_transfers: Vec::new(),
+            next_file_transfer_id: 0,
             cell_height_hint: 16.0, // Default assumption
             cell_width_hint: 8.0,   // Default assumption
             drcs_fonts: HashMap::new(),
@@ -434,6 +457,8 @@ impl Screen {
             selection: None,
             images: HashMap::new(),
             next_image_id: 0,
+            pending_file_transfers: Vec::new(),
+            next_file_transfer_id: 0,
             cell_height_hint: 16.0, // Default assumption
             cell_width_hint: 8.0,   // Default assumption
             drcs_fonts: HashMap::new(),
@@ -479,6 +504,29 @@ impl Screen {
     /// Check if there are pending color queries
     pub fn has_color_queries(&self) -> bool {
         !self.pending_color_queries.is_empty()
+    }
+
+    /// Queue a file transfer operation (from OSC 1337 with inline=0)
+    pub fn queue_file_transfer(&mut self, name: Option<String>, data: Vec<u8>) {
+        let id = self.next_file_transfer_id;
+        self.next_file_transfer_id += 1;
+        self.pending_file_transfers
+            .push(FileTransferOperation::FileReceived { id, name, data });
+    }
+
+    /// Take all pending file transfer operations (drains the queue)
+    pub fn take_file_transfers(&mut self) -> Vec<FileTransferOperation> {
+        std::mem::take(&mut self.pending_file_transfers)
+    }
+
+    /// Check if there are pending file transfer operations
+    pub fn has_file_transfers(&self) -> bool {
+        !self.pending_file_transfers.is_empty()
+    }
+
+    /// Get the next file transfer ID (for pre-allocation)
+    pub fn next_file_transfer_id(&self) -> u64 {
+        self.next_file_transfer_id
     }
 
     /// Take all pending responses (drains the queue)
@@ -1204,6 +1252,34 @@ impl Screen {
         } else {
             None
         }
+    }
+
+    /// Get the image at a given visible row and column position
+    ///
+    /// Returns the image if one exists at that position, or None otherwise.
+    /// Used for right-click context menu on images.
+    pub fn image_at_position(&self, row: usize, col: usize) -> Option<&TerminalImage> {
+        let scrollback_len = self.scrollback.len();
+        let first_visible_line = scrollback_len.saturating_sub(self.scroll_offset);
+        let absolute_line = first_visible_line + row;
+
+        self.images.values().find(|img| {
+            // Check if the click position is within the image bounds
+            let img_top = img.line;
+            let img_bottom = img.line + img.cell_height;
+            let img_left = img.col;
+            let img_right = img.col + img.cell_width;
+
+            absolute_line >= img_top
+                && absolute_line < img_bottom
+                && col >= img_left
+                && col < img_right
+        })
+    }
+
+    /// Get an image by its ID
+    pub fn image_by_id(&self, id: u64) -> Option<&TerminalImage> {
+        self.images.get(&id)
     }
 
     /// Prune images that have scrolled off the top of the scrollback buffer

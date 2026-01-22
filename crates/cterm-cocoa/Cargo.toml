@@ -35,6 +35,9 @@ dispatch2.workspace = true
 # Synchronization
 parking_lot.workspace = true
 
+# Image encoding for save
+image.workspace = true
+
 # CLI parsing
 clap.workspace = true
 

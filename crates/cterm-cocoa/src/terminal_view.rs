@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
-use objc2_app_kit::{NSEvent, NSTextInputClient, NSView};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2_app_kit::{NSEvent, NSMenu, NSMenuItem, NSTextInputClient, NSView};
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSObjectProtocol, NSPoint, NSRange, NSRect,
-    NSSize, NSString,
+    MainThreadMarker, NSArray, NSAttributedString, NSNumber, NSObjectProtocol, NSPoint, NSRange,
+    NSRect, NSSize, NSString,
 };
 use parking_lot::Mutex;
 
@@ -20,12 +20,14 @@ use cterm_app::config::Config;
 use cterm_app::upgrade::{
     execute_upgrade, TabUpgradeState, TerminalUpgradeState, UpgradeState, WindowUpgradeState,
 };
-use cterm_core::screen::{MouseMode, ScreenConfig, SelectionMode};
+use cterm_core::screen::{ScreenConfig, SelectionMode};
 use cterm_core::{Pty, PtyConfig, PtySize, Terminal};
 use cterm_ui::theme::Theme;
 
 use crate::cg_renderer::CGRenderer;
+use crate::file_transfer::PendingFileManager;
 use crate::mouse::{self, MouseButton, MouseModifiers};
+use crate::notification_bar::{NotificationBar, NOTIFICATION_BAR_HEIGHT};
 use crate::{clipboard, keycode};
 
 /// Shared state between the view and PTY thread
@@ -54,6 +56,10 @@ pub struct TerminalViewIvars {
     watchdog_fd_id: Cell<u64>,
     /// Marked text for IME input (Japanese, Chinese, etc.)
     marked_text: RefCell<String>,
+    /// Notification bar for file transfers
+    notification_bar: RefCell<Option<Retained<NotificationBar>>>,
+    /// Pending file manager for file transfers
+    file_manager: RefCell<PendingFileManager>,
 }
 
 define_class!(
@@ -119,6 +125,9 @@ define_class!(
         fn draw_rect(&self, dirty_rect: NSRect) {
             // Clear the redraw flag
             self.ivars().state.needs_redraw.store(false, Ordering::Relaxed);
+
+            // Check for file transfers
+            self.check_file_transfers();
 
             if let Some(ref renderer) = *self.ivars().renderer.borrow() {
                 let terminal = self.ivars().terminal.lock();
@@ -729,6 +738,146 @@ define_class!(
         fn trigger_redraw(&self) {
             self.set_needs_display();
         }
+
+        /// Notification bar save action
+        #[unsafe(method(saveFile:))]
+        fn save_file(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+                let file_id = bar.file_id();
+                if file_id > 0 {
+                    self.handle_file_save(file_id);
+                }
+            }
+        }
+
+        /// Notification bar save as action
+        #[unsafe(method(saveFileAs:))]
+        fn save_file_as(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+                let file_id = bar.file_id();
+                if file_id > 0 {
+                    self.handle_file_save_as(file_id);
+                }
+            }
+        }
+
+        /// Notification bar discard action
+        #[unsafe(method(discardFile:))]
+        fn discard_file(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+                let file_id = bar.file_id();
+                if file_id > 0 {
+                    self.handle_file_discard(file_id);
+                }
+            }
+        }
+
+        /// Right-click handler for context menu
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            // Convert window coordinates to view coordinates
+            let location_in_window = event.locationInWindow();
+            let location = self.convert_point_from_view(location_in_window, None);
+
+            // Calculate cell position
+            let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+            let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+
+            // Check if we clicked on an image
+            let terminal = self.ivars().terminal.lock();
+            if let Some(image) = terminal.screen().image_at_position(row, col) {
+                let image_id = image.id;
+                drop(terminal);
+                self.show_image_context_menu(event, image_id);
+                return;
+            }
+            drop(terminal);
+
+            // Default: no context menu for now
+        }
+
+        /// Copy image to clipboard
+        #[unsafe(method(copyImage:))]
+        fn copy_image(&self, sender: Option<&NSMenuItem>) {
+            let Some(sender) = sender else { return };
+            let image_id = self.get_image_id_from_menu_item(sender);
+            if image_id == 0 {
+                return;
+            }
+
+            let terminal = self.ivars().terminal.lock();
+            if let Some(image) = terminal.screen().image_by_id(image_id) {
+                // Copy image to pasteboard as PNG
+                self.copy_image_to_pasteboard(image);
+            }
+        }
+
+        /// Save image as...
+        #[unsafe(method(saveImageAs:))]
+        fn save_image_as(&self, sender: Option<&NSMenuItem>) {
+            let Some(sender) = sender else { return };
+            let image_id = self.get_image_id_from_menu_item(sender);
+            if image_id == 0 {
+                return;
+            }
+
+            let terminal = self.ivars().terminal.lock();
+            if let Some(image) = terminal.screen().image_by_id(image_id) {
+                let data = image.data.clone();
+                let width = image.pixel_width;
+                let height = image.pixel_height;
+                drop(terminal);
+
+                let mtm = MainThreadMarker::from(self);
+                if let Some(path) = crate::dialogs::show_save_panel(
+                    mtm,
+                    self.window().as_deref(),
+                    Some("image.png"),
+                    None,
+                ) {
+                    // Encode as PNG and save
+                    if let Err(e) = self.save_image_as_png(&data, width, height, &path) {
+                        log::error!("Failed to save image: {}", e);
+                    } else {
+                        log::info!("Saved image to {:?}", path);
+                    }
+                }
+            }
+        }
+
+        /// Open image in default application
+        #[unsafe(method(openImage:))]
+        fn open_image(&self, sender: Option<&NSMenuItem>) {
+            let Some(sender) = sender else { return };
+            let image_id = self.get_image_id_from_menu_item(sender);
+            if image_id == 0 {
+                return;
+            }
+
+            let terminal = self.ivars().terminal.lock();
+            if let Some(image) = terminal.screen().image_by_id(image_id) {
+                let data = image.data.clone();
+                let width = image.pixel_width;
+                let height = image.pixel_height;
+                drop(terminal);
+
+                // Save to temp file and open
+                let temp_path = std::env::temp_dir().join(format!("cterm_image_{}.png", image_id));
+                if let Err(e) = self.save_image_as_png(&data, width, height, &temp_path) {
+                    log::error!("Failed to save temp image: {}", e);
+                    return;
+                }
+
+                // Open with default application
+                use objc2_app_kit::NSWorkspace;
+                use objc2_foundation::NSURL;
+                let workspace = NSWorkspace::sharedWorkspace();
+                let url = NSURL::fileURLWithPath(&NSString::from_str(
+                    temp_path.to_str().unwrap_or(""),
+                ));
+                workspace.openURL(&url);
+            }
+        }
     }
 
     // NSTextInputClient protocol for IME support (Japanese, Chinese, Korean, etc.)
@@ -945,9 +1094,14 @@ impl TerminalView {
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
             marked_text: RefCell::new(String::new()),
+            notification_bar: RefCell::new(None),
+            file_manager: RefCell::new(PendingFileManager::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Create notification bar
+        this.setup_notification_bar(mtm);
 
         // Store view pointer as usize for thread-safe passing
         // Safety: We only use this pointer on the main thread via dispatch
@@ -1007,9 +1161,14 @@ impl TerminalView {
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
             marked_text: RefCell::new(String::new()),
+            notification_bar: RefCell::new(None),
+            file_manager: RefCell::new(PendingFileManager::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Create notification bar
+        this.setup_notification_bar(mtm);
 
         // Store view pointer as usize for thread-safe passing
         let view_ptr = &*this as *const _ as usize;
@@ -1083,9 +1242,14 @@ impl TerminalView {
             template_name: RefCell::new(None),
             watchdog_fd_id: Cell::new(recovered.id), // Already registered with watchdog
             marked_text: RefCell::new(String::new()),
+            notification_bar: RefCell::new(None),
+            file_manager: RefCell::new(PendingFileManager::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Create notification bar
+        this.setup_notification_bar(mtm);
 
         // Store view pointer for thread-safe passing
         let view_ptr = &*this as *const _ as usize;
@@ -1187,9 +1351,14 @@ impl TerminalView {
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(0),
             marked_text: RefCell::new(String::new()),
+            notification_bar: RefCell::new(None),
+            file_manager: RefCell::new(PendingFileManager::new()),
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Create notification bar
+        this.setup_notification_bar(mtm);
 
         // Store view pointer as usize for thread-safe passing
         let view_ptr = &*this as *const _ as usize;
@@ -1459,6 +1628,11 @@ impl TerminalView {
             cell_height
         );
 
+        // Update notification bar width
+        if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+            bar.update_width(frame.size.width);
+        }
+
         if cell_width <= 0.0 || cell_height <= 0.0 {
             log::warn!("Invalid cell dimensions: {}x{}", cell_width, cell_height);
             return;
@@ -1681,6 +1855,251 @@ impl TerminalView {
     #[cfg(unix)]
     pub fn watchdog_fd_id(&self) -> u64 {
         self.ivars().watchdog_fd_id.get()
+    }
+
+    /// Setup the notification bar
+    fn setup_notification_bar(&self, mtm: MainThreadMarker) {
+        let frame = self.frame();
+        let bar = NotificationBar::new(mtm, frame.size.width);
+
+        // Position at top of view
+        let bar_frame = NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(frame.size.width, NOTIFICATION_BAR_HEIGHT),
+        );
+        unsafe {
+            let _: () = msg_send![&*bar, setFrame: bar_frame];
+            self.addSubview(&bar);
+        }
+
+        // Set action target to self (TerminalView) for button actions
+        bar.set_action_target(self);
+
+        *self.ivars().notification_bar.borrow_mut() = Some(bar);
+    }
+
+    /// Check for pending file transfers and show notification if needed
+    pub fn check_file_transfers(&self) {
+        let mut terminal = self.ivars().terminal.lock();
+        let transfers = terminal.screen_mut().take_file_transfers();
+        drop(terminal);
+
+        for transfer in transfers {
+            match transfer {
+                cterm_core::FileTransferOperation::FileReceived { id, name, data } => {
+                    let size = data.len();
+                    self.ivars()
+                        .file_manager
+                        .borrow_mut()
+                        .set_pending(id, name.clone(), data);
+
+                    if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+                        bar.show_file(id, name.as_deref(), size);
+                    }
+
+                    log::info!(
+                        "File transfer received: {:?} ({} bytes)",
+                        name.as_deref().unwrap_or("unnamed"),
+                        size
+                    );
+                }
+            }
+        }
+    }
+
+    /// Handle save button click from notification bar
+    pub fn handle_file_save(&self, file_id: u64) {
+        let mut manager = self.ivars().file_manager.borrow_mut();
+
+        if let Some(path) = manager.default_save_path() {
+            match manager.save_to_path(file_id, &path) {
+                Ok(size) => {
+                    log::info!("Saved {} bytes to {:?}", size, path);
+                }
+                Err(e) => {
+                    log::error!("Failed to save file: {}", e);
+                }
+            }
+        }
+        drop(manager);
+
+        if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+            bar.hide();
+        }
+    }
+
+    /// Handle save-as button click from notification bar
+    pub fn handle_file_save_as(&self, file_id: u64) {
+        let mtm = MainThreadMarker::from(self);
+        let manager = self.ivars().file_manager.borrow();
+
+        let suggested_name = manager.suggested_filename().map(|s| s.to_string());
+        let suggested_dir = manager.last_save_dir().cloned();
+        drop(manager);
+
+        if let Some(path) = crate::dialogs::show_save_panel(
+            mtm,
+            self.window().as_deref(),
+            suggested_name.as_deref(),
+            suggested_dir.as_deref(),
+        ) {
+            let mut manager = self.ivars().file_manager.borrow_mut();
+            match manager.save_to_path(file_id, &path) {
+                Ok(size) => {
+                    log::info!("Saved {} bytes to {:?}", size, path);
+                }
+                Err(e) => {
+                    log::error!("Failed to save file: {}", e);
+                }
+            }
+        }
+
+        if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+            bar.hide();
+        }
+    }
+
+    /// Handle discard button click from notification bar
+    pub fn handle_file_discard(&self, file_id: u64) {
+        self.ivars().file_manager.borrow_mut().discard(file_id);
+
+        if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+            bar.hide();
+        }
+
+        log::debug!("Discarded file {}", file_id);
+    }
+
+    /// Show context menu for an image
+    fn show_image_context_menu(&self, event: &NSEvent, image_id: u64) {
+        let mtm = MainThreadMarker::from(self);
+        let menu = NSMenu::new(mtm);
+
+        // Copy Image
+        let copy_item = NSMenuItem::new(mtm);
+        copy_item.setTitle(&NSString::from_str("Copy Image"));
+        unsafe {
+            copy_item.setTarget(Some(self));
+            copy_item.setAction(Some(sel!(copyImage:)));
+            copy_item.setRepresentedObject(Some(&NSNumber::new_u64(image_id)));
+        }
+        menu.addItem(&copy_item);
+
+        // Save As...
+        let save_item = NSMenuItem::new(mtm);
+        save_item.setTitle(&NSString::from_str("Save Image As..."));
+        unsafe {
+            save_item.setTarget(Some(self));
+            save_item.setAction(Some(sel!(saveImageAs:)));
+            save_item.setRepresentedObject(Some(&NSNumber::new_u64(image_id)));
+        }
+        menu.addItem(&save_item);
+
+        // Open
+        let open_item = NSMenuItem::new(mtm);
+        open_item.setTitle(&NSString::from_str("Open Image"));
+        unsafe {
+            open_item.setTarget(Some(self));
+            open_item.setAction(Some(sel!(openImage:)));
+            open_item.setRepresentedObject(Some(&NSNumber::new_u64(image_id)));
+        }
+        menu.addItem(&open_item);
+
+        // Show the menu
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+    }
+
+    /// Get image ID from menu item's represented object
+    fn get_image_id_from_menu_item(&self, item: &NSMenuItem) -> u64 {
+        if let Some(obj) = item.representedObject() {
+            // Try to get the value as NSNumber
+            let num: *const NSNumber = &*obj as *const _ as *const _;
+            unsafe { (*num).unsignedLongLongValue() }
+        } else {
+            0
+        }
+    }
+
+    /// Copy an image to the pasteboard
+    fn copy_image_to_pasteboard(&self, image: &cterm_core::TerminalImage) {
+        use objc2_app_kit::{NSBitmapImageRep, NSPasteboard};
+        use objc2_foundation::NSDictionary;
+
+        let mtm = MainThreadMarker::from(self);
+        let pasteboard = NSPasteboard::generalPasteboard();
+
+        // Create NSBitmapImageRep from RGBA data
+        let width = image.pixel_width as isize;
+        let height = image.pixel_height as isize;
+        let data_ptr = image.data.as_ptr();
+
+        unsafe {
+            let rep = NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                mtm.alloc(),
+                std::ptr::null_mut(), // planes - will allocate
+                width,
+                height,
+                8, // bits per sample
+                4, // samples per pixel (RGBA)
+                true, // has alpha
+                false, // not planar
+                &NSString::from_str("NSDeviceRGBColorSpace"),
+                width * 4, // bytes per row
+                32, // bits per pixel
+            );
+
+            if let Some(ref rep) = rep {
+                // Copy data to the bitmap
+                let bitmap_data = rep.bitmapData();
+                if !bitmap_data.is_null() {
+                    std::ptr::copy_nonoverlapping(
+                        data_ptr,
+                        bitmap_data,
+                        (width * height * 4) as usize,
+                    );
+                }
+
+                // Get PNG data and put on pasteboard
+                let empty_dict: Retained<NSDictionary<NSString, objc2::runtime::AnyObject>> =
+                    NSDictionary::new();
+                if let Some(png_data) = rep.representationUsingType_properties(
+                    objc2_app_kit::NSBitmapImageFileType::PNG,
+                    &empty_dict,
+                ) {
+                    pasteboard.clearContents();
+                    pasteboard.setData_forType(
+                        Some(&*png_data),
+                        &NSString::from_str("public.png"),
+                    );
+                    log::debug!("Copied image to pasteboard");
+                }
+            }
+        }
+    }
+
+    /// Save image data as PNG to a path
+    fn save_image_as_png(
+        &self,
+        rgba_data: &[u8],
+        width: usize,
+        height: usize,
+        path: &std::path::Path,
+    ) -> std::io::Result<()> {
+        use image::ImageEncoder;
+
+        // Use image crate to encode PNG
+        let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba_data.to_vec())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid image data")
+            })?;
+
+        let file = std::fs::File::create(path)?;
+        let encoder = image::codecs::png::PngEncoder::new(file);
+        encoder
+            .write_image(&img, width as u32, height as u32, image::ExtendedColorType::Rgba8)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        Ok(())
     }
 
     /// Restore terminal display state from saved crash state

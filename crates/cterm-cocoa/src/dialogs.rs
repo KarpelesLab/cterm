@@ -2,8 +2,12 @@
 //!
 //! Native macOS dialogs using NSAlert and other AppKit dialogs.
 
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSTextField, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSSize, NSString};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSModalResponseOK, NSSavePanel, NSTextField,
+    NSWindow,
+};
+use objc2_foundation::{MainThreadMarker, NSSize, NSString, NSURL};
+use std::path::PathBuf;
 
 /// Show an error dialog
 pub fn show_error(mtm: MainThreadMarker, parent: Option<&NSWindow>, title: &str, message: &str) {
@@ -138,6 +142,46 @@ pub fn show_crash_recovery(
 
     let response = alert.runModal();
     response == NSAlertFirstButtonReturn
+}
+
+/// Show a save panel for saving a file
+///
+/// Returns the selected path, or None if cancelled.
+pub fn show_save_panel(
+    mtm: MainThreadMarker,
+    _parent: Option<&NSWindow>,
+    suggested_name: Option<&str>,
+    suggested_dir: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let panel = NSSavePanel::savePanel(mtm);
+
+    // Set suggested filename
+    if let Some(name) = suggested_name {
+        panel.setNameFieldStringValue(&NSString::from_str(name));
+    }
+
+    // Set suggested directory
+    if let Some(dir) = suggested_dir {
+        if let Some(dir_str) = dir.to_str() {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(dir_str));
+            panel.setDirectoryURL(Some(&url));
+        }
+    }
+
+    // Allow creating directories
+    panel.setCanCreateDirectories(true);
+
+    // Run modal
+    let response = panel.runModal();
+
+    if response == NSModalResponseOK {
+        panel.URL().and_then(|url| {
+            url.path()
+                .map(|path| PathBuf::from(path.to_string()))
+        })
+    } else {
+        None
+    }
 }
 
 /// Dialogs wrapper implementing cterm-ui traits

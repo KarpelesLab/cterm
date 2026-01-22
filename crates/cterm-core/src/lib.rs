@@ -12,6 +12,8 @@ pub mod drcs;
 #[cfg(unix)]
 pub mod fd_passing;
 pub mod grid;
+pub mod image_decode;
+pub mod iterm2;
 pub mod parser;
 pub mod pty;
 pub mod screen;
@@ -24,9 +26,11 @@ pub use grid::Grid;
 pub use parser::Parser;
 pub use pty::{Pty, PtyConfig, PtyError, PtySize};
 pub use screen::{
-    ClipboardOperation, ClipboardSelection, ColorQuery, Screen, SearchResult, Selection,
-    SelectionMode, SelectionPoint, TerminalImage,
+    ClipboardOperation, ClipboardSelection, ColorQuery, FileTransferOperation, Screen,
+    SearchResult, Selection, SelectionMode, SelectionPoint, TerminalImage,
 };
+pub use image_decode::{decode_image, DecodedImage, ImageDecodeError};
+pub use iterm2::{Iterm2Dimension, Iterm2FileParams};
 pub use sixel::{SixelDecoder, SixelImage};
 pub use drcs::{DecdldDecoder, DrcsFont, DrcsGlyph};
 pub use term::Terminal;

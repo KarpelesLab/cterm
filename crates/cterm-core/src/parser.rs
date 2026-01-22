@@ -13,7 +13,9 @@ use crate::screen::{
     Screen,
 };
 use crate::drcs::DecdldDecoder;
-use crate::sixel::SixelDecoder;
+use crate::image_decode::decode_image;
+use crate::iterm2::{Iterm2Dimension, Iterm2FileParams};
+use crate::sixel::{SixelDecoder, SixelImage};
 
 /// DCS (Device Control String) state for handling multi-byte sequences
 enum DcsState {
@@ -330,6 +332,10 @@ impl vte::Perform for ScreenPerformer<'_> {
             // Other color OSCs (13-19) - less common
             13..=19 => {
                 log::trace!("Unhandled color OSC: {}", command);
+            }
+            // iTerm2 inline images and file transfer (1337)
+            1337 => {
+                self.handle_osc_1337(params);
             }
             // Copy to clipboard (52)
             52 => {
@@ -721,6 +727,175 @@ impl vte::Perform for ScreenPerformer<'_> {
 }
 
 impl ScreenPerformer<'_> {
+    /// Handle OSC 1337 (iTerm2 inline images and file transfer)
+    ///
+    /// Protocol format: OSC 1337 ; File=[params] : base64data ST
+    fn handle_osc_1337(&mut self, params: &[&[u8]]) {
+        // Reconstruct the full content from all params after the command
+        // VTE splits on `;` so we need to rejoin
+        if params.len() < 2 {
+            return;
+        }
+
+        // Join all params after the command number
+        let content = params[1..]
+            .iter()
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .collect::<Vec<_>>()
+            .join(";");
+
+        // Check for File= prefix
+        if !content.starts_with("File=") {
+            log::trace!("OSC 1337: unhandled subcommand");
+            return;
+        }
+
+        let content = &content[5..]; // Strip "File="
+
+        // Find the colon separator between params and base64 data
+        let Some(colon_pos) = content.find(':') else {
+            log::debug!("OSC 1337 File: no colon separator found");
+            return;
+        };
+
+        let param_str = &content[..colon_pos];
+        let base64_data = &content[colon_pos + 1..];
+
+        log::debug!(
+            "OSC 1337 File: params={:?}, data_len={}",
+            param_str,
+            base64_data.len()
+        );
+
+        // Parse parameters
+        let file_params = Iterm2FileParams::parse(param_str);
+
+        // Decode base64 data
+        use base64::Engine;
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(base64_data) {
+            Ok(data) => data,
+            Err(e) => {
+                log::warn!("OSC 1337 File: base64 decode failed: {}", e);
+                return;
+            }
+        };
+
+        if file_params.inline {
+            // Inline image display
+            self.handle_iterm2_inline_image(file_params, decoded);
+        } else {
+            // File transfer - queue for UI to handle
+            log::debug!(
+                "OSC 1337 File transfer: name={:?}, size={}",
+                file_params.name,
+                decoded.len()
+            );
+            self.screen.queue_file_transfer(file_params.name, decoded);
+        }
+    }
+
+    /// Handle inline image display from iTerm2 protocol
+    fn handle_iterm2_inline_image(&mut self, params: Iterm2FileParams, data: Vec<u8>) {
+        // Decode the image
+        let decoded = match decode_image(&data) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("OSC 1337 inline image decode failed: {}", e);
+                return;
+            }
+        };
+
+        log::debug!(
+            "OSC 1337 inline image: {}x{} pixels, name={:?}",
+            decoded.width,
+            decoded.height,
+            params.name
+        );
+
+        // Calculate display dimensions
+        let cell_width = self.screen.cell_width_hint();
+        let cell_height = self.screen.cell_height_hint();
+        let screen_cols = self.screen.width();
+        let screen_rows = self.screen.height();
+
+        // Calculate target pixel dimensions based on params
+        let target_width = params
+            .width
+            .to_pixels(cell_width, screen_cols, decoded.width);
+        let target_height = params
+            .height
+            .to_pixels(cell_height, screen_rows, decoded.height);
+
+        // Handle aspect ratio preservation
+        let (final_width, final_height) = if params.preserve_aspect_ratio {
+            let aspect_ratio = decoded.width as f64 / decoded.height as f64;
+
+            // If only width or height specified, calculate the other
+            match (&params.width, &params.height) {
+                (Iterm2Dimension::Auto, Iterm2Dimension::Auto) => {
+                    (decoded.width, decoded.height)
+                }
+                (Iterm2Dimension::Auto, _) => {
+                    let w = (target_height as f64 * aspect_ratio).round() as usize;
+                    (w, target_height)
+                }
+                (_, Iterm2Dimension::Auto) => {
+                    let h = (target_width as f64 / aspect_ratio).round() as usize;
+                    (target_width, h)
+                }
+                _ => {
+                    // Both specified - fit within bounds while preserving aspect ratio
+                    let scale_w = target_width as f64 / decoded.width as f64;
+                    let scale_h = target_height as f64 / decoded.height as f64;
+                    let scale = scale_w.min(scale_h);
+                    (
+                        (decoded.width as f64 * scale).round() as usize,
+                        (decoded.height as f64 * scale).round() as usize,
+                    )
+                }
+            }
+        } else {
+            (target_width, target_height)
+        };
+
+        // Calculate cell dimensions
+        let cell_cols = self.screen.image_cols_for_width(final_width);
+        let cell_rows = self.screen.image_rows_for_height(final_height);
+
+        let col = self.screen.cursor.col;
+        let row = self.screen.cursor.row;
+
+        // Create SixelImage compatible structure (reuse existing image infrastructure)
+        let sixel_image = SixelImage {
+            data: decoded.data,
+            width: decoded.width,
+            height: decoded.height,
+        };
+
+        // Add the image to the screen
+        self.screen
+            .add_image_with_size(col, row, cell_cols, cell_rows, sixel_image);
+
+        // Move cursor to the row after the image (iTerm2 behavior)
+        let last_image_row = row + cell_rows.saturating_sub(1);
+        if last_image_row >= self.screen.height() {
+            let scroll_amount = last_image_row - self.screen.height() + 1;
+            self.screen.scroll_up(scroll_amount);
+            self.screen.cursor.row = self.screen.height() - 1;
+        } else {
+            self.screen.cursor.row = last_image_row;
+        }
+        self.screen.cursor.col = 0;
+
+        log::debug!(
+            "iTerm2 image placed at ({}, {}) spanning {}x{} cells",
+            col,
+            row,
+            cell_cols,
+            cell_rows
+        );
+    }
+
     /// Parse SCS designator from intermediates and final character
     fn parse_scs_designator(intermediates: &[u8], final_char: u8) -> Option<String> {
         // Standard character sets return None (use built-in)
