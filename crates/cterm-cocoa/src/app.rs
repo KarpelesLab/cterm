@@ -237,21 +237,21 @@ define_class!(
                         window.setTitle(&NSString::from_str(&tab_state.title));
                     }
 
+                    // Disable tabbing to prevent auto-merging into existing windows
+                    window.setTabbingMode(objc2_app_kit::NSWindowTabbingMode::Disallowed);
+
                     self.ivars().windows.borrow_mut().push(window.clone());
 
                     if i == 0 {
                         // Make first window key
                         window.makeKeyAndOrderFront(None);
                     } else {
-                        // Add additional windows as tabs
-                        if let Some(first_window) = self.ivars().windows.borrow().first() {
-                            first_window.addTabbedWindow_ordered(
-                                &window,
-                                objc2_app_kit::NSWindowOrderingMode::Above,
-                            );
-                        }
-                        window.orderFront(None);
+                        // Show as separate window (not as tab)
+                        window.makeKeyAndOrderFront(None);
                     }
+
+                    // Re-enable tabbing for future tabs in this window
+                    window.setTabbingMode(objc2_app_kit::NSWindowTabbingMode::Preferred);
                 }
 
                 // Clear crash state file after successful recovery
