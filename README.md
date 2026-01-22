@@ -25,6 +25,9 @@ A high-performance, customizable terminal emulator built in pure Rust. Features 
 - **Color Queries**: OSC 10/11 color query support for theme-aware applications
 - **Alternate Screen**: Full alternate screen buffer support (for vim, less, etc.)
 - **Sixel Graphics**: Inline image display with DEC Sixel protocol support
+- **iTerm2 Graphics**: Inline images via OSC 1337 protocol (PNG, JPEG, GIF)
+- **iTerm2 File Transfer**: Receive files via OSC 1337 with streaming support for large files
+- **DRCS Fonts**: Soft font support via DECDLD for custom character sets
 
 ### System Integration
 - **Native PTY**: Cross-platform PTY implementation (Unix openpty, Windows ConPTY ready)
@@ -43,7 +46,8 @@ Download the latest release from the [GitHub Releases](https://github.com/Karpel
 #### Prerequisites
 
 - Rust 1.70 or later
-- GTK4 development libraries
+
+**Linux only** - GTK4 development libraries:
 
 **Debian/Ubuntu:**
 ```bash
@@ -60,10 +64,8 @@ sudo dnf install gtk4-devel
 sudo pacman -S gtk4
 ```
 
-**macOS (Homebrew):**
-```bash
-brew install gtk4
-```
+**macOS:**
+No additional dependencies required - uses native AppKit/CoreGraphics.
 
 #### Build
 
@@ -148,6 +150,7 @@ See [docs/configuration.md](docs/configuration.md) for detailed configuration op
 | 11 | Query/set background color |
 | 12 | Query/set cursor color |
 | 52 | Clipboard operations |
+| 1337 | iTerm2 inline images and file transfer |
 
 ### Sixel Graphics
 
@@ -166,6 +169,34 @@ convert image.png -resize 200x200 sixel:-
 # Using libsixel
 img2sixel image.png
 ```
+
+### iTerm2 Graphics Protocol (OSC 1337)
+
+cterm supports iTerm2's inline image protocol for displaying PNG, JPEG, and GIF images:
+- Inline image display with `inline=1`
+- File transfer with `inline=0` (shows notification bar with Save/Save As/Discard)
+- Streaming file transfer support for large files (spills to disk when >1MB)
+- Configurable width/height in pixels, cells, or percentages
+- Aspect ratio preservation
+
+Test with:
+```bash
+# Using imgcat (from iTerm2 utilities)
+imgcat image.png
+
+# Manual test (inline image)
+printf '\033]1337;File=inline=1:'$(base64 < image.png)'\a'
+
+# Manual test (file transfer)
+printf '\033]1337;File=name='$(echo -n "test.bin" | base64)':'$(base64 < file.bin)'\a'
+```
+
+### DRCS (Soft Fonts)
+
+cterm supports DECDLD (DEC Download) for custom character sets:
+- Define custom glyphs via escape sequences
+- Multiple font sizes supported
+- Designate fonts to G0/G1 character sets
 
 ## Architecture
 
@@ -202,9 +233,10 @@ Custom themes can be added as TOML files in the `themes/` configuration subdirec
 - [x] Text selection and copy/paste
 - [x] Crash recovery (macOS)
 - [x] Sixel graphics support
+- [x] iTerm2 graphics protocol (OSC 1337)
+- [x] DRCS soft font support
 - [ ] Split panes
 - [ ] Qt backend
-- [ ] iTerm2 graphics protocol
 - [ ] Session save/restore across restarts
 - [ ] Plugin system
 

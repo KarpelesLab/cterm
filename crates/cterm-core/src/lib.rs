@@ -18,6 +18,7 @@ pub mod parser;
 pub mod pty;
 pub mod screen;
 pub mod sixel;
+pub mod streaming_file;
 pub mod term;
 
 pub use cell::{Cell, CellAttrs};
@@ -32,5 +33,6 @@ pub use screen::{
 pub use image_decode::{decode_image, DecodedImage, ImageDecodeError};
 pub use iterm2::{Iterm2Dimension, Iterm2FileParams};
 pub use sixel::{SixelDecoder, SixelImage};
+pub use streaming_file::{StreamingFileData, StreamingFileReceiver, StreamingFileResult};
 pub use drcs::{DecdldDecoder, DrcsFont, DrcsGlyph};
 pub use term::Terminal;

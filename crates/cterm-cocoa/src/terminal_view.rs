@@ -1900,6 +1900,25 @@ impl TerminalView {
                         size
                     );
                 }
+                cterm_core::FileTransferOperation::StreamingFileReceived { id, result } => {
+                    let name = result.params.name.clone();
+                    let size = result.total_bytes;
+
+                    self.ivars()
+                        .file_manager
+                        .borrow_mut()
+                        .set_pending_streaming(id, name.clone(), result.data);
+
+                    if let Some(ref bar) = *self.ivars().notification_bar.borrow() {
+                        bar.show_file(id, name.as_deref(), size);
+                    }
+
+                    log::info!(
+                        "Streaming file transfer received: {:?} ({} bytes)",
+                        name.as_deref().unwrap_or("unnamed"),
+                        size
+                    );
+                }
             }
         }
     }

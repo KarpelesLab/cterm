@@ -167,9 +167,9 @@ pub enum ColorQuery {
 ///
 /// When inline=0, the protocol sends files that should be offered
 /// to the user for saving rather than displayed inline.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum FileTransferOperation {
-    /// A file was received and should be offered for saving
+    /// A file was received and should be offered for saving (legacy, small files)
     FileReceived {
         /// Unique ID for this transfer
         id: u64,
@@ -177,6 +177,13 @@ pub enum FileTransferOperation {
         name: Option<String>,
         /// File data
         data: Vec<u8>,
+    },
+    /// A file was received via streaming (supports large files)
+    StreamingFileReceived {
+        /// Unique ID for this transfer
+        id: u64,
+        /// The streaming result containing params and data
+        result: crate::streaming_file::StreamingFileResult,
     },
 }
 
@@ -512,6 +519,17 @@ impl Screen {
         self.next_file_transfer_id += 1;
         self.pending_file_transfers
             .push(FileTransferOperation::FileReceived { id, name, data });
+    }
+
+    /// Queue a streaming file transfer operation
+    pub fn queue_streaming_file_transfer(
+        &mut self,
+        result: crate::streaming_file::StreamingFileResult,
+    ) {
+        let id = self.next_file_transfer_id;
+        self.next_file_transfer_id += 1;
+        self.pending_file_transfers
+            .push(FileTransferOperation::StreamingFileReceived { id, result });
     }
 
     /// Take all pending file transfer operations (drains the queue)
