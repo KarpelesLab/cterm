@@ -1,6 +1,6 @@
 # cterm
 
-A high-performance, customizable terminal emulator built in pure Rust with GTK4. Features a modular architecture designed to support alternative UI backends, with optimizations for running AI coding assistants like Claude Code.
+A high-performance, customizable terminal emulator built in pure Rust. Features native UI on macOS (AppKit/CoreGraphics) and GTK4 on Linux, with a modular architecture and optimizations for running AI coding assistants like Claude Code.
 
 ## Features
 
@@ -27,6 +27,7 @@ A high-performance, customizable terminal emulator built in pure Rust with GTK4.
 
 ### System Integration
 - **Native PTY**: Cross-platform PTY implementation (Unix openpty, Windows ConPTY ready)
+- **Crash Recovery**: Automatic recovery from crashes - a watchdog process preserves terminal sessions and restores them after unexpected termination (macOS)
 - **Seamless Upgrades**: Update cterm without losing terminal sessions (Unix)
 - **Auto-Update**: Built-in update checker with GitHub releases integration
 
@@ -112,8 +113,9 @@ cterm/
 ├── crates/
 │   ├── cterm-core/     # Core terminal emulation (parser, screen, PTY)
 │   ├── cterm-ui/       # UI abstraction traits
-│   ├── cterm-app/      # Application logic (config, sessions, upgrades)
-│   └── cterm-gtk/      # GTK4 UI implementation
+│   ├── cterm-app/      # Application logic (config, sessions, upgrades, crash recovery)
+│   ├── cterm-gtk/      # GTK4 UI implementation (Linux)
+│   └── cterm-cocoa/    # Native macOS UI using AppKit/CoreGraphics
 └── docs/               # Documentation
 ```
 
@@ -121,7 +123,8 @@ The modular architecture enables:
 - **cterm-core**: Pure Rust terminal emulation, reusable in other projects
 - **cterm-ui**: UI-agnostic traits for toolkit abstraction
 - **cterm-app**: Shared application logic between UI implementations
-- **cterm-gtk**: GTK4-specific rendering and widgets
+- **cterm-gtk**: GTK4-specific rendering and widgets (Linux, cross-platform)
+- **cterm-cocoa**: Native macOS implementation using AppKit and CoreGraphics
 
 ## Built-in Themes
 
@@ -135,9 +138,9 @@ Custom themes can be added as TOML files in the `themes/` configuration subdirec
 
 ## Roadmap
 
-- [ ] Text selection and improved copy/paste
+- [x] Text selection and copy/paste
+- [x] Crash recovery (macOS)
 - [ ] Split panes
-- [ ] GPU-accelerated rendering
 - [ ] Qt backend
 - [ ] Sixel/iTerm2 graphics support
 - [ ] Session save/restore across restarts
