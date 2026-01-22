@@ -280,7 +280,7 @@ impl CtermWindow {
         };
 
         // Set window title for recovered terminal
-        this.setTitle(&NSString::from_str("cterm (recovered)"));
+        this.setTitle(&NSString::from_str("cterm"));
 
         // Set minimum size
         this.setMinSize(NSSize::new(400.0, 200.0));

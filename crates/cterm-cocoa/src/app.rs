@@ -7,7 +7,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate};
-use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
+use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString};
 use std::path::PathBuf;
 
 use cterm_app::config::{load_config, Config};
@@ -186,7 +186,7 @@ define_class!(
                         recovered,
                     );
 
-                    // Try to restore display state if we have saved state for this FD
+                    // Try to restore display state and title if we have saved state for this FD
                     if let Some(tab_state) = state_map.get(&recovered.id) {
                         if let Some(terminal_view) = window.active_terminal() {
                             terminal_view.restore_display_state(&tab_state.terminal);
@@ -195,6 +195,8 @@ define_class!(
                                 recovered.id
                             );
                         }
+                        // Restore window title
+                        window.setTitle(&NSString::from_str(&tab_state.title));
                     }
 
                     self.ivars().windows.borrow_mut().push(window.clone());
