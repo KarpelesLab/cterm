@@ -235,6 +235,153 @@ fn default_true() -> bool {
     true
 }
 
+/// SSH port forwarding configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshPortForward {
+    /// Local port to bind
+    pub local_port: u16,
+    /// Remote host (default: localhost)
+    #[serde(default = "default_localhost")]
+    pub remote_host: String,
+    /// Remote port to forward to
+    pub remote_port: u16,
+}
+
+fn default_localhost() -> String {
+    "localhost".to_string()
+}
+
+/// SSH-specific configuration for a sticky tab
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SshTabConfig {
+    /// Remote host (hostname or IP address)
+    pub host: String,
+    /// SSH port (default: 22)
+    pub port: Option<u16>,
+    /// Username for SSH connection
+    pub username: Option<String>,
+    /// Path to identity file (private key)
+    pub identity_file: Option<PathBuf>,
+    /// Local port forwards (-L)
+    #[serde(default)]
+    pub local_forwards: Vec<SshPortForward>,
+    /// Remote port forwards (-R)
+    #[serde(default)]
+    pub remote_forwards: Vec<SshPortForward>,
+    /// Dynamic port forward / SOCKS proxy (-D)
+    pub dynamic_forward: Option<u16>,
+    /// Enable X11 forwarding (-X)
+    #[serde(default)]
+    pub x11_forward: bool,
+    /// Enable SSH agent forwarding (-A)
+    #[serde(default)]
+    pub agent_forward: bool,
+    /// Request a pseudo-terminal (default: true for interactive)
+    #[serde(default = "default_true")]
+    pub request_tty: bool,
+    /// Remote command to execute (instead of shell)
+    pub remote_command: Option<String>,
+    /// Additional SSH options (passed as -o key=value)
+    #[serde(default)]
+    pub options: std::collections::HashMap<String, String>,
+    /// Additional raw SSH arguments
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    /// Jump host / proxy (-J)
+    pub jump_host: Option<String>,
+}
+
+impl SshTabConfig {
+    /// Build SSH command and arguments
+    pub fn build_command(&self) -> (String, Vec<String>) {
+        let mut args = Vec::new();
+
+        // Port
+        if let Some(port) = self.port {
+            if port != 22 {
+                args.push("-p".to_string());
+                args.push(port.to_string());
+            }
+        }
+
+        // Identity file
+        if let Some(ref identity) = self.identity_file {
+            args.push("-i".to_string());
+            args.push(identity.to_string_lossy().to_string());
+        }
+
+        // Local port forwards
+        for fwd in &self.local_forwards {
+            args.push("-L".to_string());
+            args.push(format!(
+                "{}:{}:{}",
+                fwd.local_port, fwd.remote_host, fwd.remote_port
+            ));
+        }
+
+        // Remote port forwards
+        for fwd in &self.remote_forwards {
+            args.push("-R".to_string());
+            args.push(format!(
+                "{}:{}:{}",
+                fwd.local_port, fwd.remote_host, fwd.remote_port
+            ));
+        }
+
+        // Dynamic forward (SOCKS proxy)
+        if let Some(port) = self.dynamic_forward {
+            args.push("-D".to_string());
+            args.push(port.to_string());
+        }
+
+        // X11 forwarding
+        if self.x11_forward {
+            args.push("-X".to_string());
+        }
+
+        // Agent forwarding
+        if self.agent_forward {
+            args.push("-A".to_string());
+        }
+
+        // TTY allocation
+        if self.request_tty {
+            args.push("-t".to_string());
+        }
+
+        // Jump host
+        if let Some(ref jump) = self.jump_host {
+            args.push("-J".to_string());
+            args.push(jump.clone());
+        }
+
+        // SSH options
+        for (key, value) in &self.options {
+            args.push("-o".to_string());
+            args.push(format!("{}={}", key, value));
+        }
+
+        // Extra args
+        args.extend(self.extra_args.iter().cloned());
+
+        // Build destination: user@host or just host
+        let destination = if let Some(ref user) = self.username {
+            format!("{}@{}", user, self.host)
+        } else {
+            self.host.clone()
+        };
+        args.push(destination);
+
+        // Remote command
+        if let Some(ref cmd) = self.remote_command {
+            args.push(cmd.clone());
+        }
+
+        ("ssh".to_string(), args)
+    }
+}
+
 /// Keyboard shortcuts configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -317,6 +464,8 @@ pub struct StickyTabConfig {
     pub env: HashMap<String, String>,
     /// Docker-specific configuration (if present, this is a Docker tab)
     pub docker: Option<DockerTabConfig>,
+    /// SSH-specific configuration (if present, this is an SSH remote tab)
+    pub ssh: Option<SshTabConfig>,
 }
 
 impl Default for StickyTabConfig {
@@ -333,6 +482,7 @@ impl Default for StickyTabConfig {
             unique: false,
             env: HashMap::new(),
             docker: None,
+            ssh: None,
         }
     }
 }
@@ -401,9 +551,15 @@ impl StickyTabConfig {
         self.docker.is_some()
     }
 
+    /// Check if this is an SSH remote tab
+    pub fn is_ssh(&self) -> bool {
+        self.ssh.is_some()
+    }
+
     /// Get the command and arguments for this sticky tab
     ///
     /// For Docker tabs, this builds the appropriate docker exec/run command.
+    /// For SSH tabs, this builds the ssh command with configured options.
     /// For regular tabs, this returns the configured command and args.
     pub fn get_command_args(&self) -> (Option<String>, Vec<String>) {
         if let Some(ref docker) = self.docker {
@@ -430,6 +586,9 @@ impl StickyTabConfig {
                     (Some(cmd), args)
                 }
             }
+        } else if let Some(ref ssh) = self.ssh {
+            let (cmd, args) = ssh.build_command();
+            (Some(cmd), args)
         } else {
             (self.command.clone(), self.args.clone())
         }
@@ -457,6 +616,21 @@ impl StickyTabConfig {
                 mount_ssh: false,
                 mount_gitconfig: true,
                 workdir: Some("/workspace".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Create an SSH remote connection tab configuration
+    pub fn ssh(name: &str, host: &str, username: Option<&str>) -> Self {
+        Self {
+            name: name.to_string(),
+            color: Some("#22c55e".into()), // Green for remote connections
+            keep_open: true,
+            ssh: Some(SshTabConfig {
+                host: host.to_string(),
+                username: username.map(|s| s.to_string()),
                 ..Default::default()
             }),
             ..Default::default()

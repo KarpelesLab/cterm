@@ -17,7 +17,9 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
-use cterm_app::config::{save_sticky_tabs, DockerMode, DockerTabConfig, StickyTabConfig};
+use cterm_app::config::{
+    save_sticky_tabs, DockerMode, DockerTabConfig, SshTabConfig, StickyTabConfig,
+};
 
 /// State for the tab templates window
 pub struct TabTemplatesWindowIvars {
@@ -41,6 +43,17 @@ pub struct TabTemplatesWindowIvars {
     docker_auto_remove_checkbox: RefCell<Option<Retained<NSButton>>>,
     docker_project_dir_field: RefCell<Option<Retained<NSTextField>>>,
     docker_status_label: RefCell<Option<Retained<NSTextField>>>,
+    // SSH fields
+    ssh_enabled_checkbox: RefCell<Option<Retained<NSButton>>>,
+    ssh_host_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_port_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_username_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_identity_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_jump_host_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_local_forward_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_remote_command_field: RefCell<Option<Retained<NSTextField>>>,
+    ssh_x11_forward_checkbox: RefCell<Option<Retained<NSButton>>>,
+    ssh_agent_forward_checkbox: RefCell<Option<Retained<NSButton>>>,
 }
 
 define_class!(
@@ -145,13 +158,22 @@ define_class!(
                 popup.selectItemAtIndex(0);
             }
         }
+
+        #[unsafe(method(sshEnabledChanged:))]
+        fn action_ssh_enabled_changed(&self, _sender: Option<&AnyObject>) {
+            // Save and update UI visibility based on SSH enabled state
+            if let Some(index) = *self.ivars().selected_index.borrow() {
+                self.save_fields_to_template(index);
+                self.update_ssh_fields_visibility();
+            }
+        }
     }
 );
 
 impl TabTemplatesWindow {
     /// Create and show the tab templates window
     pub fn new(mtm: MainThreadMarker, templates: Vec<StickyTabConfig>) -> Retained<Self> {
-        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(550.0, 620.0));
+        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(550.0, 800.0));
 
         let style_mask =
             NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
@@ -178,6 +200,17 @@ impl TabTemplatesWindow {
             docker_auto_remove_checkbox: RefCell::new(None),
             docker_project_dir_field: RefCell::new(None),
             docker_status_label: RefCell::new(None),
+            // SSH fields
+            ssh_enabled_checkbox: RefCell::new(None),
+            ssh_host_field: RefCell::new(None),
+            ssh_port_field: RefCell::new(None),
+            ssh_username_field: RefCell::new(None),
+            ssh_identity_field: RefCell::new(None),
+            ssh_jump_host_field: RefCell::new(None),
+            ssh_local_forward_field: RefCell::new(None),
+            ssh_remote_command_field: RefCell::new(None),
+            ssh_x11_forward_checkbox: RefCell::new(None),
+            ssh_agent_forward_checkbox: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -269,6 +302,8 @@ impl TabTemplatesWindow {
         presets_popup.addItemWithTitle(&NSString::from_str("Alpine Container"));
         presets_popup.addItemWithTitle(&NSString::from_str("Node.js Container"));
         presets_popup.addItemWithTitle(&NSString::from_str("Python Container"));
+        presets_popup.addItemWithTitle(&NSString::from_str("SSH Connection"));
+        presets_popup.addItemWithTitle(&NSString::from_str("SSH with Agent Forwarding"));
         unsafe { presets_popup.setTarget(Some(self)) };
         unsafe { presets_popup.setAction(Some(sel!(addPreset:))) };
 
@@ -430,6 +465,92 @@ impl TabTemplatesWindow {
         main_stack.addView_inGravity(&status_label, NSStackViewGravity::Top);
         *self.ivars().docker_status_label.borrow_mut() = Some(status_label);
 
+        // SSH section separator
+        let ssh_separator = unsafe { objc2_app_kit::NSBox::new(mtm) };
+        unsafe { ssh_separator.setBoxType(objc2_app_kit::NSBoxType::Separator) };
+        main_stack.addView_inGravity(&ssh_separator, NSStackViewGravity::Top);
+
+        // SSH section label
+        let ssh_label =
+            unsafe { NSTextField::labelWithString(&NSString::from_str("SSH Configuration"), mtm) };
+        unsafe {
+            ssh_label.setFont(Some(&objc2_app_kit::NSFont::boldSystemFontOfSize(
+                objc2_app_kit::NSFont::systemFontSize(),
+            )))
+        };
+        main_stack.addView_inGravity(&ssh_label, NSStackViewGravity::Top);
+
+        // SSH enabled checkbox
+        let ssh_enabled_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Enable SSH (remote connection)"),
+                Some(self),
+                Some(sel!(sshEnabledChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&ssh_enabled_cb, NSStackViewGravity::Top);
+        *self.ivars().ssh_enabled_checkbox.borrow_mut() = Some(ssh_enabled_cb);
+
+        // SSH Host field
+        let ssh_host_row = self.create_field_row(mtm, "Host:", 200.0);
+        main_stack.addView_inGravity(&ssh_host_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_host_field.borrow_mut() = Some(ssh_host_row.1);
+
+        // SSH Port field
+        let ssh_port_row = self.create_field_row(mtm, "Port:", 80.0);
+        main_stack.addView_inGravity(&ssh_port_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_port_field.borrow_mut() = Some(ssh_port_row.1);
+
+        // SSH Username field
+        let ssh_username_row = self.create_field_row(mtm, "Username:", 150.0);
+        main_stack.addView_inGravity(&ssh_username_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_username_field.borrow_mut() = Some(ssh_username_row.1);
+
+        // SSH Identity file field
+        let ssh_identity_row = self.create_field_row(mtm, "Identity File:", 250.0);
+        main_stack.addView_inGravity(&ssh_identity_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_identity_field.borrow_mut() = Some(ssh_identity_row.1);
+
+        // SSH Jump host field
+        let ssh_jump_row = self.create_field_row(mtm, "Jump Host:", 200.0);
+        main_stack.addView_inGravity(&ssh_jump_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_jump_host_field.borrow_mut() = Some(ssh_jump_row.1);
+
+        // SSH Local forwards field
+        let ssh_local_fwd_row = self.create_field_row(mtm, "Local Fwd:", 200.0);
+        main_stack.addView_inGravity(&ssh_local_fwd_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_local_forward_field.borrow_mut() = Some(ssh_local_fwd_row.1);
+
+        // SSH Remote command field
+        let ssh_remote_cmd_row = self.create_field_row(mtm, "Remote Cmd:", 200.0);
+        main_stack.addView_inGravity(&ssh_remote_cmd_row.0, NSStackViewGravity::Top);
+        *self.ivars().ssh_remote_command_field.borrow_mut() = Some(ssh_remote_cmd_row.1);
+
+        // SSH X11 forwarding checkbox
+        let ssh_x11_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("X11 Forwarding (-X)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&ssh_x11_cb, NSStackViewGravity::Top);
+        *self.ivars().ssh_x11_forward_checkbox.borrow_mut() = Some(ssh_x11_cb);
+
+        // SSH Agent forwarding checkbox
+        let ssh_agent_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Agent Forwarding (-A)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&ssh_agent_cb, NSStackViewGravity::Top);
+        *self.ivars().ssh_agent_forward_checkbox.borrow_mut() = Some(ssh_agent_cb);
+
         // Bottom buttons
         let bottom_stack = unsafe { NSStackView::new(mtm) };
         bottom_stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -590,7 +711,102 @@ impl TabTemplatesWindow {
                 field.setStringValue(&NSString::from_str(&project_dir));
             }
 
+            // SSH fields
+            let ssh_enabled = template.ssh.is_some();
+            if let Some(cb) = self.ivars().ssh_enabled_checkbox.borrow().as_ref() {
+                cb.setState(if ssh_enabled { 1 } else { 0 });
+            }
+
+            if let Some(field) = self.ivars().ssh_host_field.borrow().as_ref() {
+                let host = template.ssh.as_ref().map(|s| s.host.as_str()).unwrap_or("");
+                field.setStringValue(&NSString::from_str(host));
+            }
+
+            if let Some(field) = self.ivars().ssh_port_field.borrow().as_ref() {
+                let port = template
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.port)
+                    .map(|p| p.to_string())
+                    .unwrap_or_default();
+                field.setStringValue(&NSString::from_str(&port));
+            }
+
+            if let Some(field) = self.ivars().ssh_username_field.borrow().as_ref() {
+                let username = template
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.username.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(username));
+            }
+
+            if let Some(field) = self.ivars().ssh_identity_field.borrow().as_ref() {
+                let identity = template
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.identity_file.as_ref())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                field.setStringValue(&NSString::from_str(&identity));
+            }
+
+            if let Some(field) = self.ivars().ssh_jump_host_field.borrow().as_ref() {
+                let jump_host = template
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.jump_host.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(jump_host));
+            }
+
+            if let Some(field) = self.ivars().ssh_local_forward_field.borrow().as_ref() {
+                // Format: local_port:remote_host:remote_port (comma separated for multiple)
+                let fwds = template
+                    .ssh
+                    .as_ref()
+                    .map(|s| {
+                        s.local_forwards
+                            .iter()
+                            .map(|f| {
+                                format!("{}:{}:{}", f.local_port, f.remote_host, f.remote_port)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                field.setStringValue(&NSString::from_str(&fwds));
+            }
+
+            if let Some(field) = self.ivars().ssh_remote_command_field.borrow().as_ref() {
+                let cmd = template
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.remote_command.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(cmd));
+            }
+
+            if let Some(cb) = self.ivars().ssh_x11_forward_checkbox.borrow().as_ref() {
+                let x11 = template
+                    .ssh
+                    .as_ref()
+                    .map(|s| s.x11_forward)
+                    .unwrap_or(false);
+                cb.setState(if x11 { 1 } else { 0 });
+            }
+
+            if let Some(cb) = self.ivars().ssh_agent_forward_checkbox.borrow().as_ref() {
+                let agent = template
+                    .ssh
+                    .as_ref()
+                    .map(|s| s.agent_forward)
+                    .unwrap_or(false);
+                cb.setState(if agent { 1 } else { 0 });
+            }
+
             self.update_docker_fields_visibility();
+            self.update_ssh_fields_visibility();
         }
     }
 
@@ -642,6 +858,38 @@ impl TabTemplatesWindow {
         }
         if let Some(field) = self.ivars().docker_project_dir_field.borrow().as_ref() {
             field.setStringValue(&empty);
+        }
+
+        // Clear SSH fields
+        if let Some(cb) = self.ivars().ssh_enabled_checkbox.borrow().as_ref() {
+            cb.setState(0);
+        }
+        if let Some(field) = self.ivars().ssh_host_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_port_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_username_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_identity_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_jump_host_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_local_forward_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().ssh_remote_command_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(cb) = self.ivars().ssh_x11_forward_checkbox.borrow().as_ref() {
+            cb.setState(0);
+        }
+        if let Some(cb) = self.ivars().ssh_agent_forward_checkbox.borrow().as_ref() {
+            cb.setState(0);
         }
     }
 
@@ -737,6 +985,71 @@ impl TabTemplatesWindow {
                             Some(PathBuf::from(project_dir))
                         };
                     }
+                }
+            }
+
+            // Save SSH fields
+            let ssh_enabled = self
+                .ivars()
+                .ssh_enabled_checkbox
+                .borrow()
+                .as_ref()
+                .map(|cb| cb.state() != 0)
+                .unwrap_or(false);
+
+            if !ssh_enabled {
+                template.ssh = None;
+            } else {
+                let ssh = template.ssh.get_or_insert_with(SshTabConfig::default);
+
+                if let Some(field) = self.ivars().ssh_host_field.borrow().as_ref() {
+                    ssh.host = field.stringValue().to_string();
+                }
+
+                if let Some(field) = self.ivars().ssh_port_field.borrow().as_ref() {
+                    let port_str = field.stringValue().to_string();
+                    ssh.port = port_str.parse().ok();
+                }
+
+                if let Some(field) = self.ivars().ssh_username_field.borrow().as_ref() {
+                    let username = field.stringValue().to_string();
+                    ssh.username = if username.is_empty() {
+                        None
+                    } else {
+                        Some(username)
+                    };
+                }
+
+                if let Some(field) = self.ivars().ssh_identity_field.borrow().as_ref() {
+                    let identity = field.stringValue().to_string();
+                    ssh.identity_file = if identity.is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(identity))
+                    };
+                }
+
+                if let Some(field) = self.ivars().ssh_jump_host_field.borrow().as_ref() {
+                    let jump = field.stringValue().to_string();
+                    ssh.jump_host = if jump.is_empty() { None } else { Some(jump) };
+                }
+
+                if let Some(field) = self.ivars().ssh_local_forward_field.borrow().as_ref() {
+                    let fwd_str = field.stringValue().to_string();
+                    ssh.local_forwards = Self::parse_port_forwards(&fwd_str);
+                }
+
+                if let Some(field) = self.ivars().ssh_remote_command_field.borrow().as_ref() {
+                    let cmd = field.stringValue().to_string();
+                    ssh.remote_command = if cmd.is_empty() { None } else { Some(cmd) };
+                }
+
+                if let Some(cb) = self.ivars().ssh_x11_forward_checkbox.borrow().as_ref() {
+                    ssh.x11_forward = cb.state() != 0;
+                }
+
+                if let Some(cb) = self.ivars().ssh_agent_forward_checkbox.borrow().as_ref() {
+                    ssh.agent_forward = cb.state() != 0;
                 }
             }
         }
@@ -947,6 +1260,33 @@ impl TabTemplatesWindow {
                     ..Default::default()
                 }
             }
+            7 => {
+                // SSH Connection (basic)
+                StickyTabConfig {
+                    name: "SSH Server".into(),
+                    color: Some("#22c55e".into()), // Green for remote
+                    keep_open: true,
+                    ssh: Some(SshTabConfig {
+                        host: "hostname".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+            8 => {
+                // SSH with Agent Forwarding
+                StickyTabConfig {
+                    name: "SSH (Agent Fwd)".into(),
+                    color: Some("#22c55e".into()),
+                    keep_open: true,
+                    ssh: Some(SshTabConfig {
+                        host: "hostname".into(),
+                        agent_forward: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
             _ => return, // Index 0 is "Add Preset..." label, do nothing
         };
 
@@ -964,6 +1304,117 @@ impl TabTemplatesWindow {
 
         *self.ivars().selected_index.borrow_mut() = Some(new_index);
         self.load_template_into_fields(new_index);
+    }
+
+    /// Parse port forward string (format: "local_port:host:remote_port" comma-separated)
+    fn parse_port_forwards(input: &str) -> Vec<cterm_app::config::SshPortForward> {
+        use cterm_app::config::SshPortForward;
+
+        if input.is_empty() {
+            return Vec::new();
+        }
+
+        input
+            .split(',')
+            .filter_map(|part| {
+                let parts: Vec<&str> = part.trim().split(':').collect();
+                match parts.len() {
+                    2 => {
+                        // local_port:remote_port (assume localhost)
+                        let local_port = parts[0].parse().ok()?;
+                        let remote_port = parts[1].parse().ok()?;
+                        Some(SshPortForward {
+                            local_port,
+                            remote_host: "localhost".to_string(),
+                            remote_port,
+                        })
+                    }
+                    3 => {
+                        // local_port:host:remote_port
+                        let local_port = parts[0].parse().ok()?;
+                        let remote_host = parts[1].to_string();
+                        let remote_port = parts[2].parse().ok()?;
+                        Some(SshPortForward {
+                            local_port,
+                            remote_host,
+                            remote_port,
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Update visibility of SSH fields based on SSH enabled state
+    fn update_ssh_fields_visibility(&self) {
+        let ssh_enabled = self
+            .ivars()
+            .ssh_enabled_checkbox
+            .borrow()
+            .as_ref()
+            .map(|cb| cb.state() != 0)
+            .unwrap_or(false);
+
+        // Show/hide all SSH fields based on enabled state
+        if let Some(field) = self.ivars().ssh_host_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_port_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_username_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_identity_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_jump_host_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_local_forward_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(field) = self.ivars().ssh_remote_command_field.borrow().as_ref() {
+            field.setEnabled(ssh_enabled);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!ssh_enabled);
+            }
+        }
+
+        if let Some(cb) = self.ivars().ssh_x11_forward_checkbox.borrow().as_ref() {
+            cb.setEnabled(ssh_enabled);
+            cb.setHidden(!ssh_enabled);
+        }
+
+        if let Some(cb) = self.ivars().ssh_agent_forward_checkbox.borrow().as_ref() {
+            cb.setEnabled(ssh_enabled);
+            cb.setHidden(!ssh_enabled);
+        }
     }
 
     /// Auto-detect devcontainer.json when project directory changes
