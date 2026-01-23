@@ -40,6 +40,7 @@ pub struct TabTemplatesWindowIvars {
     docker_shell_field: RefCell<Option<Retained<NSTextField>>>,
     docker_auto_remove_checkbox: RefCell<Option<Retained<NSButton>>>,
     docker_project_dir_field: RefCell<Option<Retained<NSTextField>>>,
+    docker_status_label: RefCell<Option<Retained<NSTextField>>>,
 }
 
 define_class!(
@@ -55,12 +56,28 @@ define_class!(
 
     unsafe impl NSControlTextEditingDelegate for TabTemplatesWindow {
         #[unsafe(method(controlTextDidChange:))]
-        fn control_text_did_change(&self, _notification: &NSNotification) {
+        fn control_text_did_change(&self, notification: &NSNotification) {
             // Auto-save field changes to the selected template
             if let Some(index) = *self.ivars().selected_index.borrow() {
                 self.save_fields_to_template(index);
                 // Update popup button title if name changed
                 self.update_popup_item_title(index);
+
+                // Check if the changed field is the project directory field
+                // and auto-detect devcontainer.json
+                if let Some(changed_field) = notification.object() {
+                    if let Some(project_dir_field) =
+                        self.ivars().docker_project_dir_field.borrow().as_ref()
+                    {
+                        // Compare object pointers to see if it's the project dir field
+                        let changed_ptr: *const AnyObject = &*changed_field;
+                        let project_ptr: *const AnyObject =
+                            (project_dir_field as &AnyObject) as *const AnyObject;
+                        if changed_ptr == project_ptr {
+                            self.auto_detect_devcontainer();
+                        }
+                    }
+                }
             }
         }
     }
@@ -160,6 +177,7 @@ impl TabTemplatesWindow {
             docker_shell_field: RefCell::new(None),
             docker_auto_remove_checkbox: RefCell::new(None),
             docker_project_dir_field: RefCell::new(None),
+            docker_status_label: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -403,6 +421,14 @@ impl TabTemplatesWindow {
         let project_dir_row = self.create_field_row(mtm, "Project Dir:", 250.0);
         main_stack.addView_inGravity(&project_dir_row.0, NSStackViewGravity::Top);
         *self.ivars().docker_project_dir_field.borrow_mut() = Some(project_dir_row.1);
+
+        // Status label for devcontainer detection
+        let status_label = unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
+        unsafe {
+            status_label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        }
+        main_stack.addView_inGravity(&status_label, NSStackViewGravity::Top);
+        *self.ivars().docker_status_label.borrow_mut() = Some(status_label);
 
         // Bottom buttons
         let bottom_stack = unsafe { NSStackView::new(mtm) };
@@ -938,6 +964,74 @@ impl TabTemplatesWindow {
 
         *self.ivars().selected_index.borrow_mut() = Some(new_index);
         self.load_template_into_fields(new_index);
+    }
+
+    /// Auto-detect devcontainer.json when project directory changes
+    fn auto_detect_devcontainer(&self) {
+        // Get the project directory from the field
+        let project_dir = self
+            .ivars()
+            .docker_project_dir_field
+            .borrow()
+            .as_ref()
+            .map(|f| f.stringValue().to_string())
+            .unwrap_or_default();
+
+        if project_dir.is_empty() {
+            // Clear status and don't change mode
+            if let Some(label) = self.ivars().docker_status_label.borrow().as_ref() {
+                label.setStringValue(&NSString::from_str(""));
+            }
+            return;
+        }
+
+        let path = PathBuf::from(&project_dir);
+
+        // Check for .devcontainer/devcontainer.json
+        let devcontainer_path = path.join(".devcontainer/devcontainer.json");
+        let alt_devcontainer_path = path.join(".devcontainer.json");
+
+        let found = devcontainer_path.exists() || alt_devcontainer_path.exists();
+
+        if found {
+            // Update status label
+            if let Some(label) = self.ivars().docker_status_label.borrow().as_ref() {
+                label.setStringValue(&NSString::from_str("✓ devcontainer.json detected"));
+                unsafe {
+                    label.setTextColor(Some(&objc2_app_kit::NSColor::systemGreenColor()));
+                }
+            }
+
+            // Auto-switch to DevContainer mode if currently set to None
+            if let Some(popup) = self.ivars().docker_mode_popup.borrow().as_ref() {
+                let current_mode = popup.indexOfSelectedItem();
+                if current_mode == 0 {
+                    // Currently "None", switch to DevContainer
+                    popup.selectItemAtIndex(3); // DevContainer is index 3
+                    self.update_docker_fields_visibility();
+
+                    // Save the change
+                    if let Some(index) = *self.ivars().selected_index.borrow() {
+                        self.save_fields_to_template(index);
+                    }
+                }
+            }
+        } else {
+            // Update status label
+            if let Some(label) = self.ivars().docker_status_label.borrow().as_ref() {
+                if path.exists() {
+                    label.setStringValue(&NSString::from_str("No devcontainer.json found"));
+                    unsafe {
+                        label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+                    }
+                } else {
+                    label.setStringValue(&NSString::from_str("Directory does not exist"));
+                    unsafe {
+                        label.setTextColor(Some(&objc2_app_kit::NSColor::systemOrangeColor()));
+                    }
+                }
+            }
+        }
     }
 }
 
