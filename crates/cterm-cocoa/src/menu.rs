@@ -209,6 +209,15 @@ fn create_file_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
     templates_item.setSubmenu(Some(&templates_submenu));
     menu.addItem(&templates_item);
 
+    // Open in Container (Docker devcontainer)
+    menu.addItem(&create_menu_item_with_key(
+        mtm,
+        "Open in Container",
+        Some(sel!(openInContainer:)),
+        "d",
+        NSEventModifierFlags::Command.union(NSEventModifierFlags::Shift),
+    ));
+
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
     // Close Tab

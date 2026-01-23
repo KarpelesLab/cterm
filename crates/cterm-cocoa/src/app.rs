@@ -354,6 +354,24 @@ define_class!(
             log::info!("Created new window");
         }
 
+        /// Open a new tab running in a Docker devcontainer
+        #[unsafe(method(openInContainer:))]
+        fn action_open_in_container(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            // Check if Docker is available
+            if let Err(e) = cterm_app::docker::check_docker_available() {
+                log::warn!("Docker not available: {}", e);
+                // Could show an alert here
+                return;
+            }
+
+            // Create a devcontainer template with current directory
+            let cwd = std::env::current_dir().ok();
+            let template = cterm_app::config::StickyTabConfig::claude_devcontainer(cwd);
+
+            self.open_template(&template);
+            log::info!("Opened devcontainer tab");
+        }
+
         /// Called by windows when they close to remove from tracking
         #[unsafe(method(windowDidClose:))]
         fn window_did_close(&self, window: &CtermWindow) {

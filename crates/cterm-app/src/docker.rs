@@ -193,6 +193,112 @@ pub fn build_run_command(
     ("docker".to_string(), args)
 }
 
+/// Build command and arguments for a devcontainer-style `docker run`
+///
+/// This creates a container with:
+/// - Project directory mounted to /workspace (or custom workdir)
+/// - ~/.claude mounted for Claude credentials (optional)
+/// - ~/.ssh mounted for git SSH operations (optional)
+/// - ~/.gitconfig mounted for git configuration (optional)
+/// - Interactive terminal with specified shell
+///
+/// Returns (command, args) tuple suitable for PtyConfig
+pub fn build_devcontainer_command(
+    config: &crate::config::DockerTabConfig,
+) -> (String, Vec<String>) {
+    let image = config.image.as_deref().unwrap_or("node:20");
+    let shell = config.shell.as_deref().unwrap_or("/bin/bash");
+    let workdir = config.workdir.as_deref().unwrap_or("/workspace");
+
+    let mut args = vec!["run".to_string(), "-it".to_string()];
+
+    if config.auto_remove {
+        args.push("--rm".to_string());
+    }
+
+    // Set container name if specified (allows reconnecting)
+    if let Some(ref name) = config.container_name {
+        args.push("--name".to_string());
+        args.push(name.clone());
+    }
+
+    // Mount project directory
+    let project_dir = config
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    if project_dir.exists() {
+        args.push("-v".to_string());
+        args.push(format!("{}:{}:delegated", project_dir.display(), workdir));
+    }
+
+    // Get home directory using directories crate
+    let home_dir = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf());
+
+    // Mount ~/.claude for Claude credentials
+    if config.mount_claude_config {
+        if let Some(ref home) = home_dir {
+            let claude_dir = home.join(".claude");
+            // Create the directory if it doesn't exist
+            let _ = std::fs::create_dir_all(&claude_dir);
+            args.push("-v".to_string());
+            args.push(format!(
+                "{}:/home/node/.claude:delegated",
+                claude_dir.display()
+            ));
+        }
+    }
+
+    // Mount ~/.ssh for git SSH operations
+    if config.mount_ssh {
+        if let Some(ref home) = home_dir {
+            let ssh_dir = home.join(".ssh");
+            if ssh_dir.exists() {
+                args.push("-v".to_string());
+                args.push(format!("{}:/home/node/.ssh:ro", ssh_dir.display()));
+            }
+        }
+    }
+
+    // Mount ~/.gitconfig for git configuration
+    if config.mount_gitconfig {
+        if let Some(ref home) = home_dir {
+            let gitconfig = home.join(".gitconfig");
+            if gitconfig.exists() {
+                args.push("-v".to_string());
+                args.push(format!("{}:/home/node/.gitconfig:ro", gitconfig.display()));
+            }
+        }
+    }
+
+    // Set working directory inside container
+    args.push("-w".to_string());
+    args.push(workdir.to_string());
+
+    // Add any extra docker args
+    args.extend(config.docker_args.iter().cloned());
+
+    // Add the image
+    args.push(image.to_string());
+
+    // Add shell command - install claude if using node image, then start shell
+    // For a proper devcontainer, we'd use a pre-built image, but this works for quick setup
+    if image.starts_with("node:") {
+        // Check if claude is installed, install if not, then run shell
+        args.push(shell.to_string());
+        args.push("-c".to_string());
+        args.push(format!(
+            "which claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code; exec {}",
+            shell
+        ));
+    } else {
+        args.push(shell.to_string());
+    }
+
+    ("docker".to_string(), args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

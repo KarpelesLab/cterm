@@ -189,26 +189,46 @@ pub enum DockerMode {
     Exec,
     /// Start a new container with `docker run`
     Run,
+    /// Start a devcontainer with project/config mounts (like Claude Code/Cursor)
+    DevContainer,
 }
 
 /// Docker-specific configuration for a sticky tab
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DockerTabConfig {
-    /// Docker mode: exec (connect to running container) or run (start new container)
+    /// Docker mode: exec (connect to running container), run (start new container),
+    /// or devcontainer (start with project/config mounts)
     pub mode: DockerMode,
     /// Container name or ID (for exec mode)
     pub container: Option<String>,
-    /// Image name with optional tag (for run mode)
+    /// Image name with optional tag (for run/devcontainer mode)
     pub image: Option<String>,
-    /// Shell to use inside the container (default: /bin/sh)
+    /// Shell to use inside the container (default: /bin/sh, or /bin/zsh for devcontainer)
     pub shell: Option<String>,
     /// Additional docker exec/run arguments (e.g., -v, --env)
     #[serde(default)]
     pub docker_args: Vec<String>,
-    /// Auto-remove container on exit (run mode only, default: true)
+    /// Auto-remove container on exit (run/devcontainer mode, default: true)
     #[serde(default = "default_true")]
     pub auto_remove: bool,
+    /// Project directory to mount (devcontainer mode, default: current directory)
+    pub project_dir: Option<PathBuf>,
+    /// Mount ~/.claude config directory (devcontainer mode, default: true)
+    #[serde(default = "default_true")]
+    pub mount_claude_config: bool,
+    /// Mount ~/.ssh directory for git operations (devcontainer mode, default: false)
+    #[serde(default)]
+    pub mount_ssh: bool,
+    /// Mount ~/.gitconfig (devcontainer mode, default: true)
+    #[serde(default = "default_true")]
+    pub mount_gitconfig: bool,
+    /// Working directory inside the container (default: /workspace)
+    pub workdir: Option<String>,
+    /// Container name (for devcontainer mode, to allow reconnecting)
+    pub container_name: Option<String>,
+    /// Run post-start command (e.g., firewall init)
+    pub post_start_command: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -405,9 +425,41 @@ impl StickyTabConfig {
                     );
                     (Some(cmd), args)
                 }
+                DockerMode::DevContainer => {
+                    let (cmd, args) = crate::docker::build_devcontainer_command(docker);
+                    (Some(cmd), args)
+                }
             }
         } else {
             (self.command.clone(), self.args.clone())
+        }
+    }
+
+    /// Create a Claude devcontainer tab configuration
+    ///
+    /// This creates a container with:
+    /// - Project directory mounted to /workspace
+    /// - ~/.claude mounted for credentials
+    /// - ~/.gitconfig mounted for git configuration
+    /// - Claude Code pre-installed (using anthropic's devcontainer image)
+    pub fn claude_devcontainer(project_dir: Option<PathBuf>) -> Self {
+        Self {
+            name: "Claude Container".into(),
+            color: Some("#7c3aed".into()), // Claude purple
+            keep_open: true,
+            docker: Some(DockerTabConfig {
+                mode: DockerMode::DevContainer,
+                image: Some("node:20".into()), // Base image, Claude Code installed via npm
+                shell: Some("/bin/bash".into()),
+                auto_remove: true,
+                project_dir,
+                mount_claude_config: true,
+                mount_ssh: false,
+                mount_gitconfig: true,
+                workdir: Some("/workspace".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
         }
     }
 }
