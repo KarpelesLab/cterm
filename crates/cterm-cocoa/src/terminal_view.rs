@@ -344,12 +344,17 @@ define_class!(
             }
 
             // Normal selection mode
-            // Determine selection mode based on click count
+            // Determine selection mode based on click count and modifiers
             let click_count = event.clickCount();
-            let mode = match click_count {
-                2 => SelectionMode::Word,
-                3 => SelectionMode::Line,
-                _ => SelectionMode::Char,
+            let mode = if flags.contains(NSEventModifierFlags::Option) {
+                // Option+drag = block/rectangular selection
+                SelectionMode::Block
+            } else {
+                match click_count {
+                    2 => SelectionMode::Word,
+                    3 => SelectionMode::Line,
+                    _ => SelectionMode::Char,
+                }
             };
 
             // Start selection

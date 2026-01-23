@@ -243,6 +243,8 @@ pub enum SelectionMode {
     Word,
     /// Line selection (triple-click)
     Line,
+    /// Block/rectangular selection (Option+drag on macOS)
+    Block,
 }
 
 impl Selection {
@@ -272,6 +274,17 @@ impl Selection {
             return false;
         }
 
+        // Block/rectangular selection: check if col is within column range
+        if self.mode == SelectionMode::Block {
+            let (min_col, max_col) = if self.anchor.col <= self.end.col {
+                (self.anchor.col, self.end.col)
+            } else {
+                (self.end.col, self.anchor.col)
+            };
+            return col >= min_col && col <= max_col;
+        }
+
+        // Normal selection modes
         if start.line == end.line {
             // Single line selection
             col >= start.col && col <= end.col
@@ -1530,7 +1543,7 @@ impl Screen {
     /// Start a new selection at the given absolute line and column
     pub fn start_selection(&mut self, line: usize, col: usize, mode: SelectionMode) {
         match mode {
-            SelectionMode::Char => {
+            SelectionMode::Char | SelectionMode::Block => {
                 let point = SelectionPoint::new(line, col);
                 self.selection = Some(Selection::new(point, mode));
             }
@@ -1559,7 +1572,7 @@ impl Screen {
         };
 
         match mode {
-            SelectionMode::Char => {
+            SelectionMode::Char | SelectionMode::Block => {
                 if let Some(ref mut selection) = self.selection {
                     selection.extend_to(SelectionPoint::new(line, col));
                 }
@@ -1635,14 +1648,37 @@ impl Screen {
         let mut result = String::new();
         let end_line = end.line.min(total - 1);
 
+        // For block selection, use consistent column range across all lines
+        let is_block = selection.mode == SelectionMode::Block;
+        let (block_start_col, block_end_col) = if is_block {
+            let (min_col, max_col) = if selection.anchor.col <= selection.end.col {
+                (selection.anchor.col, selection.end.col)
+            } else {
+                (selection.end.col, selection.anchor.col)
+            };
+            (min_col, max_col)
+        } else {
+            (0, 0) // Not used for non-block selection
+        };
+
         for line_idx in start.line..=end_line {
             let row = self.get_row_by_absolute_line(line_idx)?;
 
-            let start_col = if line_idx == start.line { start.col } else { 0 };
-            let end_col = if line_idx == end.line {
-                end.col.min(row.len().saturating_sub(1))
+            let (start_col, end_col) = if is_block {
+                // Block selection: same columns for all lines
+                (
+                    block_start_col,
+                    block_end_col.min(row.len().saturating_sub(1)),
+                )
             } else {
-                row.len().saturating_sub(1)
+                // Normal selection: varies by line
+                let sc = if line_idx == start.line { start.col } else { 0 };
+                let ec = if line_idx == end.line {
+                    end.col.min(row.len().saturating_sub(1))
+                } else {
+                    row.len().saturating_sub(1)
+                };
+                (sc, ec)
             };
 
             // Extract characters from this row
@@ -1655,8 +1691,10 @@ impl Screen {
                 }
             }
 
-            // Add newline between lines (but not after wrapped lines or at the very end)
-            if line_idx < end_line && !row.wrapped {
+            // Add newline between lines
+            // For block selection: always add newlines between lines
+            // For normal selection: skip newline after wrapped lines
+            if line_idx < end_line && (is_block || !row.wrapped) {
                 result.push('\n');
             }
         }
