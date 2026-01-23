@@ -120,6 +120,12 @@ define_class!(
                 let _: () = unsafe { msg_send![&*delegate, registerWindow: &*new_window] };
             }
 
+            // Explicitly add to tab group (macOS automatic tabbing doesn't always work)
+            self.addTabbedWindow_ordered(&new_window, objc2_app_kit::NSWindowOrderingMode::Above);
+
+            // Make the new tab key and visible
+            new_window.makeKeyAndOrderFront(None);
+
             log::info!("Created new default tab via newWindowForTab:");
             Retained::into_raw(Retained::into_super(new_window))
         }
