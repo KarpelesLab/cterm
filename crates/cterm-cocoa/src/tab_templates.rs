@@ -17,7 +17,7 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
-use cterm_app::config::{save_sticky_tabs, StickyTabConfig};
+use cterm_app::config::{save_sticky_tabs, DockerMode, DockerTabConfig, StickyTabConfig};
 
 /// State for the tab templates window
 pub struct TabTemplatesWindowIvars {
@@ -33,6 +33,15 @@ pub struct TabTemplatesWindowIvars {
     unique_checkbox: RefCell<Option<Retained<NSButton>>>,
     auto_start_checkbox: RefCell<Option<Retained<NSButton>>>,
     keep_open_checkbox: RefCell<Option<Retained<NSButton>>>,
+    // Docker fields
+    docker_mode_popup: RefCell<Option<Retained<NSPopUpButton>>>,
+    docker_container_field: RefCell<Option<Retained<NSTextField>>>,
+    docker_image_field: RefCell<Option<Retained<NSTextField>>>,
+    docker_shell_field: RefCell<Option<Retained<NSTextField>>>,
+    docker_auto_remove_checkbox: RefCell<Option<Retained<NSButton>>>,
+    docker_mount_claude_checkbox: RefCell<Option<Retained<NSButton>>>,
+    docker_mount_ssh_checkbox: RefCell<Option<Retained<NSButton>>>,
+    docker_mount_gitconfig_checkbox: RefCell<Option<Retained<NSButton>>>,
 }
 
 define_class!(
@@ -99,13 +108,35 @@ define_class!(
                 self.save_fields_to_template(index);
             }
         }
+
+        #[unsafe(method(dockerModeChanged:))]
+        fn action_docker_mode_changed(&self, _sender: Option<&AnyObject>) {
+            // Save and update UI visibility based on mode
+            if let Some(index) = *self.ivars().selected_index.borrow() {
+                self.save_fields_to_template(index);
+                self.update_docker_fields_visibility();
+            }
+        }
+
+        #[unsafe(method(addPreset:))]
+        fn action_add_preset(&self, sender: Option<&AnyObject>) {
+            if let Some(popup) = sender.and_then(|s| unsafe {
+                let popup: *const NSPopUpButton = s as *const AnyObject as *const NSPopUpButton;
+                Some(&*popup)
+            }) {
+                let index = popup.indexOfSelectedItem();
+                self.add_preset_template(index as usize);
+                // Reset popup to first item (the label)
+                popup.selectItemAtIndex(0);
+            }
+        }
     }
 );
 
 impl TabTemplatesWindow {
     /// Create and show the tab templates window
     pub fn new(mtm: MainThreadMarker, templates: Vec<StickyTabConfig>) -> Retained<Self> {
-        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(500.0, 450.0));
+        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(550.0, 620.0));
 
         let style_mask =
             NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
@@ -124,6 +155,15 @@ impl TabTemplatesWindow {
             unique_checkbox: RefCell::new(None),
             auto_start_checkbox: RefCell::new(None),
             keep_open_checkbox: RefCell::new(None),
+            // Docker fields
+            docker_mode_popup: RefCell::new(None),
+            docker_container_field: RefCell::new(None),
+            docker_image_field: RefCell::new(None),
+            docker_shell_field: RefCell::new(None),
+            docker_auto_remove_checkbox: RefCell::new(None),
+            docker_mount_claude_checkbox: RefCell::new(None),
+            docker_mount_ssh_checkbox: RefCell::new(None),
+            docker_mount_gitconfig_checkbox: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -205,10 +245,24 @@ impl TabTemplatesWindow {
             )
         };
 
+        // Presets dropdown
+        let presets_popup = unsafe { NSPopUpButton::new(mtm) };
+        presets_popup.removeAllItems();
+        presets_popup.addItemWithTitle(&NSString::from_str("Add Preset..."));
+        presets_popup.addItemWithTitle(&NSString::from_str("Claude Code"));
+        presets_popup.addItemWithTitle(&NSString::from_str("Claude Code (Container)"));
+        presets_popup.addItemWithTitle(&NSString::from_str("Ubuntu Container"));
+        presets_popup.addItemWithTitle(&NSString::from_str("Alpine Container"));
+        presets_popup.addItemWithTitle(&NSString::from_str("Node.js Container"));
+        presets_popup.addItemWithTitle(&NSString::from_str("Python Container"));
+        unsafe { presets_popup.setTarget(Some(self)) };
+        unsafe { presets_popup.setAction(Some(sel!(addPreset:))) };
+
         selector_row.addView_inGravity(&selector_label, NSStackViewGravity::Leading);
         selector_row.addView_inGravity(&popup, NSStackViewGravity::Leading);
         selector_row.addView_inGravity(&add_btn, NSStackViewGravity::Leading);
         selector_row.addView_inGravity(&remove_btn, NSStackViewGravity::Leading);
+        selector_row.addView_inGravity(&presets_popup, NSStackViewGravity::Leading);
 
         *self.ivars().template_selector.borrow_mut() = Some(popup);
 
@@ -282,6 +336,107 @@ impl TabTemplatesWindow {
         };
         main_stack.addView_inGravity(&keep_open_cb, NSStackViewGravity::Top);
         *self.ivars().keep_open_checkbox.borrow_mut() = Some(keep_open_cb);
+
+        // Docker section separator
+        let docker_separator = unsafe { objc2_app_kit::NSBox::new(mtm) };
+        unsafe { docker_separator.setBoxType(objc2_app_kit::NSBoxType::Separator) };
+        main_stack.addView_inGravity(&docker_separator, NSStackViewGravity::Top);
+
+        // Docker section label
+        let docker_label = unsafe {
+            NSTextField::labelWithString(&NSString::from_str("Docker Configuration"), mtm)
+        };
+        unsafe {
+            docker_label.setFont(Some(&objc2_app_kit::NSFont::boldSystemFontOfSize(
+                objc2_app_kit::NSFont::systemFontSize(),
+            )))
+        };
+        main_stack.addView_inGravity(&docker_label, NSStackViewGravity::Top);
+
+        // Docker mode dropdown
+        let docker_mode_row = unsafe { NSStackView::new(mtm) };
+        docker_mode_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        docker_mode_row.setSpacing(10.0);
+
+        let docker_mode_label =
+            unsafe { NSTextField::labelWithString(&NSString::from_str("Docker Mode:"), mtm) };
+        unsafe { docker_mode_label.setFrameSize(NSSize::new(100.0, 22.0)) };
+
+        let docker_mode_popup = unsafe { NSPopUpButton::new(mtm) };
+        docker_mode_popup.removeAllItems();
+        docker_mode_popup.addItemWithTitle(&NSString::from_str("None (Regular Tab)"));
+        docker_mode_popup.addItemWithTitle(&NSString::from_str("Exec (Connect to Container)"));
+        docker_mode_popup.addItemWithTitle(&NSString::from_str("Run (Start Container)"));
+        docker_mode_popup.addItemWithTitle(&NSString::from_str("DevContainer (With Mounts)"));
+        unsafe { docker_mode_popup.setTarget(Some(self)) };
+        unsafe { docker_mode_popup.setAction(Some(sel!(dockerModeChanged:))) };
+
+        docker_mode_row.addView_inGravity(&docker_mode_label, NSStackViewGravity::Leading);
+        docker_mode_row.addView_inGravity(&docker_mode_popup, NSStackViewGravity::Leading);
+        main_stack.addView_inGravity(&docker_mode_row, NSStackViewGravity::Top);
+        *self.ivars().docker_mode_popup.borrow_mut() = Some(docker_mode_popup);
+
+        // Container field (for Exec mode)
+        let container_row = self.create_field_row(mtm, "Container:", 200.0);
+        main_stack.addView_inGravity(&container_row.0, NSStackViewGravity::Top);
+        *self.ivars().docker_container_field.borrow_mut() = Some(container_row.1);
+
+        // Image field (for Run/DevContainer modes)
+        let image_row = self.create_field_row(mtm, "Image:", 200.0);
+        main_stack.addView_inGravity(&image_row.0, NSStackViewGravity::Top);
+        *self.ivars().docker_image_field.borrow_mut() = Some(image_row.1);
+
+        // Shell field
+        let shell_row = self.create_field_row(mtm, "Shell:", 150.0);
+        main_stack.addView_inGravity(&shell_row.0, NSStackViewGravity::Top);
+        *self.ivars().docker_shell_field.borrow_mut() = Some(shell_row.1);
+
+        // Docker checkboxes
+        let docker_auto_remove_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Auto-remove container on exit"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&docker_auto_remove_cb, NSStackViewGravity::Top);
+        *self.ivars().docker_auto_remove_checkbox.borrow_mut() = Some(docker_auto_remove_cb);
+
+        // Mount checkboxes (for DevContainer mode)
+        let docker_mount_claude_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Mount ~/.claude (Claude credentials)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&docker_mount_claude_cb, NSStackViewGravity::Top);
+        *self.ivars().docker_mount_claude_checkbox.borrow_mut() = Some(docker_mount_claude_cb);
+
+        let docker_mount_ssh_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Mount ~/.ssh (SSH keys)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&docker_mount_ssh_cb, NSStackViewGravity::Top);
+        *self.ivars().docker_mount_ssh_checkbox.borrow_mut() = Some(docker_mount_ssh_cb);
+
+        let docker_mount_gitconfig_cb = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Mount ~/.gitconfig (Git config)"),
+                Some(self),
+                Some(sel!(checkboxChanged:)),
+                mtm,
+            )
+        };
+        main_stack.addView_inGravity(&docker_mount_gitconfig_cb, NSStackViewGravity::Top);
+        *self.ivars().docker_mount_gitconfig_checkbox.borrow_mut() =
+            Some(docker_mount_gitconfig_cb);
 
         // Bottom buttons
         let bottom_stack = unsafe { NSStackView::new(mtm) };
@@ -383,6 +538,89 @@ impl TabTemplatesWindow {
             if let Some(cb) = self.ivars().keep_open_checkbox.borrow().as_ref() {
                 cb.setState(if template.keep_open { 1 } else { 0 });
             }
+
+            // Docker fields
+            if let Some(popup) = self.ivars().docker_mode_popup.borrow().as_ref() {
+                let mode_index = match &template.docker {
+                    None => 0,
+                    Some(docker) => match docker.mode {
+                        DockerMode::Exec => 1,
+                        DockerMode::Run => 2,
+                        DockerMode::DevContainer => 3,
+                    },
+                };
+                popup.selectItemAtIndex(mode_index);
+            }
+
+            if let Some(field) = self.ivars().docker_container_field.borrow().as_ref() {
+                let container = template
+                    .docker
+                    .as_ref()
+                    .and_then(|d| d.container.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(container));
+            }
+
+            if let Some(field) = self.ivars().docker_image_field.borrow().as_ref() {
+                let image = template
+                    .docker
+                    .as_ref()
+                    .and_then(|d| d.image.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(image));
+            }
+
+            if let Some(field) = self.ivars().docker_shell_field.borrow().as_ref() {
+                let shell = template
+                    .docker
+                    .as_ref()
+                    .and_then(|d| d.shell.as_deref())
+                    .unwrap_or("");
+                field.setStringValue(&NSString::from_str(shell));
+            }
+
+            if let Some(cb) = self.ivars().docker_auto_remove_checkbox.borrow().as_ref() {
+                let auto_remove = template
+                    .docker
+                    .as_ref()
+                    .map(|d| d.auto_remove)
+                    .unwrap_or(true);
+                cb.setState(if auto_remove { 1 } else { 0 });
+            }
+
+            if let Some(cb) = self.ivars().docker_mount_claude_checkbox.borrow().as_ref() {
+                let mount = template
+                    .docker
+                    .as_ref()
+                    .map(|d| d.mount_claude_config)
+                    .unwrap_or(true);
+                cb.setState(if mount { 1 } else { 0 });
+            }
+
+            if let Some(cb) = self.ivars().docker_mount_ssh_checkbox.borrow().as_ref() {
+                let mount = template
+                    .docker
+                    .as_ref()
+                    .map(|d| d.mount_ssh)
+                    .unwrap_or(false);
+                cb.setState(if mount { 1 } else { 0 });
+            }
+
+            if let Some(cb) = self
+                .ivars()
+                .docker_mount_gitconfig_checkbox
+                .borrow()
+                .as_ref()
+            {
+                let mount = template
+                    .docker
+                    .as_ref()
+                    .map(|d| d.mount_gitconfig)
+                    .unwrap_or(true);
+                cb.setState(if mount { 1 } else { 0 });
+            }
+
+            self.update_docker_fields_visibility();
         }
     }
 
@@ -414,6 +652,37 @@ impl TabTemplatesWindow {
         }
         if let Some(cb) = self.ivars().keep_open_checkbox.borrow().as_ref() {
             cb.setState(0);
+        }
+
+        // Clear Docker fields
+        if let Some(popup) = self.ivars().docker_mode_popup.borrow().as_ref() {
+            popup.selectItemAtIndex(0);
+        }
+        if let Some(field) = self.ivars().docker_container_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().docker_image_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(field) = self.ivars().docker_shell_field.borrow().as_ref() {
+            field.setStringValue(&empty);
+        }
+        if let Some(cb) = self.ivars().docker_auto_remove_checkbox.borrow().as_ref() {
+            cb.setState(1); // Default to true
+        }
+        if let Some(cb) = self.ivars().docker_mount_claude_checkbox.borrow().as_ref() {
+            cb.setState(1); // Default to true
+        }
+        if let Some(cb) = self.ivars().docker_mount_ssh_checkbox.borrow().as_ref() {
+            cb.setState(0);
+        }
+        if let Some(cb) = self
+            .ivars()
+            .docker_mount_gitconfig_checkbox
+            .borrow()
+            .as_ref()
+        {
+            cb.setState(1); // Default to true
         }
     }
 
@@ -459,6 +728,65 @@ impl TabTemplatesWindow {
             }
             if let Some(cb) = self.ivars().keep_open_checkbox.borrow().as_ref() {
                 template.keep_open = cb.state() != 0;
+            }
+
+            // Save Docker fields
+            if let Some(popup) = self.ivars().docker_mode_popup.borrow().as_ref() {
+                let mode_index = popup.indexOfSelectedItem();
+                if mode_index == 0 {
+                    // None - remove Docker config
+                    template.docker = None;
+                } else {
+                    // Get or create Docker config
+                    let docker = template.docker.get_or_insert_with(DockerTabConfig::default);
+
+                    docker.mode = match mode_index {
+                        1 => DockerMode::Exec,
+                        2 => DockerMode::Run,
+                        3 => DockerMode::DevContainer,
+                        _ => DockerMode::Exec,
+                    };
+
+                    if let Some(field) = self.ivars().docker_container_field.borrow().as_ref() {
+                        let container = field.stringValue().to_string();
+                        docker.container = if container.is_empty() {
+                            None
+                        } else {
+                            Some(container)
+                        };
+                    }
+
+                    if let Some(field) = self.ivars().docker_image_field.borrow().as_ref() {
+                        let image = field.stringValue().to_string();
+                        docker.image = if image.is_empty() { None } else { Some(image) };
+                    }
+
+                    if let Some(field) = self.ivars().docker_shell_field.borrow().as_ref() {
+                        let shell = field.stringValue().to_string();
+                        docker.shell = if shell.is_empty() { None } else { Some(shell) };
+                    }
+
+                    if let Some(cb) = self.ivars().docker_auto_remove_checkbox.borrow().as_ref() {
+                        docker.auto_remove = cb.state() != 0;
+                    }
+
+                    if let Some(cb) = self.ivars().docker_mount_claude_checkbox.borrow().as_ref() {
+                        docker.mount_claude_config = cb.state() != 0;
+                    }
+
+                    if let Some(cb) = self.ivars().docker_mount_ssh_checkbox.borrow().as_ref() {
+                        docker.mount_ssh = cb.state() != 0;
+                    }
+
+                    if let Some(cb) = self
+                        .ivars()
+                        .docker_mount_gitconfig_checkbox
+                        .borrow()
+                        .as_ref()
+                    {
+                        docker.mount_gitconfig = cb.state() != 0;
+                    }
+                }
             }
         }
     }
@@ -538,6 +866,164 @@ impl TabTemplatesWindow {
                 templates.len()
             );
         }
+    }
+
+    fn update_docker_fields_visibility(&self) {
+        // Get the current Docker mode
+        let mode_index = self
+            .ivars()
+            .docker_mode_popup
+            .borrow()
+            .as_ref()
+            .map(|p| p.indexOfSelectedItem())
+            .unwrap_or(0);
+
+        let is_docker = mode_index > 0;
+        let is_exec = mode_index == 1;
+        let is_run_or_devcontainer = mode_index >= 2;
+        let is_devcontainer = mode_index == 3;
+
+        // Show/hide container field (only for Exec mode)
+        if let Some(field) = self.ivars().docker_container_field.borrow().as_ref() {
+            field.setEnabled(is_exec);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!is_exec);
+            }
+        }
+
+        // Show/hide image field (for Run and DevContainer modes)
+        if let Some(field) = self.ivars().docker_image_field.borrow().as_ref() {
+            field.setEnabled(is_run_or_devcontainer);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!is_run_or_devcontainer);
+            }
+        }
+
+        // Show/hide shell field (for all Docker modes)
+        if let Some(field) = self.ivars().docker_shell_field.borrow().as_ref() {
+            field.setEnabled(is_docker);
+            if let Some(superview) = unsafe { field.superview() } {
+                superview.setHidden(!is_docker);
+            }
+        }
+
+        // Show/hide auto-remove checkbox (for Run and DevContainer)
+        if let Some(cb) = self.ivars().docker_auto_remove_checkbox.borrow().as_ref() {
+            cb.setEnabled(is_run_or_devcontainer);
+            cb.setHidden(!is_run_or_devcontainer);
+        }
+
+        // Show/hide mount checkboxes (only for DevContainer)
+        if let Some(cb) = self.ivars().docker_mount_claude_checkbox.borrow().as_ref() {
+            cb.setEnabled(is_devcontainer);
+            cb.setHidden(!is_devcontainer);
+        }
+        if let Some(cb) = self.ivars().docker_mount_ssh_checkbox.borrow().as_ref() {
+            cb.setEnabled(is_devcontainer);
+            cb.setHidden(!is_devcontainer);
+        }
+        if let Some(cb) = self
+            .ivars()
+            .docker_mount_gitconfig_checkbox
+            .borrow()
+            .as_ref()
+        {
+            cb.setEnabled(is_devcontainer);
+            cb.setHidden(!is_devcontainer);
+        }
+    }
+
+    fn add_preset_template(&self, preset_index: usize) {
+        let new_template = match preset_index {
+            1 => {
+                // Claude Code (native)
+                StickyTabConfig::claude()
+            }
+            2 => {
+                // Claude Code (Container)
+                StickyTabConfig::claude_devcontainer(None)
+            }
+            3 => {
+                // Ubuntu Container
+                StickyTabConfig {
+                    name: "Ubuntu".into(),
+                    color: Some("#E95420".into()), // Ubuntu orange
+                    keep_open: true,
+                    docker: Some(DockerTabConfig {
+                        mode: DockerMode::Run,
+                        image: Some("ubuntu:latest".into()),
+                        shell: Some("/bin/bash".into()),
+                        auto_remove: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+            4 => {
+                // Alpine Container
+                StickyTabConfig {
+                    name: "Alpine".into(),
+                    color: Some("#0D597F".into()), // Alpine blue
+                    keep_open: true,
+                    docker: Some(DockerTabConfig {
+                        mode: DockerMode::Run,
+                        image: Some("alpine:latest".into()),
+                        shell: Some("/bin/sh".into()),
+                        auto_remove: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+            5 => {
+                // Node.js Container
+                StickyTabConfig {
+                    name: "Node.js".into(),
+                    color: Some("#339933".into()), // Node green
+                    keep_open: true,
+                    docker: Some(DockerTabConfig {
+                        mode: DockerMode::Run,
+                        image: Some("node:20".into()),
+                        shell: Some("/bin/bash".into()),
+                        auto_remove: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+            6 => {
+                // Python Container
+                StickyTabConfig {
+                    name: "Python".into(),
+                    color: Some("#3776AB".into()), // Python blue
+                    keep_open: true,
+                    docker: Some(DockerTabConfig {
+                        mode: DockerMode::Run,
+                        image: Some("python:3.12".into()),
+                        shell: Some("/bin/bash".into()),
+                        auto_remove: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+            _ => return, // Index 0 is "Add Preset..." label, do nothing
+        };
+
+        let new_index = {
+            let mut templates = self.ivars().templates.borrow_mut();
+            templates.push(new_template.clone());
+            templates.len() - 1
+        };
+
+        // Add to popup button
+        if let Some(popup) = self.ivars().template_selector.borrow().as_ref() {
+            popup.addItemWithTitle(&NSString::from_str(&new_template.name));
+            popup.selectItemAtIndex(new_index as isize);
+        }
+
+        *self.ivars().selected_index.borrow_mut() = Some(new_index);
+        self.load_template_into_fields(new_index);
     }
 }
 

@@ -259,10 +259,7 @@ impl UpgradeReceiverDelegate {
             if tab_state.template_name.is_some() {
                 if let Some(terminal_view) = window.active_terminal() {
                     terminal_view.set_template_name(tab_state.template_name.clone());
-                    log::info!(
-                        "Restored template_name: {:?}",
-                        tab_state.template_name
-                    );
+                    log::info!("Restored template_name: {:?}", tab_state.template_name);
                 }
             }
 
