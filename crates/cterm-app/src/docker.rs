@@ -196,18 +196,33 @@ pub fn build_run_command(
     ("docker".to_string(), args)
 }
 
-/// Devcontainer.json configuration (subset of fields we support)
+/// Devcontainer.json build configuration
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct DevcontainerConfig {
-    /// Docker image to use
-    pub image: Option<String>,
+pub struct DevcontainerBuild {
     /// Dockerfile to build (relative to .devcontainer)
     pub dockerfile: Option<String>,
     /// Build context (relative to .devcontainer)
     pub context: Option<String>,
+    /// Build arguments
+    #[serde(default)]
+    pub args: std::collections::HashMap<String, String>,
+}
+
+/// Devcontainer.json configuration (subset of fields we support)
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DevcontainerConfig {
+    /// Container name
+    pub name: Option<String>,
+    /// Docker image to use
+    pub image: Option<String>,
+    /// Build configuration (alternative to image)
+    pub build: Option<DevcontainerBuild>,
     /// Working directory inside container
     pub workspace_folder: Option<String>,
+    /// Workspace mount specification
+    pub workspace_mount: Option<String>,
     /// Container user
     pub container_user: Option<String>,
     /// Remote user (user to run as)
@@ -325,12 +340,46 @@ fn strip_json_comments(content: &str) -> String {
     result
 }
 
+/// Generate a unique container ID for devcontainer variable substitution
+fn generate_devcontainer_id(project_dir: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    project_dir.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+/// Expand devcontainer variables in a string
+fn expand_devcontainer_vars(s: &str, project_dir: &Path, container_id: &str) -> String {
+    s.replace("${localWorkspaceFolder}", &project_dir.to_string_lossy())
+        .replace("${devcontainerId}", container_id)
+        // Remove unsupported ${localEnv:...} variables (use empty string)
+        .split("${localEnv:")
+        .enumerate()
+        .map(|(i, part)| {
+            if i == 0 {
+                part.to_string()
+            } else if let Some(end) = part.find('}') {
+                // Extract default value if present (e.g., ${localEnv:VAR:default})
+                let var_spec = &part[..end];
+                let default = var_spec.split(':').nth(1).unwrap_or("");
+                format!("{}{}", default, &part[end + 1..])
+            } else {
+                part.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Build command and arguments for a devcontainer-style `docker run`
 ///
 /// This reads .devcontainer/devcontainer.json if present, otherwise uses defaults.
 /// The devcontainer.json can specify:
 /// - image: Docker image to use
+/// - build.dockerfile: Dockerfile to build
 /// - workspaceFolder: Working directory inside container
+/// - workspaceMount: How to mount the workspace
 /// - mounts: Additional mounts
 /// - runArgs: Additional docker run arguments
 /// - containerEnv: Environment variables
@@ -348,13 +397,89 @@ pub fn build_devcontainer_command(
     // Try to load devcontainer.json
     let devcontainer = load_devcontainer_config(&project_dir);
 
-    // Determine configuration from devcontainer.json or fallback to config/defaults
+    // Generate a unique container ID for this project
+    let container_id = generate_devcontainer_id(&project_dir);
+
+    // Check if we need to build an image first
+    let needs_build = devcontainer
+        .as_ref()
+        .map(|d| d.build.is_some() && d.image.is_none())
+        .unwrap_or(false);
+
+    if needs_build {
+        // Build the image first
+        if let Some(ref dc) = devcontainer {
+            if let Some(ref build) = dc.build {
+                let image_tag = format!("devcontainer-{}", container_id);
+                let dockerfile = build.dockerfile.as_deref().unwrap_or("Dockerfile");
+                let context = build.context.as_deref().unwrap_or(".");
+                let devcontainer_dir = project_dir.join(".devcontainer");
+
+                log::info!("Building devcontainer image: {}", image_tag);
+
+                let mut build_cmd = Command::new("docker");
+                build_cmd
+                    .arg("build")
+                    .arg("-t")
+                    .arg(&image_tag)
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(dockerfile));
+
+                // Add build args
+                for (key, value) in &build.args {
+                    let expanded = expand_devcontainer_vars(value, &project_dir, &container_id);
+                    build_cmd
+                        .arg("--build-arg")
+                        .arg(format!("{}={}", key, expanded));
+                }
+
+                build_cmd.arg(devcontainer_dir.join(context));
+
+                match build_cmd.status() {
+                    Ok(status) if status.success() => {
+                        log::info!("Successfully built devcontainer image: {}", image_tag);
+                    }
+                    Ok(status) => {
+                        log::error!(
+                            "Failed to build devcontainer image, exit code: {:?}",
+                            status.code()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to run docker build: {}", e);
+                    }
+                }
+
+                // Return command using the built image
+                return build_run_command_internal(
+                    config,
+                    &devcontainer,
+                    &project_dir,
+                    &container_id,
+                    &image_tag,
+                );
+            }
+        }
+    }
+
+    // Determine image from devcontainer.json or fallback to config/defaults
     let image = config
         .image
         .as_deref()
         .or(devcontainer.as_ref().and_then(|d| d.image.as_deref()))
         .unwrap_or("node:20");
 
+    build_run_command_internal(config, &devcontainer, &project_dir, &container_id, image)
+}
+
+/// Internal helper to build the docker run command
+fn build_run_command_internal(
+    config: &crate::config::DockerTabConfig,
+    devcontainer: &Option<DevcontainerConfig>,
+    project_dir: &Path,
+    container_id: &str,
+    image: &str,
+) -> (String, Vec<String>) {
     let shell = config.shell.as_deref().unwrap_or("/bin/bash");
 
     let workdir = config
@@ -381,28 +506,45 @@ pub fn build_devcontainer_command(
         args.push(name.clone());
     }
 
-    // Mount project directory
-    if project_dir.exists() {
+    // Handle workspace mount - use workspaceMount if specified, otherwise default
+    let has_workspace_mount = devcontainer
+        .as_ref()
+        .map(|d| d.workspace_mount.is_some())
+        .unwrap_or(false);
+
+    if let Some(ref dc) = devcontainer {
+        if let Some(ref workspace_mount) = dc.workspace_mount {
+            let mount = expand_devcontainer_vars(workspace_mount, project_dir, container_id);
+            args.push("--mount".to_string());
+            args.push(mount);
+        }
+    }
+
+    // If no workspaceMount specified, add default project directory mount
+    if !has_workspace_mount && project_dir.exists() {
         args.push("-v".to_string());
         args.push(format!("{}:{}:delegated", project_dir.display(), workdir));
     }
 
     // Add mounts from devcontainer.json
-    if let Some(ref devcontainer) = devcontainer {
-        for mount in &devcontainer.mounts {
-            // Expand ${localWorkspaceFolder} variable
-            let mount = mount.replace("${localWorkspaceFolder}", &project_dir.to_string_lossy());
+    if let Some(ref dc) = devcontainer {
+        for mount in &dc.mounts {
+            let mount = expand_devcontainer_vars(mount, project_dir, container_id);
             args.push("--mount".to_string());
             args.push(mount);
         }
 
         // Add run args from devcontainer.json
-        args.extend(devcontainer.run_args.iter().cloned());
+        for arg in &dc.run_args {
+            let expanded = expand_devcontainer_vars(arg, project_dir, container_id);
+            args.push(expanded);
+        }
 
         // Add environment variables
-        for (key, value) in &devcontainer.container_env {
+        for (key, value) in &dc.container_env {
+            let expanded = expand_devcontainer_vars(value, project_dir, container_id);
             args.push("-e".to_string());
-            args.push(format!("{}={}", key, value));
+            args.push(format!("{}={}", key, expanded));
         }
     }
 
@@ -422,33 +564,31 @@ pub fn build_devcontainer_command(
     // Add the image
     args.push(image.to_string());
 
-    // Determine post-create command if any
+    // Determine post-start command (runs every time container starts)
+    let post_start = devcontainer
+        .as_ref()
+        .and_then(|d| d.post_start_command.as_ref())
+        .and_then(json_value_to_command);
+
+    // Determine post-create command (runs once on first creation)
     let post_create = devcontainer
         .as_ref()
         .and_then(|d| d.post_create_command.as_ref())
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s.clone()),
-            serde_json::Value::Array(arr) => {
-                let parts: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join(" "))
-                }
-            }
-            _ => None,
-        });
+        .and_then(json_value_to_command);
 
     // Build the shell command
-    if let Some(post_create) = post_create {
-        // Run post-create command then shell
+    let startup_cmd = match (post_start, post_create) {
+        (Some(start), Some(create)) => Some(format!("{}; {}", create, start)),
+        (Some(start), None) => Some(start),
+        (None, Some(create)) => Some(create),
+        (None, None) => None,
+    };
+
+    if let Some(cmd) = startup_cmd {
         args.push(shell.to_string());
         args.push("-c".to_string());
-        args.push(format!("{}; exec {}", post_create, shell));
-    } else if image.starts_with("node:") {
+        args.push(format!("{}; exec {}", cmd, shell));
+    } else if image.starts_with("node:") && devcontainer.is_none() {
         // For node images without devcontainer.json, install claude-code
         args.push(shell.to_string());
         args.push("-c".to_string());
@@ -461,6 +601,25 @@ pub fn build_devcontainer_command(
     }
 
     ("docker".to_string(), args)
+}
+
+/// Convert a JSON value (string or array) to a command string
+fn json_value_to_command(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(arr) => {
+            let parts: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" "))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
