@@ -712,6 +712,7 @@ define_class!(
                 let mut tab_state = TabUpgradeState::new(1, fds.len(), child_pid);
                 tab_state.title = terminal_state.title.clone();
                 tab_state.terminal = terminal_state;
+                tab_state.template_name = self.template_name();
                 fds.push(fd);
                 window_state.tabs.push(tab_state);
             } else {

@@ -255,6 +255,17 @@ impl UpgradeReceiverDelegate {
                 terminal,
             );
 
+            // Restore template_name if present (needed for unique tab detection)
+            if tab_state.template_name.is_some() {
+                if let Some(terminal_view) = window.active_terminal() {
+                    terminal_view.set_template_name(tab_state.template_name.clone());
+                    log::info!(
+                        "Restored template_name: {:?}",
+                        tab_state.template_name
+                    );
+                }
+            }
+
             Ok(window)
         } else {
             Err("No tabs in window state".into())
