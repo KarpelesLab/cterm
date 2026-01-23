@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2::{class, define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{NSEvent, NSMenu, NSMenuItem, NSTextInputClient, NSView};
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSNumber, NSObjectProtocol, NSPoint, NSRange,
@@ -284,6 +284,8 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            use objc2_app_kit::NSEventModifierFlags;
+
             // Convert window coordinates to view coordinates
             let location_in_window = event.locationInWindow();
             let location = self.convert_point_from_view(location_in_window, None);
@@ -291,6 +293,23 @@ define_class!(
             // Calculate cell position
             let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
             let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+
+            // Check for Cmd+click on hyperlinks
+            let flags = event.modifierFlags();
+            if flags.contains(NSEventModifierFlags::Command) {
+                let terminal = self.ivars().terminal.lock();
+                let absolute_line = terminal.screen().visible_row_to_absolute_line(row);
+
+                if let Some(cell) = terminal.screen().get_cell_with_scrollback(absolute_line, col) {
+                    if let Some(ref hyperlink) = cell.hyperlink {
+                        let uri = hyperlink.uri.clone();
+                        drop(terminal);
+                        self.open_url(&uri);
+                        return;
+                    }
+                }
+                drop(terminal);
+            }
 
             // Check if mouse reporting is active
             let terminal = self.ivars().terminal.lock();
@@ -514,6 +533,79 @@ define_class!(
             drop(terminal);
 
             self.set_needs_display();
+        }
+
+        /// Set up mouse tracking area for hover detection
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            use objc2_app_kit::{NSTrackingArea, NSTrackingAreaOptions};
+
+            // Call super first
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+
+            // Remove existing tracking areas
+            let existing: Retained<objc2_foundation::NSArray<NSTrackingArea>> =
+                unsafe { msg_send![self, trackingAreas] };
+            for area in existing.iter() {
+                let _: () = unsafe { msg_send![self, removeTrackingArea: &*area] };
+            }
+
+            // Create new tracking area covering the entire view
+            let mtm = MainThreadMarker::from(self);
+            let options = NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::InVisibleRect;
+
+            let bounds: NSRect = unsafe { msg_send![self, bounds] };
+            let tracking_area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    mtm.alloc(),
+                    bounds,
+                    options,
+                    Some(self),
+                    None,
+                )
+            };
+
+            let _: () = unsafe { msg_send![self, addTrackingArea: &*tracking_area] };
+        }
+
+        /// Handle mouse movement for hyperlink hover
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            let location_in_window = event.locationInWindow();
+            let location = self.convert_point_from_view(location_in_window, None);
+
+            let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
+            let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
+
+            // Check if we're over a hyperlink
+            let terminal = self.ivars().terminal.lock();
+            let absolute_line = terminal.screen().visible_row_to_absolute_line(row);
+
+            if let Some(cell) = terminal.screen().get_cell_with_scrollback(absolute_line, col) {
+                if let Some(ref hyperlink) = cell.hyperlink {
+                    // Show tooltip with URL
+                    let uri = hyperlink.uri.clone();
+                    drop(terminal);
+                    self.set_tooltip(&uri);
+
+                    // Set cursor to pointing hand
+                    unsafe {
+                        let cursor: Retained<AnyObject> = msg_send![class!(NSCursor), pointingHandCursor];
+                        let _: () = msg_send![&*cursor, set];
+                    }
+                    return;
+                }
+            }
+            drop(terminal);
+
+            // Clear tooltip and reset cursor if not over a hyperlink
+            self.clear_tooltip();
+            unsafe {
+                let cursor: Retained<AnyObject> = msg_send![class!(NSCursor), IBeamCursor];
+                let _: () = msg_send![&*cursor, set];
+            }
         }
 
         /// Copy selection to clipboard (Command+C)
@@ -783,13 +875,25 @@ define_class!(
             let col = (location.x / self.ivars().cell_width).floor().max(0.0) as usize;
             let row = (location.y / self.ivars().cell_height).floor().max(0.0) as usize;
 
-            // Check if we clicked on an image
             let terminal = self.ivars().terminal.lock();
+            let absolute_line = terminal.screen().visible_row_to_absolute_line(row);
+
+            // Check if we clicked on an image
             if let Some(image) = terminal.screen().image_at_position(row, col) {
                 let image_id = image.id;
                 drop(terminal);
                 self.show_image_context_menu(event, image_id);
                 return;
+            }
+
+            // Check if we clicked on a hyperlink
+            if let Some(cell) = terminal.screen().get_cell_with_scrollback(absolute_line, col) {
+                if let Some(ref hyperlink) = cell.hyperlink {
+                    let uri = hyperlink.uri.clone();
+                    drop(terminal);
+                    self.show_hyperlink_context_menu(event, &uri);
+                    return;
+                }
             }
             drop(terminal);
 
@@ -876,6 +980,25 @@ define_class!(
                     temp_path.to_str().unwrap_or(""),
                 ));
                 workspace.openURL(&url);
+            }
+        }
+
+        /// Open URL from context menu
+        #[unsafe(method(openURL:))]
+        fn open_url_action(&self, sender: Option<&NSMenuItem>) {
+            let Some(sender) = sender else { return };
+            if let Some(url) = self.get_url_from_menu_item(sender) {
+                self.open_url(&url);
+            }
+        }
+
+        /// Copy URL to clipboard from context menu
+        #[unsafe(method(copyURL:))]
+        fn copy_url_action(&self, sender: Option<&NSMenuItem>) {
+            let Some(sender) = sender else { return };
+            if let Some(url) = self.get_url_from_menu_item(sender) {
+                clipboard::set_text(&url);
+                log::debug!("Copied URL to clipboard: {}", url);
             }
         }
     }
@@ -1989,6 +2112,31 @@ impl TerminalView {
         log::debug!("Discarded file {}", file_id);
     }
 
+    /// Set tooltip for the view (shows URL on hyperlink hover)
+    fn set_tooltip(&self, text: &str) {
+        let ns_text = NSString::from_str(text);
+        let _: () = unsafe { msg_send![self, setToolTip: &*ns_text] };
+    }
+
+    /// Clear the tooltip
+    fn clear_tooltip(&self) {
+        let _: () = unsafe { msg_send![self, setToolTip: std::ptr::null::<NSString>()] };
+    }
+
+    /// Open a URL in the default browser
+    fn open_url(&self, url: &str) {
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::NSURL;
+
+        let workspace = NSWorkspace::sharedWorkspace();
+        if let Some(ns_url) = unsafe { NSURL::URLWithString(&NSString::from_str(url)) } {
+            workspace.openURL(&ns_url);
+            log::debug!("Opened URL: {}", url);
+        } else {
+            log::warn!("Failed to parse URL: {}", url);
+        }
+    }
+
     /// Show context menu for an image
     fn show_image_context_menu(&self, event: &NSEvent, image_id: u64) {
         let mtm = MainThreadMarker::from(self);
@@ -2026,6 +2174,49 @@ impl TerminalView {
 
         // Show the menu
         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+    }
+
+    /// Show context menu for a hyperlink
+    fn show_hyperlink_context_menu(&self, event: &NSEvent, url: &str) {
+        let mtm = MainThreadMarker::from(self);
+        let menu = NSMenu::new(mtm);
+
+        // Create NSString for the URL to use as represented object
+        let url_string = NSString::from_str(url);
+
+        // Open URL
+        let open_item = NSMenuItem::new(mtm);
+        open_item.setTitle(&NSString::from_str("Open URL"));
+        unsafe {
+            open_item.setTarget(Some(self));
+            open_item.setAction(Some(sel!(openURL:)));
+            open_item.setRepresentedObject(Some(&*url_string));
+        }
+        menu.addItem(&open_item);
+
+        // Copy URL
+        let copy_item = NSMenuItem::new(mtm);
+        copy_item.setTitle(&NSString::from_str("Copy URL"));
+        unsafe {
+            copy_item.setTarget(Some(self));
+            copy_item.setAction(Some(sel!(copyURL:)));
+            copy_item.setRepresentedObject(Some(&*url_string));
+        }
+        menu.addItem(&copy_item);
+
+        // Show the menu
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+    }
+
+    /// Get URL string from menu item's represented object
+    fn get_url_from_menu_item(&self, item: &NSMenuItem) -> Option<String> {
+        if let Some(obj) = item.representedObject() {
+            // The represented object is an NSString
+            let ns_str: &NSString = unsafe { &*(&*obj as *const _ as *const NSString) };
+            Some(ns_str.to_string())
+        } else {
+            None
+        }
     }
 
     /// Get image ID from menu item's represented object

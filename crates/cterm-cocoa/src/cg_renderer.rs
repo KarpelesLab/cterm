@@ -133,6 +133,35 @@ impl CGRenderer {
                             self.draw_char_rgb(cell.c, x, y, &fg_color);
                         }
                     }
+
+                    // Draw underlines (regular underline attributes or hyperlinks)
+                    let has_hyperlink = cell.hyperlink.is_some();
+                    if cell.attrs.has_underline() || has_hyperlink {
+                        // Use hyperlink color (blue) for hyperlinks, otherwise use underline color or fg
+                        let underline_color = if has_hyperlink {
+                            Rgb {
+                                r: 100,
+                                g: 149,
+                                b: 237,
+                            } // Cornflower blue for hyperlinks
+                        } else if let Some(ref uc) = cell.underline_color {
+                            self.color_to_rgb(uc)
+                        } else {
+                            fg_color
+                        };
+
+                        self.draw_underline(x, y, &underline_color, &cell.attrs, has_hyperlink);
+                    }
+
+                    // Draw strikethrough
+                    if cell.attrs.contains(CellAttrs::STRIKETHROUGH) {
+                        self.draw_strikethrough(x, y, &fg_color);
+                    }
+
+                    // Draw overline
+                    if cell.attrs.contains(CellAttrs::OVERLINE) {
+                        self.draw_overline(x, y, &fg_color);
+                    }
                 }
             }
         }
@@ -399,6 +428,110 @@ impl CGRenderer {
             let color = Self::ns_color_alpha(cursor_color.r, cursor_color.g, cursor_color.b, 0.7);
             let _: () = msg_send![&*color, setFill];
             let _: () = msg_send![class!(NSBezierPath), fillRect: rect];
+        }
+    }
+
+    /// Draw underline for a cell
+    fn draw_underline(&self, x: f64, y: f64, rgb: &Rgb, attrs: &CellAttrs, is_hyperlink: bool) {
+        let underline_y = y + self.cell_height - 2.0;
+        let thickness = 1.0;
+
+        unsafe {
+            let color = Self::ns_color(rgb.r, rgb.g, rgb.b);
+            let _: () = msg_send![&*color, setStroke];
+
+            // For hyperlinks or regular underline, draw a simple line
+            if is_hyperlink || attrs.contains(CellAttrs::UNDERLINE) {
+                let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+                let _: () = msg_send![&*path, setLineWidth: thickness];
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
+                let _: () =
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                let _: () = msg_send![&*path, stroke];
+            } else if attrs.contains(CellAttrs::DOUBLE_UNDERLINE) {
+                // Double underline: two lines
+                let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+                let _: () = msg_send![&*path, setLineWidth: thickness];
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
+                let _: () =
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y - 2.0)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y - 2.0)];
+                let _: () = msg_send![&*path, stroke];
+            } else if attrs.contains(CellAttrs::CURLY_UNDERLINE) {
+                // Curly underline: approximate with small waves
+                let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+                let _: () = msg_send![&*path, setLineWidth: thickness];
+                let wave_width = self.cell_width / 4.0;
+                let wave_height = 1.5;
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
+                for i in 0..4 {
+                    let x1 = x + (i as f64 + 0.5) * wave_width;
+                    let y1 = underline_y
+                        + if i % 2 == 0 {
+                            -wave_height
+                        } else {
+                            wave_height
+                        };
+                    let x2 = x + (i as f64 + 1.0) * wave_width;
+                    let y2 = underline_y;
+                    let _: () = msg_send![&*path, curveToPoint: NSPoint::new(x2, y2),
+                        controlPoint1: NSPoint::new(x1, y1),
+                        controlPoint2: NSPoint::new(x1, y1)];
+                }
+                let _: () = msg_send![&*path, stroke];
+            } else if attrs.contains(CellAttrs::DOTTED_UNDERLINE) {
+                // Dotted underline
+                let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+                let _: () = msg_send![&*path, setLineWidth: thickness];
+                let pattern: [f64; 2] = [2.0, 2.0];
+                let _: () =
+                    msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
+                let _: () =
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                let _: () = msg_send![&*path, stroke];
+            } else if attrs.contains(CellAttrs::DASHED_UNDERLINE) {
+                // Dashed underline
+                let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+                let _: () = msg_send![&*path, setLineWidth: thickness];
+                let pattern: [f64; 2] = [4.0, 2.0];
+                let _: () =
+                    msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
+                let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
+                let _: () =
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                let _: () = msg_send![&*path, stroke];
+            }
+        }
+    }
+
+    /// Draw strikethrough for a cell
+    fn draw_strikethrough(&self, x: f64, y: f64, rgb: &Rgb) {
+        let strike_y = y + self.cell_height * 0.5;
+        unsafe {
+            let color = Self::ns_color(rgb.r, rgb.g, rgb.b);
+            let _: () = msg_send![&*color, setStroke];
+            let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+            let _: () = msg_send![&*path, setLineWidth: 1.0f64];
+            let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, strike_y)];
+            let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, strike_y)];
+            let _: () = msg_send![&*path, stroke];
+        }
+    }
+
+    /// Draw overline for a cell
+    fn draw_overline(&self, x: f64, y: f64, rgb: &Rgb) {
+        let overline_y = y + 1.0;
+        unsafe {
+            let color = Self::ns_color(rgb.r, rgb.g, rgb.b);
+            let _: () = msg_send![&*color, setStroke];
+            let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+            let _: () = msg_send![&*path, setLineWidth: 1.0f64];
+            let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, overline_y)];
+            let _: () =
+                msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, overline_y)];
+            let _: () = msg_send![&*path, stroke];
         }
     }
 
