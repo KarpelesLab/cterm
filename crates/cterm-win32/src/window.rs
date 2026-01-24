@@ -20,9 +20,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use cterm_app::config::Config;
+use cterm_app::file_transfer::PendingFileManager;
 use cterm_app::shortcuts::ShortcutManager;
 use cterm_core::pty::{Pty, PtyConfig, PtySize};
-use cterm_core::screen::ScreenConfig;
+use cterm_core::screen::{FileTransferOperation, ScreenConfig};
 use cterm_core::term::{Terminal, TerminalEvent};
 use cterm_ui::events::{Action, KeyCode, Modifiers};
 use cterm_ui::theme::Theme;
@@ -64,6 +65,7 @@ pub struct WindowState {
     pub renderer: Option<TerminalRenderer>,
     pub tab_bar: TabBar,
     pub notification_bar: NotificationBar,
+    pub file_manager: PendingFileManager,
     pub dpi: DpiInfo,
     pub mouse_state: MouseState,
     menu_handle: winapi::shared::windef::HMENU,
@@ -96,6 +98,7 @@ impl WindowState {
             renderer: None,
             tab_bar,
             notification_bar,
+            file_manager: PendingFileManager::new(),
             dpi,
             mouse_state: MouseState::new(),
             menu_handle,
@@ -583,7 +586,42 @@ impl WindowState {
 
     /// Handle PTY data received
     pub fn on_pty_data(&mut self, tab_id: u64) {
-        // Just invalidate to redraw
+        // Check for file transfers from the terminal
+        if let Some(tab) = self.tabs.iter().find(|t| t.id == tab_id) {
+            if let Ok(mut terminal) = tab.terminal.lock() {
+                let transfers = terminal.screen_mut().take_file_transfers();
+                for transfer in transfers {
+                    match transfer {
+                        FileTransferOperation::FileReceived { id, name, data } => {
+                            log::info!(
+                                "File received: id={}, name={:?}, size={}",
+                                id,
+                                name,
+                                data.len()
+                            );
+                            let size = data.len();
+                            self.file_manager.set_pending(id, name.clone(), data);
+                            self.notification_bar.show_file(id, name.as_deref(), size);
+                        }
+                        FileTransferOperation::StreamingFileReceived { id, result } => {
+                            log::info!(
+                                "Streaming file received: id={}, name={:?}, size={}",
+                                id,
+                                result.params.name,
+                                result.total_bytes
+                            );
+                            let size = result.total_bytes;
+                            let name = result.params.name.clone();
+                            self.file_manager
+                                .set_pending_streaming(id, name.clone(), result.data);
+                            self.notification_bar.show_file(id, name.as_deref(), size);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Invalidate to redraw
         self.invalidate();
     }
 
@@ -598,6 +636,73 @@ impl WindowState {
             tab.has_bell = true;
             self.tab_bar.set_bell(tab_id, true);
         }
+    }
+
+    /// Handle mouse down
+    pub fn on_mouse_down(&mut self, x: f32, y: f32) {
+        // Check if click is in notification bar area
+        let tab_bar_height = self.dpi.scale_f32(TAB_BAR_HEIGHT as f32);
+        let notification_height = self.notification_bar.height() as f32;
+
+        // Notification bar is right below tab bar
+        if y >= tab_bar_height && y < tab_bar_height + notification_height {
+            // Adjust y coordinate relative to notification bar
+            let rel_y = y - tab_bar_height;
+            if let Some(action) = self.notification_bar.hit_test(x, rel_y) {
+                self.handle_notification_action(action);
+            }
+        }
+    }
+
+    /// Handle notification bar action
+    fn handle_notification_action(&mut self, action: NotificationAction) {
+        if let Some(file_id) = self.notification_bar.pending_file_id() {
+            match action {
+                NotificationAction::Save => {
+                    self.save_file(file_id, false);
+                }
+                NotificationAction::SaveAs => {
+                    self.save_file(file_id, true);
+                }
+                NotificationAction::Discard => {
+                    self.file_manager.discard();
+                    self.notification_bar.hide();
+                    self.invalidate();
+                }
+            }
+        }
+    }
+
+    /// Save file (optionally with dialog)
+    fn save_file(&mut self, file_id: u64, show_dialog: bool) {
+        // Get default path
+        let default_name = self.file_manager.pending_name().unwrap_or_default();
+        let default_path = self.file_manager.default_save_path(&default_name);
+
+        let save_path = if show_dialog {
+            // Show save dialog
+            crate::dialogs::show_save_dialog(self.hwnd, &default_path)
+        } else {
+            Some(default_path)
+        };
+
+        if let Some(path) = save_path {
+            match self.file_manager.save_to_path(&path) {
+                Ok(()) => {
+                    log::info!("File saved to {:?}", path);
+                }
+                Err(e) => {
+                    log::error!("Failed to save file: {}", e);
+                    crate::dialogs::show_error_msg(
+                        self.hwnd,
+                        &format!("Failed to save file: {}", e),
+                    );
+                }
+            }
+        }
+
+        self.notification_bar.hide();
+        self.invalidate();
     }
 }
 
@@ -742,6 +847,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     state.on_char(c);
                 }
             }
+            LRESULT(0)
+        }
+
+        WM_LBUTTONDOWN => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            state.on_mouse_down(x, y);
             LRESULT(0)
         }
 

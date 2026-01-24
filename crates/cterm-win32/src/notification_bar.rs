@@ -3,7 +3,7 @@
 //! Displays file transfer notifications with save/discard actions.
 
 use cterm_core::color::Rgb;
-use cterm_ui::theme::Theme;
+use cterm_ui::{format_size, Theme};
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{ID2D1HwndRenderTarget, D2D1_ROUNDED_RECT};
 use windows::Win32::Graphics::DirectWrite::{
@@ -341,35 +341,9 @@ fn rgb_to_d2d_color(rgb: Rgb) -> D2D1_COLOR_F {
     }
 }
 
-/// Format file size for display
-fn format_size(size: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = KB * 1024;
-    const GB: usize = MB * 1024;
-
-    if size >= GB {
-        format!("{:.1} GB", size as f64 / GB as f64)
-    } else if size >= MB {
-        format!("{:.1} MB", size as f64 / MB as f64)
-    } else if size >= KB {
-        format!("{:.1} KB", size as f64 / KB as f64)
-    } else {
-        format!("{} bytes", size)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_size() {
-        assert_eq!(format_size(100), "100 bytes");
-        assert_eq!(format_size(1024), "1.0 KB");
-        assert_eq!(format_size(1536), "1.5 KB");
-        assert_eq!(format_size(1048576), "1.0 MB");
-        assert_eq!(format_size(1073741824), "1.0 GB");
-    }
 
     #[test]
     fn test_notification_bar_visibility() {

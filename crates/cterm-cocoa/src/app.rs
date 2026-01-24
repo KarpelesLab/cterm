@@ -932,7 +932,7 @@ pub fn run() {
 
     // Install signal handler for better crash debugging
     #[cfg(unix)]
-    #[allow(clippy::fn_to_numeric_cast_with_truncation)]
+    #[allow(clippy::fn_to_numeric_cast, clippy::fn_to_numeric_cast_with_truncation)]
     unsafe {
         use std::io::Write;
         extern "C" fn crash_handler(sig: libc::c_int) {

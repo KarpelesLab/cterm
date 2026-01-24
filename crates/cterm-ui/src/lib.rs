@@ -7,7 +7,9 @@
 pub mod events;
 pub mod theme;
 pub mod traits;
+pub mod utils;
 
 pub use events::*;
 pub use theme::*;
 pub use traits::*;
+pub use utils::*;

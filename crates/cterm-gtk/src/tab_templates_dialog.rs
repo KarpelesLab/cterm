@@ -38,6 +38,7 @@ struct TemplateWidgets {
     docker_shell_entry: Entry,
     docker_auto_remove_check: CheckButton,
     docker_project_dir_entry: Entry,
+    #[allow(dead_code)]
     docker_status_label: Label,
     // Container row for visibility control
     docker_container_row: GtkBox,

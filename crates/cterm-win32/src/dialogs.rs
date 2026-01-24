@@ -270,6 +270,33 @@ pub fn show_save_file_dialog(
     }
 }
 
+/// Show a save dialog for file transfer (wrapper for show_save_file_dialog)
+///
+/// Takes a windows crate HWND and converts it for winapi
+pub fn show_save_dialog(
+    hwnd: windows::Win32::Foundation::HWND,
+    default_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let parent = hwnd.0 as *mut _;
+    let suggested_name = default_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+
+    show_save_file_dialog(
+        parent,
+        "Save File",
+        Some(suggested_name),
+        "All Files\0*.*\0\0",
+    )
+}
+
+/// Show an error message (wrapper that takes windows crate HWND)
+pub fn show_error_msg(hwnd: windows::Win32::Foundation::HWND, message: &str) {
+    let parent = hwnd.0 as *mut _;
+    show_error(parent, "Error", message);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

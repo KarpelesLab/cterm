@@ -6,28 +6,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use cterm_ui::format_size;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, CssProvider, Label, Orientation};
 
 /// Notification bar height in pixels
 pub const NOTIFICATION_BAR_HEIGHT: i32 = 32;
-
-/// Format file size in human-readable format
-fn format_size(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * KB;
-    const GB: usize = 1024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} bytes", bytes)
-    }
-}
 
 /// Callback type for save actions
 type SaveCallback = Rc<RefCell<Option<Box<dyn Fn(u64)>>>>;
@@ -43,11 +27,14 @@ pub struct NotificationBar {
     container: GtkBox,
     /// Label showing file name and size
     label: Label,
-    /// Save button
+    /// Save button (kept for potential future use)
+    #[allow(dead_code)]
     save_button: Button,
-    /// Save As button
+    /// Save As button (kept for potential future use)
+    #[allow(dead_code)]
     save_as_button: Button,
-    /// Discard button
+    /// Discard button (kept for potential future use)
+    #[allow(dead_code)]
     discard_button: Button,
     /// Current file ID
     file_id: Rc<Cell<u64>>,
@@ -188,11 +175,13 @@ impl NotificationBar {
     }
 
     /// Check if the notification bar is visible
+    #[allow(dead_code)]
     pub fn is_visible(&self) -> bool {
         self.container.is_visible()
     }
 
     /// Get the current file ID
+    #[allow(dead_code)]
     pub fn file_id(&self) -> u64 {
         self.file_id.get()
     }
