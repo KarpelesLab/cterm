@@ -14,9 +14,8 @@ use parking_lot::RwLock;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U;
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetClientRect, InvalidateRect, PAINTSTRUCT,
-};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use cterm_app::config::Config;

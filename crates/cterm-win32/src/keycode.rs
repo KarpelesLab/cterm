@@ -8,45 +8,45 @@ use winapi::um::winuser;
 /// Convert a Windows virtual key code to our KeyCode
 pub fn vk_to_keycode(vk: u16) -> Option<KeyCode> {
     Some(match vk as i32 {
-        // Letters
-        winuser::VK_A => KeyCode::A,
-        winuser::VK_B => KeyCode::B,
-        winuser::VK_C => KeyCode::C,
-        winuser::VK_D => KeyCode::D,
-        winuser::VK_E => KeyCode::E,
-        winuser::VK_F => KeyCode::F,
-        winuser::VK_G => KeyCode::G,
-        winuser::VK_H => KeyCode::H,
-        winuser::VK_I => KeyCode::I,
-        winuser::VK_J => KeyCode::J,
-        winuser::VK_K => KeyCode::K,
-        winuser::VK_L => KeyCode::L,
-        winuser::VK_M => KeyCode::M,
-        winuser::VK_N => KeyCode::N,
-        winuser::VK_O => KeyCode::O,
-        winuser::VK_P => KeyCode::P,
-        winuser::VK_Q => KeyCode::Q,
-        winuser::VK_R => KeyCode::R,
-        winuser::VK_S => KeyCode::S,
-        winuser::VK_T => KeyCode::T,
-        winuser::VK_U => KeyCode::U,
-        winuser::VK_V => KeyCode::V,
-        winuser::VK_W => KeyCode::W,
-        winuser::VK_X => KeyCode::X,
-        winuser::VK_Y => KeyCode::Y,
-        winuser::VK_Z => KeyCode::Z,
+        // Letters (VK_A through VK_Z are 0x41-0x5A, same as ASCII)
+        0x41 => KeyCode::A,
+        0x42 => KeyCode::B,
+        0x43 => KeyCode::C,
+        0x44 => KeyCode::D,
+        0x45 => KeyCode::E,
+        0x46 => KeyCode::F,
+        0x47 => KeyCode::G,
+        0x48 => KeyCode::H,
+        0x49 => KeyCode::I,
+        0x4A => KeyCode::J,
+        0x4B => KeyCode::K,
+        0x4C => KeyCode::L,
+        0x4D => KeyCode::M,
+        0x4E => KeyCode::N,
+        0x4F => KeyCode::O,
+        0x50 => KeyCode::P,
+        0x51 => KeyCode::Q,
+        0x52 => KeyCode::R,
+        0x53 => KeyCode::S,
+        0x54 => KeyCode::T,
+        0x55 => KeyCode::U,
+        0x56 => KeyCode::V,
+        0x57 => KeyCode::W,
+        0x58 => KeyCode::X,
+        0x59 => KeyCode::Y,
+        0x5A => KeyCode::Z,
 
         // Numbers (top row)
-        0x30 => KeyCode::Key0, // VK_0
-        0x31 => KeyCode::Key1, // VK_1
-        0x32 => KeyCode::Key2, // VK_2
-        0x33 => KeyCode::Key3, // VK_3
-        0x34 => KeyCode::Key4, // VK_4
-        0x35 => KeyCode::Key5, // VK_5
-        0x36 => KeyCode::Key6, // VK_6
-        0x37 => KeyCode::Key7, // VK_7
-        0x38 => KeyCode::Key8, // VK_8
-        0x39 => KeyCode::Key9, // VK_9
+        0x30 => KeyCode::Key0,
+        0x31 => KeyCode::Key1,
+        0x32 => KeyCode::Key2,
+        0x33 => KeyCode::Key3,
+        0x34 => KeyCode::Key4,
+        0x35 => KeyCode::Key5,
+        0x36 => KeyCode::Key6,
+        0x37 => KeyCode::Key7,
+        0x38 => KeyCode::Key8,
+        0x39 => KeyCode::Key9,
 
         // Function keys
         winuser::VK_F1 => KeyCode::F1,

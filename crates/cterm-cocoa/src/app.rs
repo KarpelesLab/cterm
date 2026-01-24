@@ -932,7 +932,6 @@ pub fn run() {
 
     // Install signal handler for better crash debugging
     #[cfg(unix)]
-    #[allow(clippy::fn_to_numeric_cast, clippy::fn_to_numeric_cast_with_truncation)]
     unsafe {
         use std::io::Write;
         extern "C" fn crash_handler(sig: libc::c_int) {
@@ -941,8 +940,10 @@ pub fn run() {
             let _ = writeln!(std::io::stderr(), "{}", bt);
             std::process::abort();
         }
-        libc::signal(libc::SIGSEGV, crash_handler as libc::sighandler_t);
-        libc::signal(libc::SIGBUS, crash_handler as libc::sighandler_t);
+        // Cast to function pointer type first, then to sighandler_t
+        let handler: extern "C" fn(libc::c_int) = crash_handler;
+        libc::signal(libc::SIGSEGV, handler as libc::sighandler_t);
+        libc::signal(libc::SIGBUS, handler as libc::sighandler_t);
     }
 
     log::info!("Starting cterm (native macOS)");

@@ -18,7 +18,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
     DWRITE_TRIMMING_GRANULARITY_CHARACTER,
 };
-use windows::Win32::Graphics::Gdi::GetClientRect;
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::dpi::DpiInfo;
 

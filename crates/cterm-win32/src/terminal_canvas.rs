@@ -27,7 +27,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::GetClientRect;
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::dpi::DpiInfo;
 
