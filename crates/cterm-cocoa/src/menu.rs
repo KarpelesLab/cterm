@@ -485,6 +485,48 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     debug_menu.addItem(&NSMenuItem::separatorItem(mtm));
 
+    // Log Level submenu
+    let log_level_menu = NSMenu::new(mtm);
+    log_level_menu.setTitle(&NSString::from_str("Log Level"));
+
+    log_level_menu.addItem(&create_menu_item(
+        mtm,
+        "Error",
+        Some(sel!(setLogLevelError:)),
+        "",
+    ));
+    log_level_menu.addItem(&create_menu_item(
+        mtm,
+        "Warn",
+        Some(sel!(setLogLevelWarn:)),
+        "",
+    ));
+    log_level_menu.addItem(&create_menu_item(
+        mtm,
+        "Info",
+        Some(sel!(setLogLevelInfo:)),
+        "",
+    ));
+    log_level_menu.addItem(&create_menu_item(
+        mtm,
+        "Debug",
+        Some(sel!(setLogLevelDebug:)),
+        "",
+    ));
+    log_level_menu.addItem(&create_menu_item(
+        mtm,
+        "Trace",
+        Some(sel!(setLogLevelTrace:)),
+        "",
+    ));
+
+    let log_level_item = NSMenuItem::new(mtm);
+    log_level_item.setTitle(&NSString::from_str("Log Level"));
+    log_level_item.setSubmenu(Some(&log_level_menu));
+    debug_menu.addItem(&log_level_item);
+
+    debug_menu.addItem(&NSMenuItem::separatorItem(mtm));
+
     debug_menu.addItem(&create_menu_item(
         mtm,
         "Crash (Test Recovery)",

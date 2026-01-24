@@ -41,7 +41,6 @@ struct ViewState {
 /// Terminal view state
 pub struct TerminalViewIvars {
     terminal: Arc<Mutex<Terminal>>,
-    pty: RefCell<Option<Pty>>,
     renderer: RefCell<Option<CGRenderer>>,
     cell_width: f64,
     cell_height: f64,
@@ -1137,7 +1136,6 @@ impl TerminalView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TerminalViewIvars {
             terminal: terminal.clone(),
-            pty: RefCell::new(None),
             renderer: RefCell::new(Some(renderer)),
             cell_width,
             cell_height,
@@ -1204,7 +1202,6 @@ impl TerminalView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TerminalViewIvars {
             terminal: terminal.clone(),
-            pty: RefCell::new(None),
             renderer: RefCell::new(Some(renderer)),
             cell_width,
             cell_height,
@@ -1286,7 +1283,6 @@ impl TerminalView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TerminalViewIvars {
             terminal: terminal.clone(),
-            pty: RefCell::new(None), // PTY is owned by Terminal
             renderer: RefCell::new(Some(renderer)),
             cell_width,
             cell_height,
@@ -1394,7 +1390,6 @@ impl TerminalView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TerminalViewIvars {
             terminal: terminal.clone(),
-            pty: RefCell::new(None), // PTY is owned by Terminal for restored case
             renderer: RefCell::new(Some(renderer)),
             cell_width,
             cell_height,
@@ -1546,7 +1541,8 @@ impl TerminalView {
                     Self::read_pty_loop(pty_fd, terminal, state);
                 });
 
-                *self.ivars().pty.borrow_mut() = Some(pty);
+                // Store PTY in Terminal (the canonical location)
+                self.ivars().terminal.lock().set_pty(pty);
             }
             Err(e) => {
                 log::error!("Failed to spawn shell: {}", e);
@@ -1609,7 +1605,8 @@ impl TerminalView {
                     Self::read_pty_loop(pty_fd, terminal, state);
                 });
 
-                *self.ivars().pty.borrow_mut() = Some(pty);
+                // Store PTY in Terminal (the canonical location)
+                self.ivars().terminal.lock().set_pty(pty);
             }
             Err(e) => {
                 log::error!("Failed to spawn template shell: {}", e);
@@ -1696,39 +1693,16 @@ impl TerminalView {
 
         if cols > 0 && rows > 0 {
             let mut terminal = self.ivars().terminal.lock();
-            // Terminal::resize() handles PTY resize internally if terminal owns the PTY
             terminal.resize(cols, rows);
-            drop(terminal);
-
-            // Also resize standalone pty if we have one (normal code path)
-            // Note: pty.resize takes (rows, cols) not (cols, rows)
-            if let Some(ref mut pty) = *self.ivars().pty.borrow_mut() {
-                match pty.resize(rows as u16, cols as u16) {
-                    Ok(()) => log::debug!("PTY resized to {}x{}", cols, rows),
-                    Err(e) => log::error!("Failed to resize PTY: {}", e),
-                }
-            } else {
-                log::debug!("No standalone PTY to resize");
-            }
-
             log::debug!("Resized terminal to {}x{}", cols, rows);
         }
     }
 
-    /// Write data to the PTY (handles both standalone and terminal-owned PTY)
+    /// Write data to the PTY
     fn write_to_pty(&self, data: &[u8]) {
-        // Try standalone pty first (normal case)
-        if let Some(ref mut pty) = *self.ivars().pty.borrow_mut() {
-            if let Err(e) = pty.write(data) {
-                log::error!("Failed to write to PTY: {}", e);
-            }
-            return;
-        }
-
-        // Fall back to terminal's internal PTY (restored case)
         let mut terminal = self.ivars().terminal.lock();
         if let Err(e) = terminal.write(data) {
-            log::error!("Failed to write to terminal PTY: {}", e);
+            log::error!("Failed to write to PTY: {}", e);
         }
     }
 
@@ -1745,22 +1719,12 @@ impl TerminalView {
     /// Check if there's a foreground process running (other than the shell)
     #[cfg(unix)]
     pub fn has_foreground_process(&self) -> bool {
-        // Check standalone PTY first
-        if let Some(ref pty) = *self.ivars().pty.borrow() {
-            return pty.has_foreground_process();
-        }
-        // Fall back to terminal's internal PTY
         self.ivars().terminal.lock().has_foreground_process()
     }
 
     /// Get the name of the foreground process (if any)
     #[cfg(unix)]
     pub fn foreground_process_name(&self) -> Option<String> {
-        // Check standalone PTY first
-        if let Some(ref pty) = *self.ivars().pty.borrow() {
-            return pty.foreground_process_name();
-        }
-        // Fall back to terminal's internal PTY
         self.ivars().terminal.lock().foreground_process_name()
     }
 
@@ -1847,21 +1811,13 @@ impl TerminalView {
     /// Duplicate the PTY file descriptor for upgrade transfer
     #[cfg(unix)]
     pub fn dup_pty_fd(&self) -> Option<std::os::unix::io::RawFd> {
-        self.ivars()
-            .pty
-            .borrow()
-            .as_ref()
-            .and_then(|pty| pty.dup_fd().ok())
+        self.ivars().terminal.lock().dup_pty_fd()
     }
 
     /// Get the child process ID
     #[cfg(unix)]
     pub fn child_pid(&self) -> Option<i32> {
-        self.ivars()
-            .pty
-            .borrow()
-            .as_ref()
-            .map(|pty| pty.child_pid())
+        self.ivars().terminal.lock().child_pid()
     }
 
     /// Register PTY FD with watchdog for crash recovery
@@ -1873,9 +1829,12 @@ impl TerminalView {
             return; // Not running under watchdog
         };
 
-        let Some(pty_fd) = self.ivars().pty.borrow().as_ref().map(|p| p.as_raw_fd()) else {
+        let terminal = self.ivars().terminal.lock();
+        let Some(pty_fd) = terminal.pty().map(|p| p.as_raw_fd()) else {
+            drop(terminal);
             return; // No PTY yet
         };
+        drop(terminal);
 
         match cterm_app::register_fd_with_watchdog(watchdog_fd, pty_fd) {
             Ok(id) => {

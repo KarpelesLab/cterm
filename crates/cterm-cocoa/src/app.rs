@@ -468,6 +468,41 @@ define_class!(
             let mtm = MainThreadMarker::from(self);
             crate::log_viewer::show_log_viewer(mtm);
         }
+
+        /// Set log level to Error
+        #[unsafe(method(setLogLevelError:))]
+        fn action_set_log_level_error(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::set_max_level(log::LevelFilter::Error);
+            log::info!("Log level set to Error");
+        }
+
+        /// Set log level to Warn
+        #[unsafe(method(setLogLevelWarn:))]
+        fn action_set_log_level_warn(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::set_max_level(log::LevelFilter::Warn);
+            log::info!("Log level set to Warn");
+        }
+
+        /// Set log level to Info
+        #[unsafe(method(setLogLevelInfo:))]
+        fn action_set_log_level_info(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::set_max_level(log::LevelFilter::Info);
+            log::info!("Log level set to Info");
+        }
+
+        /// Set log level to Debug
+        #[unsafe(method(setLogLevelDebug:))]
+        fn action_set_log_level_debug(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::set_max_level(log::LevelFilter::Debug);
+            log::info!("Log level set to Debug");
+        }
+
+        /// Set log level to Trace
+        #[unsafe(method(setLogLevelTrace:))]
+        fn action_set_log_level_trace(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::set_max_level(log::LevelFilter::Trace);
+            log::info!("Log level set to Trace");
+        }
     }
 );
 
@@ -509,8 +544,29 @@ impl AppDelegate {
         let window =
             CtermWindow::from_template(mtm, &self.ivars().config, &self.ivars().theme, template);
         self.ivars().windows.borrow_mut().push(window.clone());
-        window.makeKeyAndOrderFront(None);
-        log::info!("Created new tab from template: {}", template.name);
+
+        // If there's a key window, add as a tab to it; otherwise show standalone
+        let app = NSApplication::sharedApplication(mtm);
+        if let Some(key_window) = app.keyWindow() {
+            // Add as a tab to the existing key window
+            key_window.addTabbedWindow_ordered(&window, objc2_app_kit::NSWindowOrderingMode::Above);
+            window.makeKeyAndOrderFront(None);
+            log::info!(
+                "Created new tab from template: {} (added to existing window)",
+                template.name
+            );
+        } else {
+            window.makeKeyAndOrderFront(None);
+            log::info!(
+                "Created new tab from template: {} (standalone window)",
+                template.name
+            );
+        }
+
+        // Apply tab color after window is visible (tab property is only available then)
+        if let Some(ref color) = template.color {
+            window.set_tab_color(Some(color));
+        }
     }
 
     /// Restore windows from seamless upgrade state
@@ -608,8 +664,15 @@ impl AppDelegate {
 
                 if let Some(ref first) = first_window {
                     // Add as a tab to the first window
-                    first.addTabbedWindow_ordered(&window, objc2_app_kit::NSWindowOrderingMode::Above);
-                    log::info!("Window {}, tab {} restored as tabbed window", window_idx, tab_idx);
+                    first.addTabbedWindow_ordered(
+                        &window,
+                        objc2_app_kit::NSWindowOrderingMode::Above,
+                    );
+                    log::info!(
+                        "Window {}, tab {} restored as tabbed window",
+                        window_idx,
+                        tab_idx
+                    );
                 } else {
                     // First tab - restore window position and size, then show it
                     let frame = NSRect::new(
@@ -619,7 +682,11 @@ impl AppDelegate {
                     window.setFrame_display(frame, true);
                     window.makeKeyAndOrderFront(None);
                     first_window = Some(window.clone());
-                    log::info!("Window {}, tab {} restored as main window", window_idx, tab_idx);
+                    log::info!(
+                        "Window {}, tab {} restored as main window",
+                        window_idx,
+                        tab_idx
+                    );
                 }
             }
 

@@ -127,6 +127,11 @@ impl Terminal {
         self.pty.as_mut()
     }
 
+    /// Set the PTY for this terminal
+    pub fn set_pty(&mut self, pty: Pty) {
+        self.pty = Some(pty);
+    }
+
     /// Restore the screen state (for crash recovery)
     ///
     /// Replaces the current screen with the provided one, preserving the PTY.

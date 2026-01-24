@@ -29,6 +29,7 @@ pub struct CtermWindowIvars {
     theme: Theme,
     shortcuts: ShortcutManager,
     active_terminal: RefCell<Option<Retained<TerminalView>>>,
+    pending_tab_color: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -47,6 +48,12 @@ define_class!(
             // Make the terminal view first responder so it can receive keyboard input
             if let Some(terminal) = self.ivars().active_terminal.borrow().as_ref() {
                 self.makeFirstResponder(Some(terminal));
+            }
+
+            // Apply pending tab color if any (tab property becomes available after joining tab group)
+            // Try immediately, and schedule a retry in case the tab isn't ready yet
+            if !self.apply_pending_tab_color() {
+                self.schedule_tab_color_retry();
             }
         }
 
@@ -129,6 +136,15 @@ define_class!(
             log::info!("Created new default tab via newWindowForTab:");
             Retained::into_raw(Retained::into_super(new_window))
         }
+
+        /// Retry applying tab color (called via performSelector:afterDelay:)
+        #[unsafe(method(retryTabColor))]
+        fn retry_tab_color(&self) {
+            if !self.apply_pending_tab_color() {
+                // Still not ready, try again
+                self.schedule_tab_color_retry();
+            }
+        }
     }
 );
 
@@ -154,6 +170,7 @@ impl CtermWindow {
             theme: theme.clone(),
             shortcuts: ShortcutManager::from_config(&config.shortcuts),
             active_terminal: RefCell::new(None),
+            pending_tab_color: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -222,6 +239,7 @@ impl CtermWindow {
             theme: theme.clone(),
             shortcuts: ShortcutManager::from_config(&config.shortcuts),
             active_terminal: RefCell::new(None),
+            pending_tab_color: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -298,6 +316,7 @@ impl CtermWindow {
             theme: theme.clone(),
             shortcuts: ShortcutManager::from_config(&config.shortcuts),
             active_terminal: RefCell::new(None),
+            pending_tab_color: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -409,6 +428,7 @@ impl CtermWindow {
             theme: theme.clone(),
             shortcuts: ShortcutManager::from_config(&config.shortcuts),
             active_terminal: RefCell::new(None),
+            pending_tab_color: RefCell::new(template.color.clone()),
         });
 
         let this: Retained<Self> = unsafe {
@@ -447,6 +467,148 @@ impl CtermWindow {
         *this.ivars().active_terminal.borrow_mut() = Some(terminal_view);
 
         this
+    }
+
+    /// Set the tab color indicator for native macOS tabs
+    ///
+    /// Creates a small colored circle as the tab's accessory view.
+    /// If the tab is not yet available, stores the color for later application.
+    pub fn set_tab_color(&self, color: Option<&str>) {
+        log::info!("set_tab_color called with: {:?}", color);
+        // Store the color for later if needed
+        *self.ivars().pending_tab_color.borrow_mut() = color.map(|s| s.to_string());
+
+        unsafe {
+            // Get the window's tab object
+            let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
+            log::info!("set_tab_color: tab={:?}", tab);
+            if tab.is_null() {
+                log::info!("No tab object available, stored for later");
+                return;
+            }
+
+            self.apply_tab_color_to_tab(tab, color);
+        }
+    }
+
+    /// Apply pending tab color if the tab is now available
+    /// Returns true if color was applied, false if tab not yet available
+    fn apply_pending_tab_color(&self) -> bool {
+        let pending = self.ivars().pending_tab_color.borrow().clone();
+        if pending.is_none() {
+            return true; // Nothing to apply
+        }
+
+        unsafe {
+            let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
+            log::info!("apply_pending_tab_color: tab={:?}, pending={:?}", tab, pending);
+            if tab.is_null() {
+                log::info!("Tab not available yet for pending color: {:?}", pending);
+                return false;
+            }
+
+            self.apply_tab_color_to_tab(tab, pending.as_deref());
+            // Clear pending after successful application
+            *self.ivars().pending_tab_color.borrow_mut() = None;
+            log::info!("Applied pending tab color: {:?}", pending);
+            true
+        }
+    }
+
+    /// Schedule a retry for applying tab color after a short delay
+    fn schedule_tab_color_retry(&self) {
+        unsafe {
+            let _: () = msg_send![
+                self,
+                performSelector: objc2::sel!(retryTabColor),
+                withObject: std::ptr::null::<objc2::runtime::AnyObject>(),
+                afterDelay: 0.1f64
+            ];
+        }
+    }
+
+    /// Internal: Apply color to a tab object
+    unsafe fn apply_tab_color_to_tab(
+        &self,
+        tab: *mut objc2::runtime::AnyObject,
+        color: Option<&str>,
+    ) {
+        // Debug: print the tab object class
+        let class: *const objc2::runtime::AnyClass = msg_send![tab, class];
+        let class_name: *const objc2::runtime::AnyObject = msg_send![class, description];
+        log::info!("Tab object class: {:?}", class_name);
+
+        if let Some(hex) = color {
+            // Parse hex color
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str_radix(&hex[0..2], 16),
+                    u8::from_str_radix(&hex[2..4], 16),
+                    u8::from_str_radix(&hex[4..6], 16),
+                ) {
+                    // Create a small colored circle view
+                    let frame = NSRect::new(NSPoint::ZERO, NSSize::new(12.0, 12.0));
+                    let view: *mut objc2::runtime::AnyObject =
+                        msg_send![objc2::class!(NSView), alloc];
+                    let view: *mut objc2::runtime::AnyObject =
+                        msg_send![view, initWithFrame: frame];
+
+                    // Enable layer-backing and set the background color
+                    let _: () = msg_send![view, setWantsLayer: true];
+                    let layer: *mut objc2::runtime::AnyObject = msg_send![view, layer];
+                    if !layer.is_null() {
+                        // Create NSColor from RGB
+                        let ns_color: *mut objc2::runtime::AnyObject = msg_send![
+                            objc2::class!(NSColor),
+                            colorWithRed: (r as f64 / 255.0),
+                            green: (g as f64 / 255.0),
+                            blue: (b as f64 / 255.0),
+                            alpha: 1.0f64
+                        ];
+                        let cg_color: *mut objc2::runtime::AnyObject = msg_send![ns_color, CGColor];
+                        let _: () = msg_send![layer, setBackgroundColor: cg_color];
+                        // Make it a circle
+                        let _: () = msg_send![layer, setCornerRadius: 6.0f64];
+                    }
+
+                    // Add width and height constraints (required since translatesAutoresizingMaskIntoConstraints is false)
+                    let width_constraint: *mut objc2::runtime::AnyObject = msg_send![
+                        objc2::class!(NSLayoutConstraint),
+                        constraintWithItem: view,
+                        attribute: 7i64,  // NSLayoutAttributeWidth
+                        relatedBy: 0i64,  // NSLayoutRelationEqual
+                        toItem: std::ptr::null::<objc2::runtime::AnyObject>(),
+                        attribute: 0i64,  // NSLayoutAttributeNotAnAttribute
+                        multiplier: 1.0f64,
+                        constant: 12.0f64
+                    ];
+                    let height_constraint: *mut objc2::runtime::AnyObject = msg_send![
+                        objc2::class!(NSLayoutConstraint),
+                        constraintWithItem: view,
+                        attribute: 8i64,  // NSLayoutAttributeHeight
+                        relatedBy: 0i64,  // NSLayoutRelationEqual
+                        toItem: std::ptr::null::<objc2::runtime::AnyObject>(),
+                        attribute: 0i64,  // NSLayoutAttributeNotAnAttribute
+                        multiplier: 1.0f64,
+                        constant: 12.0f64
+                    ];
+                    let _: () = msg_send![width_constraint, setActive: true];
+                    let _: () = msg_send![height_constraint, setActive: true];
+
+                    // Set as tab's accessory view
+                    let _: () = msg_send![tab, setAccessoryView: view];
+
+                    // Debug: verify it was set
+                    let check: *mut objc2::runtime::AnyObject = msg_send![tab, accessoryView];
+                    log::info!("Set tab color to #{}, accessoryView is now: {:?} (view was {:?})", hex, check, view);
+                }
+            }
+        } else {
+            // Clear the accessory view
+            let null_view: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+            let _: () = msg_send![tab, setAccessoryView: null_view];
+        }
     }
 
     /// Show a confirmation dialog when closing with a running process

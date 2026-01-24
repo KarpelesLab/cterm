@@ -230,6 +230,7 @@ jobs:
             "libgio-2.0-0.dll",
             "libglib-2.0-0.dll",
             "libgobject-2.0-0.dll",
+            "libgmodule-2.0-0.dll",
             "libcairo-2.dll",
             "libcairo-gobject-2.dll",
             "libpango-1.0-0.dll",
@@ -260,7 +261,11 @@ jobs:
             "libexpat-1.dll",
             "libgcc_s_seh-1.dll",
             "libstdc++-6.dll",
-            "libwinpthread-1.dll"
+            "libwinpthread-1.dll",
+            "libpixman-1-0.dll",
+            "libthai-0.dll",
+            "libgraphite2.dll",
+            "libdatrie-1.dll"
           )
           foreach ($dll in $dlls) {
             $src = Join-Path $msysPath $dll
