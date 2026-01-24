@@ -5,7 +5,9 @@
 use cterm_core::color::Rgb;
 use cterm_ui::{format_size, Theme};
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
-use windows::Win32::Graphics::Direct2D::{ID2D1HwndRenderTarget, D2D1_ROUNDED_RECT};
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1HwndRenderTarget, ID2D1RenderTarget, D2D1_ROUNDED_RECT,
+};
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
 };

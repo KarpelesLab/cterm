@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::ptr;
 
-use cterm_core::color::Rgb;
-use cterm_core::{Cell, CellAttrs, Grid, Screen, Selection, SelectionPoint};
+use cterm_core::color::{Color, Rgb};
+use cterm_core::{Cell, CellAttrs, Grid, Screen, Selection};
 use cterm_ui::theme::Theme;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -15,10 +15,11 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Brush, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
+    D2D1CreateFactory, ID2D1Brush, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+    ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_FACTORY_OPTIONS,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
     D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -327,8 +328,8 @@ impl TerminalRenderer {
         let x = col as f32 * self.cell_dims.width;
         let y = row as f32 * self.cell_dims.height;
 
-        let attrs = &cell.attrs;
-        let (fg, bg) = self.resolve_colors(attrs);
+        let attrs = cell.attrs;
+        let (fg, bg) = self.resolve_colors(cell);
 
         // Draw background if not default
         if bg != self.theme.colors.background {
@@ -347,7 +348,7 @@ impl TerminalRenderer {
         if c != ' ' && c != '\0' {
             let fg_brush = self.get_brush(fg)?;
 
-            let text_format = if attrs.bold {
+            let text_format = if attrs.contains(CellAttrs::BOLD) {
                 self.text_format_bold.as_ref().unwrap()
             } else {
                 self.text_format.as_ref().unwrap()
@@ -370,7 +371,7 @@ impl TerminalRenderer {
         }
 
         // Draw underline
-        if attrs.underline {
+        if attrs.has_underline() {
             let fg_brush = self.get_brush(fg)?;
             let underline_y = y + self.cell_dims.baseline + 2.0;
             unsafe {
@@ -388,7 +389,7 @@ impl TerminalRenderer {
         }
 
         // Draw strikethrough
-        if attrs.strikethrough {
+        if attrs.contains(CellAttrs::STRIKETHROUGH) {
             let fg_brush = self.get_brush(fg)?;
             let strike_y = y + self.cell_dims.height / 2.0;
             unsafe {
@@ -408,29 +409,27 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    /// Resolve foreground and background colors from cell attributes
-    fn resolve_colors(&self, attrs: &CellAttrs) -> (Rgb, Rgb) {
-        use cterm_core::color::Color;
-
-        let mut fg = match attrs.fg {
+    /// Resolve foreground and background colors from a cell
+    fn resolve_colors(&self, cell: &Cell) -> (Rgb, Rgb) {
+        let mut fg = match cell.fg {
             Color::Default => self.theme.colors.foreground,
             Color::Ansi(idx) => self.theme.colors.ansi[idx as usize],
             Color::Rgb(rgb) => rgb,
         };
 
-        let mut bg = match attrs.bg {
+        let mut bg = match cell.bg {
             Color::Default => self.theme.colors.background,
             Color::Ansi(idx) => self.theme.colors.ansi[idx as usize],
             Color::Rgb(rgb) => rgb,
         };
 
         // Handle inverse
-        if attrs.inverse {
+        if cell.attrs.contains(CellAttrs::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
 
         // Handle dim
-        if attrs.dim {
+        if cell.attrs.contains(CellAttrs::DIM) {
             fg = Rgb::new(fg.r / 2, fg.g / 2, fg.b / 2);
         }
 
@@ -447,24 +446,24 @@ impl TerminalRenderer {
         let selection_color = self.theme.colors.selection;
         let brush = self.get_brush(selection_color)?;
 
-        let (start, end) = selection.normalized();
+        let (start, end) = selection.ordered();
         let rows = screen.grid().height();
         let cols = screen.grid().width();
 
-        for row in start.row..=end.row {
-            if row >= rows {
+        for line in start.line..=end.line {
+            if line >= rows {
                 continue;
             }
 
-            let start_col = if row == start.row { start.col } else { 0 };
-            let end_col = if row == end.row {
+            let start_col = if line == start.line { start.col } else { 0 };
+            let end_col = if line == end.line {
                 end.col
             } else {
                 cols.saturating_sub(1)
             };
 
             let x = start_col as f32 * self.cell_dims.width;
-            let y = row as f32 * self.cell_dims.height;
+            let y = line as f32 * self.cell_dims.height;
             let width = ((end_col - start_col + 1) as f32) * self.cell_dims.width;
 
             let rect = D2D_RECT_F {
@@ -482,7 +481,6 @@ impl TerminalRenderer {
 
     /// Draw the cursor
     fn draw_cursor(&mut self, screen: &Screen) -> windows::core::Result<()> {
-        let rt = self.render_target.as_ref().unwrap();
         let cursor = &screen.cursor;
 
         if !cursor.visible {
@@ -503,7 +501,10 @@ impl TerminalRenderer {
         };
 
         // Draw filled block cursor
-        unsafe { rt.FillRectangle(&rect, &brush) };
+        unsafe {
+            let rt = self.render_target.as_ref().unwrap();
+            rt.FillRectangle(&rect, &brush);
+        }
 
         // Draw the character under cursor with inverted color
         let grid = screen.grid();
@@ -528,7 +529,10 @@ impl TerminalRenderer {
                 };
 
                 let origin = D2D_POINT_2F { x, y };
-                unsafe { rt.DrawTextLayout(origin, &layout, &text_brush, Default::default()) };
+                unsafe {
+                    let rt = self.render_target.as_ref().unwrap();
+                    rt.DrawTextLayout(origin, &layout, &text_brush, Default::default());
+                }
             }
         }
 
