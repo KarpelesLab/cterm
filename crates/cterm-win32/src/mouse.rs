@@ -29,7 +29,7 @@ pub struct MouseState {
 impl Default for MouseState {
     fn default() -> Self {
         Self {
-            mode: SelectionMode::Normal,
+            mode: SelectionMode::Char,
             selecting: false,
             start: None,
             current: None,
@@ -80,21 +80,21 @@ impl MouseState {
 
         // Determine selection mode based on click count
         self.mode = match self.click_count {
-            1 => SelectionMode::Normal,
+            1 => SelectionMode::Char,
             2 => SelectionMode::Word,
             3 => SelectionMode::Line,
-            _ => SelectionMode::Normal,
+            _ => SelectionMode::Char,
         };
 
         // Start selection
         self.selecting = true;
-        let point = SelectionPoint { row, col };
+        let point = SelectionPoint { line: row, col };
         self.start = Some(point);
         self.current = Some(point);
 
         // Return initial selection
         Some(Selection {
-            start: point,
+            anchor: point,
             end: point,
             mode: self.mode,
         })
@@ -113,11 +113,11 @@ impl MouseState {
         }
 
         let (col, row) = pixel_to_cell(x, y, cell_dims, scroll_offset);
-        let point = SelectionPoint { row, col };
+        let point = SelectionPoint { line: row, col };
         self.current = Some(point);
 
-        self.start.map(|start| Selection {
-            start,
+        self.start.map(|anchor| Selection {
+            anchor,
             end: point,
             mode: self.mode,
         })
@@ -137,12 +137,12 @@ impl MouseState {
         }
 
         let (col, row) = pixel_to_cell(x, y, cell_dims, scroll_offset);
-        let point = SelectionPoint { row, col };
+        let point = SelectionPoint { line: row, col };
         self.current = Some(point);
         self.selecting = false;
 
-        self.start.map(|start| Selection {
-            start,
+        self.start.map(|anchor| Selection {
+            anchor,
             end: point,
             mode: self.mode,
         })
@@ -164,8 +164,8 @@ impl MouseState {
     /// Get current selection if any
     pub fn get_selection(&self) -> Option<Selection> {
         match (self.start, self.current) {
-            (Some(start), Some(end)) => Some(Selection {
-                start,
+            (Some(anchor), Some(end)) => Some(Selection {
+                anchor,
                 end,
                 mode: self.mode,
             }),
@@ -377,7 +377,7 @@ mod tests {
         // First click
         state.on_button_down(MouseButton::Left, 10, 10, Modifiers::empty(), &dims, 0);
         assert_eq!(state.click_count, 1);
-        assert_eq!(state.mode, SelectionMode::Normal);
+        assert_eq!(state.mode, SelectionMode::Char);
 
         // Quick second click (double click)
         state.on_button_down(MouseButton::Left, 10, 10, Modifiers::empty(), &dims, 0);

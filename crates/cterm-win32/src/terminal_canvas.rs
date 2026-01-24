@@ -324,7 +324,6 @@ impl TerminalRenderer {
 
     /// Draw a single cell
     fn draw_cell(&mut self, row: usize, col: usize, cell: &Cell) -> windows::core::Result<()> {
-        let rt = self.render_target.as_ref().unwrap();
         let x = col as f32 * self.cell_dims.width;
         let y = row as f32 * self.cell_dims.height;
 
@@ -340,6 +339,7 @@ impl TerminalRenderer {
                 bottom: y + self.cell_dims.height,
             };
             let brush = self.get_brush(bg)?;
+            let rt = self.render_target.as_ref().unwrap();
             unsafe { rt.FillRectangle(&rect, &brush) };
         }
 
@@ -367,6 +367,7 @@ impl TerminalRenderer {
             };
 
             let origin = D2D_POINT_2F { x, y };
+            let rt = self.render_target.as_ref().unwrap();
             unsafe { rt.DrawTextLayout(origin, &layout, &fg_brush, Default::default()) };
         }
 
@@ -374,6 +375,7 @@ impl TerminalRenderer {
         if attrs.has_underline() {
             let fg_brush = self.get_brush(fg)?;
             let underline_y = y + self.cell_dims.baseline + 2.0;
+            let rt = self.render_target.as_ref().unwrap();
             unsafe {
                 rt.DrawLine(
                     D2D_POINT_2F { x, y: underline_y },
@@ -392,6 +394,7 @@ impl TerminalRenderer {
         if attrs.contains(CellAttrs::STRIKETHROUGH) {
             let fg_brush = self.get_brush(fg)?;
             let strike_y = y + self.cell_dims.height / 2.0;
+            let rt = self.render_target.as_ref().unwrap();
             unsafe {
                 rt.DrawLine(
                     D2D_POINT_2F { x, y: strike_y },
@@ -411,16 +414,13 @@ impl TerminalRenderer {
 
     /// Resolve foreground and background colors from a cell
     fn resolve_colors(&self, cell: &Cell) -> (Rgb, Rgb) {
-        let mut fg = match cell.fg {
-            Color::Default => self.theme.colors.foreground,
-            Color::Ansi(idx) => self.theme.colors.ansi[idx as usize],
-            Color::Rgb(rgb) => rgb,
-        };
+        let palette = &self.theme.colors;
 
-        let mut bg = match cell.bg {
-            Color::Default => self.theme.colors.background,
-            Color::Ansi(idx) => self.theme.colors.ansi[idx as usize],
-            Color::Rgb(rgb) => rgb,
+        let mut fg = cell.fg.to_rgb(palette);
+        let mut bg = if cell.bg == Color::Default {
+            palette.background
+        } else {
+            cell.bg.to_rgb(palette)
         };
 
         // Handle inverse
@@ -442,7 +442,6 @@ impl TerminalRenderer {
         screen: &Screen,
         selection: &Selection,
     ) -> windows::core::Result<()> {
-        let rt = self.render_target.as_ref().unwrap();
         let selection_color = self.theme.colors.selection;
         let brush = self.get_brush(selection_color)?;
 
@@ -473,6 +472,7 @@ impl TerminalRenderer {
                 bottom: y + self.cell_dims.height,
             };
 
+            let rt = self.render_target.as_ref().unwrap();
             unsafe { rt.FillRectangle(&rect, &brush) };
         }
 
