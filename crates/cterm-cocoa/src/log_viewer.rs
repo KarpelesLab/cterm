@@ -4,12 +4,8 @@
 
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
-use objc2_app_kit::{
-    NSScrollView, NSTextView, NSWindow, NSWindowStyleMask,
-};
-use objc2_foundation::{
-    MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
-};
+use objc2_app_kit::{NSScrollView, NSTextView, NSWindow, NSWindowStyleMask};
+use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use crate::log_capture;
 

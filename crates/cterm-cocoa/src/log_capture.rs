@@ -25,7 +25,10 @@ impl LogEntry {
     pub fn format(&self) -> String {
         use std::time::UNIX_EPOCH;
 
-        let duration = self.timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let duration = self
+            .timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
         let secs = duration.as_secs() % 86400; // Time of day in seconds
         let hours = secs / 3600;
         let mins = (secs % 3600) / 60;
@@ -121,9 +124,8 @@ pub fn init() {
     }
 
     // Build env_logger
-    let env_logger = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    ).build();
+    let env_logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
 
     let max_level = env_logger.filter();
 
