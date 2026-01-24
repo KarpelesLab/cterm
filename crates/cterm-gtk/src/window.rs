@@ -865,6 +865,8 @@ impl CtermWindow {
         let theme = self.theme.clone();
         let tab_bar = self.tab_bar.clone();
         let has_bell = Rc::clone(&self.has_bell);
+        let file_manager = Rc::clone(&self.file_manager);
+        let notification_bar = self.notification_bar.clone();
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
             // Convert GTK modifiers to our modifiers
@@ -885,6 +887,8 @@ impl CtermWindow {
                                 &tab_bar,
                                 &window,
                                 &has_bell,
+                                &file_manager,
+                                &notification_bar,
                             );
                             return glib::Propagation::Stop;
                         }
@@ -1501,11 +1505,11 @@ fn create_new_tab(
                 log::info!(
                     "Streaming file received: id={}, name={:?}, size={}",
                     id,
-                    result.name,
-                    result.size
+                    result.params.name,
+                    result.total_bytes
                 );
-                let size = result.size;
-                let name = result.name.clone();
+                let size = result.total_bytes;
+                let name = result.params.name.clone();
                 let mut manager = file_manager_transfer.borrow_mut();
                 manager.set_pending_streaming(id, name.clone(), result.data);
                 drop(manager);
@@ -1713,11 +1717,11 @@ fn create_docker_tab(
                 log::info!(
                     "Streaming file received: id={}, name={:?}, size={}",
                     id,
-                    result.name,
-                    result.size
+                    result.params.name,
+                    result.total_bytes
                 );
-                let size = result.size;
-                let name = result.name.clone();
+                let size = result.total_bytes;
+                let name = result.params.name.clone();
                 let mut manager = file_manager_transfer.borrow_mut();
                 manager.set_pending_streaming(id, name.clone(), result.data);
                 drop(manager);

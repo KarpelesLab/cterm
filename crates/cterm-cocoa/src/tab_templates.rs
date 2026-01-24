@@ -154,9 +154,9 @@ define_class!(
 
         #[unsafe(method(addPreset:))]
         fn action_add_preset(&self, sender: Option<&AnyObject>) {
-            if let Some(popup) = sender.and_then(|s| unsafe {
+            if let Some(popup) = sender.map(|s| unsafe {
                 let popup: *const NSPopUpButton = s as *const AnyObject as *const NSPopUpButton;
-                Some(&*popup)
+                &*popup
             }) {
                 let index = popup.indexOfSelectedItem();
                 self.add_preset_template(index as usize);

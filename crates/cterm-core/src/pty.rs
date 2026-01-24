@@ -913,6 +913,7 @@ mod tests {
     }
 
     /// Helper to wait with a timeout for tests
+    #[allow(dead_code)]
     fn wait_with_timeout(pty: &mut Pty, timeout_ms: u64) -> Option<i32> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_millis(timeout_ms);
