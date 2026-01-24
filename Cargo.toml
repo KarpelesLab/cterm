@@ -15,8 +15,11 @@ path = "src/main.rs"
 [target.'cfg(target_os = "macos")'.dependencies]
 cterm-cocoa = { path = "crates/cterm-cocoa" }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
 cterm-gtk = { path = "crates/cterm-gtk" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+cterm-win32 = { path = "crates/cterm-win32" }
 
 [workspace]
 resolver = "2"
@@ -26,6 +29,7 @@ members = [
     "crates/cterm-app",
     "crates/cterm-gtk",
     "crates/cterm-cocoa",
+    "crates/cterm-win32",
 ]
 
 [workspace.package]

@@ -9,7 +9,12 @@ fn main() {
         cterm_cocoa::run();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        cterm_win32::run();
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         cterm_gtk::run();
     }
