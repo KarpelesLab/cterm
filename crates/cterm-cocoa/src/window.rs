@@ -345,6 +345,12 @@ impl CtermWindow {
         // Create a new window with the same configuration
         let new_window = CtermWindow::new(mtm, &self.ivars().config, &self.ivars().theme);
 
+        // Register with AppDelegate for tracking (important for relaunch/upgrade)
+        let app = NSApplication::sharedApplication(mtm);
+        if let Some(delegate) = app.delegate() {
+            let _: () = unsafe { msg_send![&*delegate, registerWindow: &*new_window] };
+        }
+
         // Add the new window as a tab to this window
         self.addTabbedWindow_ordered(&new_window, objc2_app_kit::NSWindowOrderingMode::Above);
 
