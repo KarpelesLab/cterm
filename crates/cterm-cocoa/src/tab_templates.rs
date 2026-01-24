@@ -1057,39 +1057,31 @@ impl TabTemplatesWindow {
                 template.color = unsafe {
                     use objc2::msg_send;
                     let color: *mut objc2::runtime::AnyObject = msg_send![&**color_well, color];
-                    log::info!("Color well color: {:?}", color);
 
                     // Convert to sRGB color space
                     let srgb_space: *mut objc2::runtime::AnyObject =
                         msg_send![objc2::class!(NSColorSpace), sRGBColorSpace];
                     let rgb_color: *mut objc2::runtime::AnyObject =
                         msg_send![color, colorUsingColorSpace: srgb_space];
-                    log::info!("RGB color after conversion: {:?}", rgb_color);
 
                     if rgb_color.is_null() {
                         // Couldn't convert - might be clear color, treat as no color
-                        log::warn!("Color conversion to sRGB failed");
                         None
                     } else {
                         let alpha: f64 = msg_send![rgb_color, alphaComponent];
-                        log::info!("Alpha: {}", alpha);
                         if alpha < 0.1 {
                             // Essentially transparent/clear, treat as no color
-                            log::info!("Alpha too low, treating as no color");
                             None
                         } else {
                             let r: f64 = msg_send![rgb_color, redComponent];
                             let g: f64 = msg_send![rgb_color, greenComponent];
                             let b: f64 = msg_send![rgb_color, blueComponent];
-                            log::info!("RGB: {}, {}, {}", r, g, b);
 
                             let r = (r * 255.0).round() as u8;
                             let g = (g * 255.0).round() as u8;
                             let b = (b * 255.0).round() as u8;
 
-                            let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
-                            log::info!("Saving color: {}", hex);
-                            Some(hex)
+                            Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
                         }
                     }
                 };

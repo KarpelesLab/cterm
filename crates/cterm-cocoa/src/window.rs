@@ -474,16 +474,14 @@ impl CtermWindow {
     /// Creates a small colored circle as the tab's accessory view.
     /// If the tab is not yet available, stores the color for later application.
     pub fn set_tab_color(&self, color: Option<&str>) {
-        log::info!("set_tab_color called with: {:?}", color);
         // Store the color for later if needed
         *self.ivars().pending_tab_color.borrow_mut() = color.map(|s| s.to_string());
 
         unsafe {
             // Get the window's tab object
             let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
-            log::info!("set_tab_color: tab={:?}", tab);
             if tab.is_null() {
-                log::info!("No tab object available, stored for later");
+                log::debug!("No tab object available, stored for later");
                 return;
             }
 
@@ -501,16 +499,15 @@ impl CtermWindow {
 
         unsafe {
             let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
-            log::info!("apply_pending_tab_color: tab={:?}, pending={:?}", tab, pending);
             if tab.is_null() {
-                log::info!("Tab not available yet for pending color: {:?}", pending);
+                log::debug!("Tab not available yet for pending color");
                 return false;
             }
 
             self.apply_tab_color_to_tab(tab, pending.as_deref());
             // Clear pending after successful application
             *self.ivars().pending_tab_color.borrow_mut() = None;
-            log::info!("Applied pending tab color: {:?}", pending);
+            log::debug!("Applied pending tab color: {:?}", pending);
             true
         }
     }
@@ -533,11 +530,6 @@ impl CtermWindow {
         tab: *mut objc2::runtime::AnyObject,
         color: Option<&str>,
     ) {
-        // Debug: print the tab object class
-        let class: *const objc2::runtime::AnyClass = msg_send![tab, class];
-        let class_name: *const objc2::runtime::AnyObject = msg_send![class, description];
-        log::info!("Tab object class: {:?}", class_name);
-
         if let Some(hex) = color {
             // Parse hex color
             let hex = hex.trim_start_matches('#');
@@ -598,10 +590,7 @@ impl CtermWindow {
 
                     // Set as tab's accessory view
                     let _: () = msg_send![tab, setAccessoryView: view];
-
-                    // Debug: verify it was set
-                    let check: *mut objc2::runtime::AnyObject = msg_send![tab, accessoryView];
-                    log::info!("Set tab color to #{}, accessoryView is now: {:?} (view was {:?})", hex, check, view);
+                    log::debug!("Set tab color to #{}", hex);
                 }
             }
         } else {
