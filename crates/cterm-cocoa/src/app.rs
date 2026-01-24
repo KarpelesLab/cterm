@@ -411,6 +411,13 @@ define_class!(
                 self.ivars().windows.borrow().len()
             );
         }
+
+        /// Debug menu: Relaunch cterm with state preservation (uses real upgrade path)
+        #[cfg(unix)]
+        #[unsafe(method(debugRelaunch:))]
+        fn action_debug_relaunch(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            self.perform_relaunch();
+        }
     }
 );
 
@@ -561,6 +568,110 @@ impl AppDelegate {
         }
 
         log::info!("Started crash state save timer (interval: {}s)", interval);
+    }
+
+    /// Perform a seamless relaunch, preserving all windows and tabs
+    ///
+    /// This collects state from all windows, duplicates PTY file descriptors,
+    /// and transfers everything to a new process running the same binary.
+    ///
+    /// For upgrades: replace the binary first, then call this method.
+    /// For debug/testing: just call this method to relaunch with the same binary.
+    #[cfg(unix)]
+    pub fn perform_relaunch(&self) {
+        use cterm_app::upgrade::{
+            execute_upgrade, TabUpgradeState, UpgradeState, WindowUpgradeState,
+        };
+        use std::os::unix::io::RawFd;
+
+        let binary = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                log::error!("Failed to get current executable path: {}", e);
+                return;
+            }
+        };
+
+        log::info!("Performing seamless relaunch: {}", binary.display());
+
+        let windows = self.ivars().windows.borrow();
+        let mut upgrade_state = UpgradeState::new(env!("CARGO_PKG_VERSION"));
+        let mut fds: Vec<RawFd> = Vec::new();
+
+        for window in windows.iter() {
+            let mut window_state = WindowUpgradeState::new();
+
+            // Get window frame
+            let frame = window.frame();
+            window_state.x = frame.origin.x as i32;
+            window_state.y = frame.origin.y as i32;
+            window_state.width = frame.size.width as i32;
+            window_state.height = frame.size.height as i32;
+
+            // Get terminal state
+            if let Some(terminal_view) = window.active_terminal() {
+                let terminal_state = terminal_view.export_state();
+
+                let terminal = terminal_view.terminal();
+                let term = terminal.lock();
+                let child_pid = term.child_pid().unwrap_or(0);
+                drop(term);
+
+                // Duplicate the PTY FD
+                if let Some(fd) = terminal_view.dup_pty_fd() {
+                    let fd_index = fds.len();
+                    fds.push(fd);
+
+                    let mut tab_state = TabUpgradeState::new(
+                        0, // Tab ID not needed
+                        fd_index, child_pid,
+                    );
+                    tab_state.terminal = terminal_state;
+                    tab_state.title = window.title().to_string();
+                    tab_state.template_name = terminal_view.template_name();
+
+                    window_state.tabs.push(tab_state);
+                } else {
+                    log::warn!("Failed to duplicate PTY FD for terminal");
+                }
+            }
+
+            if !window_state.tabs.is_empty() {
+                upgrade_state.windows.push(window_state);
+            }
+        }
+
+        // Release windows borrow before potentially exiting
+        drop(windows);
+
+        if upgrade_state.windows.is_empty() {
+            log::warn!("No terminals to preserve in relaunch");
+            return;
+        }
+
+        log::info!(
+            "Relaunch state collected: {} windows, {} FDs",
+            upgrade_state.windows.len(),
+            fds.len()
+        );
+
+        // Execute relaunch
+        match execute_upgrade(&binary, &upgrade_state, &fds) {
+            Ok(()) => {
+                log::info!("Relaunch successful, terminating old process");
+                // Terminate this process - the new one has taken over
+                let mtm = MainThreadMarker::from(self);
+                let app = NSApplication::sharedApplication(mtm);
+                app.terminate(None);
+            }
+            Err(e) => {
+                log::error!("Relaunch failed: {}", e);
+                // Close the duplicated FDs on failure
+                for fd in fds {
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
     }
 }
 
