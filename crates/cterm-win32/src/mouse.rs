@@ -52,7 +52,7 @@ impl MouseState {
         button: MouseButton,
         x: i32,
         y: i32,
-        modifiers: Modifiers,
+        _modifiers: Modifiers,
         cell_dims: &CellDimensions,
         scroll_offset: usize,
     ) -> Option<Selection> {
