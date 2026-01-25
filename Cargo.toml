@@ -30,6 +30,7 @@ members = [
     "crates/cterm-gtk",
     "crates/cterm-cocoa",
     "crates/cterm-win32",
+    "crates/cterm-headless",
 ]
 
 [workspace.package]
@@ -83,6 +84,13 @@ serde_json = "1"
 futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
 
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tokio-stream = { version = "0.1", features = ["net"] }
+uuid = { version = "1", features = ["v4"] }
+
 # GTK4
 gtk4 = "0.9"
 libadwaita = "0.7"
@@ -107,6 +115,7 @@ dispatch2 = "0.3"
 cterm-core = { path = "crates/cterm-core" }
 cterm-ui = { path = "crates/cterm-ui" }
 cterm-app = { path = "crates/cterm-app" }
+cterm-headless = { path = "crates/cterm-headless" }
 
 [profile.release]
 lto = true

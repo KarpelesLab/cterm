@@ -1,0 +1,363 @@
+syntax = "proto3";
+
+package cterm.terminal;
+
+// Terminal daemon gRPC service
+service TerminalService {
+  // Session Management
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (DestroySessionResponse);
+
+  // Input
+  rpc WriteInput(WriteInputRequest) returns (WriteInputResponse);
+  rpc SendKey(SendKeyRequest) returns (SendKeyResponse);
+
+  // Output Streaming
+  rpc StreamOutput(StreamOutputRequest) returns (stream OutputChunk);
+
+  // Screen State
+  rpc GetScreen(GetScreenRequest) returns (GetScreenResponse);
+  rpc GetCell(GetCellRequest) returns (GetCellResponse);
+  rpc GetCursor(GetCursorRequest) returns (GetCursorResponse);
+  rpc GetScreenText(GetScreenTextRequest) returns (GetScreenTextResponse);
+
+  // Control
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
+  rpc SendSignal(SendSignalRequest) returns (SendSignalResponse);
+
+  // Event Streaming
+  rpc StreamEvents(StreamEventsRequest) returns (stream TerminalEvent);
+}
+
+// ============================================================================
+// Session Management
+// ============================================================================
+
+message CreateSessionRequest {
+  // Terminal dimensions
+  uint32 cols = 1;
+  uint32 rows = 2;
+
+  // Optional shell to spawn (default: user's default shell)
+  optional string shell = 3;
+
+  // Shell arguments
+  repeated string args = 4;
+
+  // Working directory
+  optional string cwd = 5;
+
+  // Environment variables to set
+  map<string, string> env = 6;
+
+  // TERM environment variable (default: xterm-256color)
+  optional string term = 7;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  string title = 4;
+  bool running = 5;
+  int32 child_pid = 6;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionResponse {
+  SessionInfo session = 1;
+}
+
+message DestroySessionRequest {
+  string session_id = 1;
+  // Optional signal to send before destroying (default: SIGHUP)
+  optional int32 signal = 2;
+}
+
+message DestroySessionResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Input
+// ============================================================================
+
+message WriteInputRequest {
+  string session_id = 1;
+  // Raw bytes to write to the PTY
+  bytes data = 2;
+}
+
+message WriteInputResponse {
+  uint32 bytes_written = 1;
+}
+
+message SendKeyRequest {
+  string session_id = 1;
+  Key key = 2;
+  Modifiers modifiers = 3;
+}
+
+message SendKeyResponse {
+  // The escape sequence that was sent
+  bytes sequence = 1;
+}
+
+message Key {
+  oneof key_type {
+    string char = 1;        // Single character
+    SpecialKey special = 2;  // Special key
+    uint32 function = 3;     // F1-F12 (1-12)
+  }
+}
+
+enum SpecialKey {
+  SPECIAL_KEY_UNSPECIFIED = 0;
+  SPECIAL_KEY_ENTER = 1;
+  SPECIAL_KEY_TAB = 2;
+  SPECIAL_KEY_BACKSPACE = 3;
+  SPECIAL_KEY_ESCAPE = 4;
+  SPECIAL_KEY_UP = 5;
+  SPECIAL_KEY_DOWN = 6;
+  SPECIAL_KEY_LEFT = 7;
+  SPECIAL_KEY_RIGHT = 8;
+  SPECIAL_KEY_HOME = 9;
+  SPECIAL_KEY_END = 10;
+  SPECIAL_KEY_PAGE_UP = 11;
+  SPECIAL_KEY_PAGE_DOWN = 12;
+  SPECIAL_KEY_INSERT = 13;
+  SPECIAL_KEY_DELETE = 14;
+}
+
+message Modifiers {
+  bool shift = 1;
+  bool ctrl = 2;
+  bool alt = 3;
+  bool super = 4;
+}
+
+// ============================================================================
+// Output Streaming
+// ============================================================================
+
+message StreamOutputRequest {
+  string session_id = 1;
+}
+
+message OutputChunk {
+  bytes data = 1;
+  uint64 timestamp_ms = 2;
+}
+
+// ============================================================================
+// Screen State
+// ============================================================================
+
+message GetScreenRequest {
+  string session_id = 1;
+  // Include scrollback buffer
+  bool include_scrollback = 2;
+}
+
+message GetScreenResponse {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  CursorPosition cursor = 3;
+  repeated Row visible_rows = 4;
+  repeated Row scrollback = 5;
+  string title = 6;
+  TerminalModes modes = 7;
+}
+
+message Row {
+  repeated Cell cells = 1;
+}
+
+message Cell {
+  string char = 1;
+  Color fg = 2;
+  Color bg = 3;
+  CellAttributes attrs = 4;
+  optional Color underline_color = 5;
+  optional Hyperlink hyperlink = 6;
+}
+
+message Color {
+  oneof color_type {
+    bool default = 1;        // Default fg/bg
+    uint32 ansi = 2;         // ANSI color 0-15
+    uint32 indexed = 3;      // 256-color palette 0-255
+    Rgb rgb = 4;             // True color
+  }
+}
+
+message Rgb {
+  uint32 r = 1;
+  uint32 g = 2;
+  uint32 b = 3;
+}
+
+message CellAttributes {
+  bool bold = 1;
+  bool italic = 2;
+  bool underline = 3;
+  bool double_underline = 4;
+  bool curly_underline = 5;
+  bool dotted_underline = 6;
+  bool dashed_underline = 7;
+  bool blink = 8;
+  bool inverse = 9;
+  bool hidden = 10;
+  bool strikethrough = 11;
+  bool dim = 12;
+  bool overline = 13;
+  bool wide = 14;
+  bool wide_spacer = 15;
+}
+
+message Hyperlink {
+  optional string id = 1;
+  string uri = 2;
+}
+
+message CursorPosition {
+  uint32 row = 1;
+  uint32 col = 2;
+  bool visible = 3;
+  CursorStyle style = 4;
+}
+
+enum CursorStyle {
+  CURSOR_STYLE_UNSPECIFIED = 0;
+  CURSOR_STYLE_BLOCK = 1;
+  CURSOR_STYLE_UNDERLINE = 2;
+  CURSOR_STYLE_BAR = 3;
+}
+
+message TerminalModes {
+  bool application_cursor = 1;
+  bool application_keypad = 2;
+  bool bracketed_paste = 3;
+  bool focus_events = 4;
+}
+
+message GetCellRequest {
+  string session_id = 1;
+  uint32 row = 2;
+  uint32 col = 3;
+}
+
+message GetCellResponse {
+  Cell cell = 1;
+}
+
+message GetCursorRequest {
+  string session_id = 1;
+}
+
+message GetCursorResponse {
+  CursorPosition cursor = 1;
+}
+
+message GetScreenTextRequest {
+  string session_id = 1;
+  // If true, include scrollback buffer
+  bool include_scrollback = 2;
+  // Optional: only get specific row range (0-indexed, inclusive)
+  optional uint32 start_row = 3;
+  optional uint32 end_row = 4;
+}
+
+message GetScreenTextResponse {
+  // Lines of text (newline-separated if joining)
+  repeated string lines = 1;
+}
+
+// ============================================================================
+// Control
+// ============================================================================
+
+message ResizeRequest {
+  string session_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+message ResizeResponse {
+  bool success = 1;
+}
+
+message SendSignalRequest {
+  string session_id = 1;
+  int32 signal = 2;
+}
+
+message SendSignalResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Events
+// ============================================================================
+
+message StreamEventsRequest {
+  string session_id = 1;
+}
+
+message TerminalEvent {
+  oneof event {
+    TitleChangedEvent title_changed = 1;
+    BellEvent bell = 2;
+    ProcessExitedEvent process_exited = 3;
+    ContentChangedEvent content_changed = 4;
+    ClipboardRequestEvent clipboard_request = 5;
+  }
+}
+
+message TitleChangedEvent {
+  string title = 1;
+}
+
+message BellEvent {}
+
+message ProcessExitedEvent {
+  uint32 exit_code = 1;
+}
+
+message ContentChangedEvent {}
+
+message ClipboardRequestEvent {
+  ClipboardOperation operation = 1;
+  ClipboardSelection selection = 2;
+  optional bytes data = 3;  // For write operations
+}
+
+enum ClipboardOperation {
+  CLIPBOARD_OPERATION_UNSPECIFIED = 0;
+  CLIPBOARD_OPERATION_READ = 1;
+  CLIPBOARD_OPERATION_WRITE = 2;
+}
+
+enum ClipboardSelection {
+  CLIPBOARD_SELECTION_UNSPECIFIED = 0;
+  CLIPBOARD_SELECTION_CLIPBOARD = 1;
+  CLIPBOARD_SELECTION_PRIMARY = 2;
+  CLIPBOARD_SELECTION_SELECT = 3;
+}
