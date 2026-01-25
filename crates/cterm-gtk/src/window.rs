@@ -1910,7 +1910,7 @@ pub fn create_tab_from_template(
         };
 
         if !is_window_active || !is_current_tab {
-            tab_bar_bell.show_bell(tab_id);
+            tab_bar_bell.set_bell(tab_id, true);
             *has_bell_bell.borrow_mut() = true;
             let current_title = window_bell
                 .title()
