@@ -250,4 +250,159 @@ mod tests {
         let temp = TempDir::new().unwrap();
         assert!(get_remote_url(temp.path()).is_none());
     }
+
+    #[test]
+    fn test_get_remote_url_repo_no_remote() {
+        let temp = TempDir::new().unwrap();
+        // Initialize a real git repo
+        run_git(temp.path(), &["init"]).unwrap();
+        // No remote configured yet
+        assert!(get_remote_url(temp.path()).is_none());
+    }
+
+    #[test]
+    fn test_get_remote_url_with_remote() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+        run_git(
+            temp.path(),
+            &["remote", "add", "origin", "https://example.com/repo.git"],
+        )
+        .unwrap();
+        assert_eq!(
+            get_remote_url(temp.path()),
+            Some("https://example.com/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_init_result_equality() {
+        assert_eq!(InitResult::Initialized, InitResult::Initialized);
+        assert_eq!(InitResult::PulledRemote, InitResult::PulledRemote);
+        assert_eq!(InitResult::UpdatedRemote, InitResult::UpdatedRemote);
+        assert_ne!(InitResult::Initialized, InitResult::PulledRemote);
+    }
+
+    #[test]
+    fn test_init_with_remote_new_repo() {
+        let temp = TempDir::new().unwrap();
+        // Use a fake remote that won't be reachable - init should still work
+        // but fetch will fail, returning Initialized
+        let result = init_with_remote(temp.path(), "https://example.com/fake.git").unwrap();
+        assert_eq!(result, InitResult::Initialized);
+        // Verify repo was created
+        assert!(is_git_repo(temp.path()));
+        // Verify remote was set
+        assert_eq!(
+            get_remote_url(temp.path()),
+            Some("https://example.com/fake.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_init_with_remote_updates_existing_remote() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+        run_git(
+            temp.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://old.example.com/repo.git",
+            ],
+        )
+        .unwrap();
+
+        // Update remote
+        let result = init_with_remote(temp.path(), "https://new.example.com/repo.git").unwrap();
+        assert_eq!(result, InitResult::Initialized); // Fetch fails, so Initialized
+        assert_eq!(
+            get_remote_url(temp.path()),
+            Some("https://new.example.com/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_pull_not_a_repo() {
+        let temp = TempDir::new().unwrap();
+        let result = pull(temp.path()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_pull_no_remote() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+        let result = pull(temp.path()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_commit_and_push_not_a_repo() {
+        let temp = TempDir::new().unwrap();
+        let result = commit_and_push(temp.path(), "Test commit");
+        assert!(result.is_err());
+        if let Err(GitError::CommandFailed(msg)) = result {
+            assert!(msg.contains("Not a git repository"));
+        } else {
+            panic!("Expected CommandFailed error");
+        }
+    }
+
+    #[test]
+    fn test_commit_and_push_no_changes() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+        // No files to commit, should succeed without doing anything
+        let result = commit_and_push(temp.path(), "Test commit");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_git_user_succeeds() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+
+        // ensure_git_user should succeed
+        ensure_git_user(temp.path()).unwrap();
+
+        // After calling ensure_git_user, we should be able to read user.name
+        // (either from local config or global config)
+        let name_result = run_git(temp.path(), &["config", "user.name"]);
+        assert!(name_result.is_ok(), "user.name should be readable");
+
+        let email_result = run_git(temp.path(), &["config", "user.email"]);
+        assert!(email_result.is_ok(), "user.email should be readable");
+    }
+
+    #[test]
+    fn test_ensure_git_user_sets_local_when_no_global() {
+        // This test verifies behavior when no global config exists
+        // by checking local config specifically
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]).unwrap();
+
+        // Check if global user.name is set
+        let has_global = run_git(temp.path(), &["config", "--global", "user.name"]).is_ok();
+
+        ensure_git_user(temp.path()).unwrap();
+
+        if !has_global {
+            // Only check local config if there's no global
+            let local_name =
+                run_git(temp.path(), &["config", "--local", "user.name"]).unwrap_or_default();
+            assert_eq!(local_name.trim(), "cterm");
+        }
+        // If global exists, ensure_git_user correctly doesn't override it
+    }
+
+    #[test]
+    fn test_git_error_display() {
+        let err = GitError::CommandFailed("test error".to_string());
+        assert_eq!(format!("{}", err), "Git command failed: test error");
+
+        let err = GitError::InvalidPath;
+        assert_eq!(format!("{}", err), "Invalid path");
+    }
 }

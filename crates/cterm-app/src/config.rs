@@ -959,4 +959,302 @@ mod tests {
         assert_eq!(forwards[1].local_port, 3000);
         assert_eq!(forwards[1].remote_host, "localhost");
     }
+
+    #[test]
+    fn test_parse_port_forwards_invalid() {
+        // Invalid formats should be skipped
+        let forwards = SshPortForward::parse_list("invalid,8080:80,too:many:parts:here");
+        assert_eq!(forwards.len(), 1);
+        assert_eq!(forwards[0].local_port, 8080);
+    }
+
+    // SSH command building tests
+    #[test]
+    fn test_ssh_build_command_basic() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            // Note: Default::default() sets request_tty to false,
+            // but serde default is true (for TOML deserialization)
+            ..Default::default()
+        };
+        let (cmd, args) = ssh.build_command();
+        assert_eq!(cmd, "ssh");
+        // request_tty is false with Default::default()
+        assert!(!args.contains(&"-t".to_string()));
+        assert!(args.contains(&"example.com".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_tty() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            request_tty: true,
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-t".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_username() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            username: Some("admin".to_string()),
+            ..Default::default()
+        };
+        let (cmd, args) = ssh.build_command();
+        assert_eq!(cmd, "ssh");
+        assert!(args.contains(&"admin@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_port() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            port: Some(2222),
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"2222".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_default_port_not_added() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            port: Some(22),
+            ..Default::default()
+        };
+        let (cmd, args) = ssh.build_command();
+        assert_eq!(cmd, "ssh");
+        // Port 22 should not be added explicitly
+        assert!(!args.contains(&"-p".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_identity() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            identity_file: Some(PathBuf::from("/home/user/.ssh/id_rsa")),
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-i".to_string()));
+        assert!(args.contains(&"/home/user/.ssh/id_rsa".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_local_forward() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            local_forwards: vec![SshPortForward {
+                local_port: 8080,
+                remote_host: "localhost".to_string(),
+                remote_port: 80,
+            }],
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-L".to_string()));
+        assert!(args.contains(&"8080:localhost:80".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_remote_forward() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            remote_forwards: vec![SshPortForward {
+                local_port: 3000,
+                remote_host: "localhost".to_string(),
+                remote_port: 3000,
+            }],
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-R".to_string()));
+        assert!(args.contains(&"3000:localhost:3000".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_dynamic_forward() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            dynamic_forward: Some(1080),
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-D".to_string()));
+        assert!(args.contains(&"1080".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_x11() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            x11_forward: true,
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-X".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_agent_forward() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            agent_forward: true,
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-A".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_jump_host() {
+        let ssh = SshTabConfig {
+            host: "internal.example.com".to_string(),
+            jump_host: Some("bastion.example.com".to_string()),
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.contains(&"-J".to_string()));
+        assert!(args.contains(&"bastion.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_with_remote_command() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            remote_command: Some("ls -la".to_string()),
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(args.last() == Some(&"ls -la".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_build_command_no_tty() {
+        let ssh = SshTabConfig {
+            host: "example.com".to_string(),
+            request_tty: false,
+            ..Default::default()
+        };
+        let (_, args) = ssh.build_command();
+        assert!(!args.contains(&"-t".to_string()));
+    }
+
+    // StickyTabConfig tests
+    #[test]
+    fn test_sticky_tab_docker_exec() {
+        let tab = StickyTabConfig::docker_exec("My Container", "container-name");
+        assert_eq!(tab.name, "My Container");
+        assert!(tab.is_docker());
+        assert!(!tab.is_ssh());
+        let docker = tab.docker.unwrap();
+        assert_eq!(docker.mode, DockerMode::Exec);
+        assert_eq!(docker.container, Some("container-name".to_string()));
+    }
+
+    #[test]
+    fn test_sticky_tab_docker_run() {
+        let tab = StickyTabConfig::docker_run("Ubuntu Test", "ubuntu:22.04");
+        assert_eq!(tab.name, "Ubuntu Test");
+        assert!(tab.is_docker());
+        let docker = tab.docker.unwrap();
+        assert_eq!(docker.mode, DockerMode::Run);
+        assert_eq!(docker.image, Some("ubuntu:22.04".to_string()));
+        assert!(docker.auto_remove);
+    }
+
+    #[test]
+    fn test_sticky_tab_ssh() {
+        let tab = StickyTabConfig::ssh("Production", "prod.example.com", Some("deploy"));
+        assert_eq!(tab.name, "Production");
+        assert!(tab.is_ssh());
+        assert!(!tab.is_docker());
+        let ssh = tab.ssh.unwrap();
+        assert_eq!(ssh.host, "prod.example.com");
+        assert_eq!(ssh.username, Some("deploy".to_string()));
+    }
+
+    #[test]
+    fn test_sticky_tab_ssh_with_agent() {
+        let tab = StickyTabConfig::ssh_with_agent("Server", "server.example.com", None);
+        let ssh = tab.ssh.unwrap();
+        assert!(ssh.agent_forward);
+    }
+
+    #[test]
+    fn test_get_command_args_regular() {
+        let tab = StickyTabConfig {
+            command: Some("/bin/bash".to_string()),
+            args: vec!["-c".to_string(), "echo hello".to_string()],
+            ..Default::default()
+        };
+        let (cmd, args) = tab.get_command_args();
+        assert_eq!(cmd, Some("/bin/bash".to_string()));
+        assert_eq!(args, vec!["-c", "echo hello"]);
+    }
+
+    #[test]
+    fn test_get_command_args_default_shell() {
+        let tab = StickyTabConfig::default();
+        let (cmd, args) = tab.get_command_args();
+        assert!(cmd.is_none());
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_get_command_args_ssh() {
+        let tab = StickyTabConfig::ssh("Test", "example.com", Some("user"));
+        let (cmd, args) = tab.get_command_args();
+        assert_eq!(cmd, Some("ssh".to_string()));
+        assert!(args.contains(&"user@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_sticky_tab_claude_continue() {
+        let tab = StickyTabConfig::claude_continue();
+        assert_eq!(tab.name, "Claude (Continue)");
+        assert_eq!(tab.command, Some("claude".to_string()));
+        assert_eq!(tab.args, vec!["-c"]);
+        assert!(tab.unique);
+    }
+
+    #[test]
+    fn test_sticky_tab_ubuntu() {
+        let tab = StickyTabConfig::ubuntu();
+        assert_eq!(tab.name, "Ubuntu");
+        let docker = tab.docker.unwrap();
+        assert_eq!(docker.image, Some("ubuntu:latest".to_string()));
+        assert_eq!(docker.shell, Some("/bin/bash".to_string()));
+    }
+
+    #[test]
+    fn test_sticky_tab_alpine() {
+        let tab = StickyTabConfig::alpine();
+        assert_eq!(tab.name, "Alpine");
+        let docker = tab.docker.unwrap();
+        assert_eq!(docker.image, Some("alpine:latest".to_string()));
+        assert_eq!(docker.shell, Some("/bin/sh".to_string()));
+    }
+
+    #[test]
+    fn test_docker_mode_default() {
+        let mode = DockerMode::default();
+        assert_eq!(mode, DockerMode::Exec);
+    }
+
+    #[test]
+    fn test_cursor_style_default() {
+        let style = CursorStyleConfig::default();
+        assert!(matches!(style, CursorStyleConfig::Block));
+    }
+
+    #[test]
+    fn test_tab_bar_visibility_default() {
+        let visibility = TabBarVisibility::default();
+        assert!(matches!(visibility, TabBarVisibility::Always));
+    }
 }
