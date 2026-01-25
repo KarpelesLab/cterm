@@ -200,29 +200,21 @@ async fn test_get_session() {
         .await;
 }
 
+// This test uses `cat` to echo input back, which requires Unix-like behavior.
+// On Windows, cmd.exe's `more` doesn't work the same way.
+#[cfg(unix)]
 #[tokio::test]
 async fn test_write_input_and_get_screen() {
     let server = CtermdServer::spawn();
     let mut client = connect(&server.address()).await;
 
-    // Create a session with echo command
-    #[cfg(unix)]
-    let (shell, args) = (
-        Some("/bin/sh".to_string()),
-        vec!["-c".to_string(), "cat".to_string()],
-    );
-    #[cfg(windows)]
-    let (shell, args) = (
-        Some("cmd.exe".to_string()),
-        vec!["/c".to_string(), "more".to_string()],
-    );
-
+    // Create a session with cat command to echo input
     let create_response = client
         .create_session(CreateSessionRequest {
             cols: 80,
             rows: 24,
-            shell,
-            args,
+            shell: Some("/bin/sh".to_string()),
+            args: vec!["-c".to_string(), "cat".to_string()],
             cwd: None,
             env: Default::default(),
             term: Some("xterm".to_string()),
