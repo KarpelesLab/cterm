@@ -42,7 +42,14 @@ A high-performance, customizable terminal emulator built in pure Rust. Features 
 
 ### Pre-built Binaries
 
-Download the latest release from the [GitHub Releases](https://github.com/KarpelesLab/cterm/releases) page.
+| Platform | Download |
+|----------|----------|
+| **macOS** (Universal) | [DMG Installer](https://github.com/KarpelesLab/cterm/releases/latest/download/cterm-macos-universal.dmg) |
+| **Windows** (x64) | [Installer](https://github.com/KarpelesLab/cterm/releases/latest/download/cterm-windows-x86_64-setup.exe) · [ZIP](https://github.com/KarpelesLab/cterm/releases/latest/download/cterm-windows-x86_64.zip) |
+| **Linux** (x64) | [tar.gz](https://github.com/KarpelesLab/cterm/releases/latest/download/cterm-linux-x86_64.tar.gz) |
+| **Linux** (ARM64) | [tar.gz](https://github.com/KarpelesLab/cterm/releases/latest/download/cterm-linux-arm64.tar.gz) |
+
+Or browse all releases on the [GitHub Releases](https://github.com/KarpelesLab/cterm/releases) page.
 
 ### Building from Source
 
