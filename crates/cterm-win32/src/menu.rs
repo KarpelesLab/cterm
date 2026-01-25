@@ -27,6 +27,12 @@ pub enum MenuAction {
     Paste = 2003,
     SelectAll = 2004,
 
+    // View menu
+    ZoomIn = 2501,
+    ZoomOut = 2502,
+    ZoomReset = 2503,
+    Fullscreen = 2504,
+
     // Terminal menu
     SetTitle = 3001,
     SetColor = 3002,
@@ -77,6 +83,10 @@ impl MenuAction {
             2002 => Some(Self::CopyHtml),
             2003 => Some(Self::Paste),
             2004 => Some(Self::SelectAll),
+            2501 => Some(Self::ZoomIn),
+            2502 => Some(Self::ZoomOut),
+            2503 => Some(Self::ZoomReset),
+            2504 => Some(Self::Fullscreen),
             3001 => Some(Self::SetTitle),
             3002 => Some(Self::SetColor),
             3003 => Some(Self::Find),
@@ -149,6 +159,15 @@ pub fn create_menu_bar(show_debug: bool) -> HMENU {
             "Select &All\tCtrl+Shift+A",
         );
         append_popup_menu(menu_bar, edit_menu, "&Edit");
+
+        // View menu
+        let view_menu = CreatePopupMenu();
+        append_menu_item(view_menu, MenuAction::ZoomIn, "Zoom &In\tCtrl++");
+        append_menu_item(view_menu, MenuAction::ZoomOut, "Zoom &Out\tCtrl+-");
+        append_menu_item(view_menu, MenuAction::ZoomReset, "&Reset Zoom\tCtrl+0");
+        append_separator(view_menu);
+        append_menu_item(view_menu, MenuAction::Fullscreen, "&Fullscreen\tF11");
+        append_popup_menu(menu_bar, view_menu, "&View");
 
         // Terminal menu
         let terminal_menu = CreatePopupMenu();

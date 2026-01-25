@@ -15,8 +15,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use cterm_app::config::Config;
 use cterm_app::file_transfer::PendingFileManager;
 use cterm_app::shortcuts::ShortcutManager;
+use cterm_core::color::Rgb;
 use cterm_core::pty::{PtyConfig, PtySize};
-use cterm_core::screen::{FileTransferOperation, ScreenConfig};
+use cterm_core::screen::{FileTransferOperation, ScreenConfig, SelectionMode};
 use cterm_core::term::{Terminal, TerminalEvent};
 use cterm_ui::events::Action;
 use cterm_ui::theme::Theme;
@@ -496,7 +497,12 @@ impl WindowState {
                 MenuAction::NewTab => {
                     self.new_tab().ok();
                 }
-                MenuAction::NewWindow => { /* TODO */ }
+                MenuAction::NewWindow => {
+                    // Launch a new instance of the application
+                    if let Ok(exe) = std::env::current_exe() {
+                        std::process::Command::new(exe).spawn().ok();
+                    }
+                }
                 MenuAction::CloseTab => {
                     if let Some(tab) = self.tabs.get(self.active_tab_index) {
                         let id = tab.id;
@@ -518,13 +524,49 @@ impl WindowState {
                         }
                     }
                 }
+                MenuAction::DockerPicker => {
+                    // Docker is not typically available on Windows in the same way
+                    crate::dialogs::show_message(
+                        self.hwnd.0 as *mut _,
+                        "Docker",
+                        "Docker container support requires Docker Desktop.\n\nThis feature will be available in a future version.",
+                        winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION,
+                    );
+                }
                 MenuAction::Quit => {
                     unsafe {
                         let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                     };
                 }
                 MenuAction::Copy => self.copy_selection(),
+                MenuAction::CopyHtml => self.copy_selection_as_html(),
                 MenuAction::Paste => self.paste(),
+                MenuAction::SelectAll => self.select_all(),
+                MenuAction::ZoomIn => self.zoom_in(),
+                MenuAction::ZoomOut => self.zoom_out(),
+                MenuAction::ZoomReset => self.zoom_reset(),
+                MenuAction::Fullscreen => self.toggle_fullscreen(),
+                MenuAction::SetTitle => self.show_set_title_dialog(),
+                MenuAction::SetColor => self.show_set_color_dialog(),
+                MenuAction::Find => self.show_find_dialog(),
+                MenuAction::Reset => {
+                    if let Some(terminal) = self.active_terminal() {
+                        let mut term = terminal.lock().unwrap();
+                        term.screen_mut().reset();
+                        self.invalidate();
+                    }
+                }
+                MenuAction::ClearReset => {
+                    if let Some(terminal) = self.active_terminal() {
+                        let mut term = terminal.lock().unwrap();
+                        term.screen_mut().reset();
+                        self.invalidate();
+                    }
+                }
+                MenuAction::SendSignalInt => self.send_signal(2), // SIGINT
+                MenuAction::SendSignalKill => self.send_signal(9), // SIGKILL
+                MenuAction::SendSignalHup => self.send_signal(1), // SIGHUP
+                MenuAction::SendSignalTerm => self.send_signal(15), // SIGTERM
                 MenuAction::PrevTab => self.prev_tab(),
                 MenuAction::NextTab => self.next_tab(),
                 MenuAction::Tab1 => self.switch_to_tab(0),
@@ -536,26 +578,226 @@ impl WindowState {
                 MenuAction::Tab7 => self.switch_to_tab(6),
                 MenuAction::Tab8 => self.switch_to_tab(7),
                 MenuAction::Tab9 => self.switch_to_tab(8),
+                MenuAction::Preferences => {
+                    crate::dialogs::show_preferences_dialog(self.hwnd.0 as *mut _);
+                }
+                MenuAction::TabTemplates => {
+                    crate::dialogs::show_tab_templates_dialog(self.hwnd.0 as *mut _);
+                }
+                MenuAction::CheckUpdates => {
+                    crate::dialogs::show_check_updates_dialog(self.hwnd.0 as *mut _);
+                }
                 MenuAction::About => {
                     crate::dialogs::show_about_dialog(self.hwnd.0 as *mut _);
                 }
-                MenuAction::Reset => {
-                    if let Some(terminal) = self.active_terminal() {
-                        let mut term = terminal.lock().unwrap();
-                        term.screen_mut().reset();
-                        self.invalidate();
+                MenuAction::DebugRelaunch => {
+                    // Re-launch the application (for testing upgrade)
+                    if let Ok(exe) = std::env::current_exe() {
+                        std::process::Command::new(exe).spawn().ok();
+                    }
+                    unsafe {
+                        let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    };
+                }
+                MenuAction::DebugDumpState => {
+                    log::info!("=== Debug State Dump ===");
+                    log::info!("Tabs: {}", self.tabs.len());
+                    log::info!("Active tab: {}", self.active_tab_index);
+                    for (i, tab) in self.tabs.iter().enumerate() {
+                        log::info!("  Tab {}: id={}, title={}", i, tab.id, tab.title);
+                    }
+                    log::info!("DPI: {:?}", self.dpi);
+                    log::info!("========================");
+                }
+                MenuAction::ViewLogs => {
+                    // Open the log file location
+                    if let Some(dir) = cterm_app::config::get_config_dir() {
+                        let logs_dir = dir.join("logs");
+                        if logs_dir.exists() {
+                            std::process::Command::new("explorer")
+                                .arg(logs_dir)
+                                .spawn()
+                                .ok();
+                        }
                     }
                 }
-                MenuAction::ClearReset => {
-                    if let Some(terminal) = self.active_terminal() {
-                        let mut term = terminal.lock().unwrap();
-                        // reset() clears scrollback as well as screen
-                        term.screen_mut().reset();
-                        self.invalidate();
-                    }
-                }
-                _ => {}
             }
+        }
+    }
+
+    /// Show set title dialog
+    fn show_set_title_dialog(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            let current_title = tab.title.clone();
+            if let Some(new_title) =
+                crate::dialogs::show_set_title_dialog(self.hwnd.0 as *mut _, &current_title)
+            {
+                let tab_id = tab.id;
+                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.title = new_title.clone();
+                    self.tab_bar.set_title(tab_id, &new_title);
+                    self.invalidate();
+                }
+            }
+        }
+    }
+
+    /// Show set color dialog
+    fn show_set_color_dialog(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            let tab_id = tab.id;
+            if let Some(color_result) = crate::dialogs::show_set_color_dialog(self.hwnd.0 as *mut _)
+            {
+                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.color = color_result.clone();
+                    // Parse color to Rgb
+                    let rgb = color_result.and_then(|c| parse_hex_color(&c));
+                    self.tab_bar.set_color(tab_id, rgb);
+                    self.invalidate();
+                }
+            }
+        }
+    }
+
+    /// Show find dialog
+    fn show_find_dialog(&mut self) {
+        if let Some(options) = crate::dialogs::show_find_dialog(self.hwnd.0 as *mut _) {
+            // Perform search in terminal
+            if let Some(terminal) = self.active_terminal() {
+                let term = terminal.lock().unwrap();
+                let results =
+                    term.screen()
+                        .find(&options.text, options.case_sensitive, options.regex);
+                if !results.is_empty() {
+                    log::info!("Found {} matches for: {}", results.len(), options.text);
+                    // TODO: Highlight first result and allow navigation
+                } else {
+                    crate::dialogs::show_message(
+                        self.hwnd.0 as *mut _,
+                        "Find",
+                        &format!("'{}' not found", options.text),
+                        winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION,
+                    );
+                }
+                self.invalidate();
+            }
+        }
+    }
+
+    /// Select all text in the terminal
+    fn select_all(&mut self) {
+        if let Some(terminal) = self.active_terminal() {
+            let mut term = terminal.lock().unwrap();
+            let screen = term.screen_mut();
+            let total_lines = screen.total_lines();
+            if total_lines > 0 {
+                // Select from first line to last line
+                screen.start_selection(0, 0, cterm_core::screen::SelectionMode::Char);
+                // Extend to end - use a large column value for last line
+                screen.extend_selection(total_lines.saturating_sub(1), usize::MAX);
+            }
+            self.invalidate();
+        }
+    }
+
+    /// Copy selection as HTML (for now, just copy as plain text with formatting note)
+    fn copy_selection_as_html(&mut self) {
+        if let Some(terminal) = self.active_terminal() {
+            let term = terminal.lock().unwrap();
+            if let Some(text) = term.screen().get_selected_text() {
+                // For now, copy as plain text
+                // TODO: Implement HTML conversion with ANSI colors
+                clipboard::copy_to_clipboard(&text).ok();
+            }
+        }
+    }
+
+    /// Send a signal to the active terminal's process
+    fn send_signal(&mut self, _signal: i32) {
+        // On Windows, signals work differently than Unix
+        // For now, we'll send a Ctrl+C equivalent for SIGINT
+        if let Some(terminal) = self.active_terminal() {
+            let mut term = terminal.lock().unwrap();
+            // Send Ctrl+C character
+            term.write(&[0x03]).ok(); // ETX (Ctrl+C)
+            self.invalidate();
+        }
+    }
+
+    /// Zoom in (increase font size)
+    fn zoom_in(&mut self) {
+        if let Some(ref mut renderer) = self.renderer {
+            let new_size = renderer.font_size() + 1.0;
+            if new_size <= 72.0 {
+                renderer.set_font_size(new_size).ok();
+                self.on_font_size_changed();
+            }
+        }
+    }
+
+    /// Zoom out (decrease font size)
+    fn zoom_out(&mut self) {
+        if let Some(ref mut renderer) = self.renderer {
+            let new_size = renderer.font_size() - 1.0;
+            if new_size >= 6.0 {
+                renderer.set_font_size(new_size).ok();
+                self.on_font_size_changed();
+            }
+        }
+    }
+
+    /// Reset zoom to default
+    fn zoom_reset(&mut self) {
+        if let Some(ref mut renderer) = self.renderer {
+            let default_size = self.config.appearance.font.size as f32;
+            renderer.set_font_size(default_size).ok();
+            self.on_font_size_changed();
+        }
+    }
+
+    /// Called when font size changes to resize terminals
+    fn on_font_size_changed(&mut self) {
+        let (cols, rows) = self.terminal_size();
+        for tab in &self.tabs {
+            let mut term = tab.terminal.lock().unwrap();
+            term.resize(cols, rows);
+        }
+        self.invalidate();
+    }
+
+    /// Toggle fullscreen mode
+    fn toggle_fullscreen(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, SetWindowPos, ShowWindow, GWL_STYLE, HWND_TOP,
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SW_MAXIMIZE, SW_RESTORE, WS_CAPTION,
+            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        };
+
+        unsafe {
+            let style = GetWindowLongW(self.hwnd, GWL_STYLE) as u32;
+            let windowed_style =
+                WS_CAPTION.0 | WS_SYSMENU.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
+
+            if (style & windowed_style) != 0 {
+                // Enter fullscreen
+                let new_style = style & !windowed_style;
+                SetWindowLongW(self.hwnd, GWL_STYLE, new_style as i32);
+                let _ = ShowWindow(self.hwnd, SW_MAXIMIZE);
+            } else {
+                // Exit fullscreen
+                let new_style = style | windowed_style;
+                SetWindowLongW(self.hwnd, GWL_STYLE, new_style as i32);
+                let _ = ShowWindow(self.hwnd, SW_RESTORE);
+            }
+            let _ = SetWindowPos(
+                self.hwnd,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
+            );
         }
     }
 
@@ -891,4 +1133,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+/// Parse a hex color string (e.g., "#e74c3c") to Rgb
+fn parse_hex_color(hex: &str) -> Option<Rgb> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    Some(Rgb::new(r, g, b))
 }

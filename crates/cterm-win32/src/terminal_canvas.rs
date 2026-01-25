@@ -575,6 +575,17 @@ impl TerminalRenderer {
         self.font_size = size;
         self.create_text_format()
     }
+
+    /// Get current font size
+    pub fn font_size(&self) -> f32 {
+        self.font_size
+    }
+
+    /// Set font size only
+    pub fn set_font_size(&mut self, size: f32) -> windows::core::Result<()> {
+        self.font_size = size;
+        self.create_text_format()
+    }
 }
 
 /// Convert Rgb to D2D1_COLOR_F

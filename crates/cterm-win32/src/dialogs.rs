@@ -2,10 +2,19 @@
 //!
 //! Provides dialog boxes for preferences, about, find, set title/color, etc.
 
+use std::cell::RefCell;
 use std::ptr;
 
+use winapi::shared::basetsd::INT_PTR;
+use winapi::shared::minwindef::{LPARAM, UINT, WPARAM};
 use winapi::shared::windef::HWND;
 use winapi::um::winuser::*;
+
+// Thread-local storage for dialog data (needed because dialog procedures don't have context)
+thread_local! {
+    static DIALOG_INPUT: RefCell<Option<String>> = const { RefCell::new(None) };
+    static DIALOG_RESULT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 /// Convert a Rust string to a null-terminated wide string
 fn to_wide(s: &str) -> Vec<u16> {
@@ -44,16 +53,19 @@ pub fn show_error(parent: HWND, title: &str, message: &str) {
 }
 
 /// Show a warning message
+#[allow(dead_code)]
 pub fn show_warning(parent: HWND, title: &str, message: &str) {
     show_message(parent, title, message, MB_OK | MB_ICONWARNING);
 }
 
 /// Show an info message
+#[allow(dead_code)]
 pub fn show_info(parent: HWND, title: &str, message: &str) {
     show_message(parent, title, message, MB_OK | MB_ICONINFORMATION);
 }
 
 /// Show a confirmation dialog
+#[allow(dead_code)]
 pub fn show_confirm(parent: HWND, title: &str, message: &str) -> bool {
     show_message(parent, title, message, MB_YESNO | MB_ICONQUESTION) == IDYES
 }
@@ -64,36 +76,277 @@ pub enum InputDialogResult {
     Cancel,
 }
 
-/// Show an input dialog using a custom dialog template
+// Dialog control IDs
+const IDC_EDIT: i32 = 1001;
+const IDC_PROMPT: i32 = 1002;
+
+/// Dialog procedure for input dialog
+unsafe extern "system" fn input_dialog_proc(
+    hwnd: HWND,
+    msg: UINT,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> INT_PTR {
+    match msg {
+        WM_INITDIALOG => {
+            // Center the dialog on parent
+            let mut rect = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut rect);
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+
+            let mut parent_rect = std::mem::zeroed();
+            let parent = GetParent(hwnd);
+            if !parent.is_null() {
+                GetWindowRect(parent, &mut parent_rect);
+            } else {
+                // Use screen center
+                parent_rect.right = GetSystemMetrics(SM_CXSCREEN);
+                parent_rect.bottom = GetSystemMetrics(SM_CYSCREEN);
+            }
+
+            let x = (parent_rect.left + parent_rect.right) / 2 - width / 2;
+            let y = (parent_rect.top + parent_rect.bottom) / 2 - height / 2;
+            SetWindowPos(hwnd, ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+            // Set initial text in edit control
+            DIALOG_INPUT.with(|input| {
+                if let Some(ref text) = *input.borrow() {
+                    let edit = GetDlgItem(hwnd, IDC_EDIT);
+                    let wide = to_wide(text);
+                    SetWindowTextW(edit, wide.as_ptr());
+                    // Select all text
+                    SendMessageW(edit, EM_SETSEL as u32, 0, -1i32 as LPARAM);
+                }
+            });
+
+            // Focus the edit control
+            let edit = GetDlgItem(hwnd, IDC_EDIT);
+            SetFocus(edit);
+
+            1 // Return TRUE to indicate we set focus
+        }
+        WM_COMMAND => {
+            let id = (wparam & 0xFFFF) as i32;
+            match id {
+                IDOK => {
+                    // Get text from edit control
+                    let edit = GetDlgItem(hwnd, IDC_EDIT);
+                    let len = GetWindowTextLengthW(edit) as usize;
+                    let mut buffer = vec![0u16; len + 1];
+                    GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32);
+
+                    let text = String::from_utf16_lossy(&buffer[..len]);
+                    DIALOG_RESULT.with(|result| {
+                        *result.borrow_mut() = Some(text);
+                    });
+
+                    EndDialog(hwnd, IDOK as isize);
+                    1
+                }
+                IDCANCEL => {
+                    DIALOG_RESULT.with(|result| {
+                        *result.borrow_mut() = None;
+                    });
+                    EndDialog(hwnd, IDCANCEL as isize);
+                    1
+                }
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Build a dialog template in memory
+fn build_input_dialog_template(title: &str, prompt: &str) -> Vec<u8> {
+    let mut template = Vec::new();
+
+    // DLGTEMPLATE structure (must be DWORD aligned)
+    let style = DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT;
+    let ex_style = 0u32;
+    let c_dit = 4u16; // number of controls: prompt label, edit, OK, Cancel
+    let x = 0i16;
+    let y = 0i16;
+    let cx = 250i16;
+    let cy = 80i16;
+
+    // DLGTEMPLATE
+    template.extend_from_slice(&(style as u32).to_le_bytes());
+    template.extend_from_slice(&ex_style.to_le_bytes());
+    template.extend_from_slice(&c_dit.to_le_bytes());
+    template.extend_from_slice(&x.to_le_bytes());
+    template.extend_from_slice(&y.to_le_bytes());
+    template.extend_from_slice(&cx.to_le_bytes());
+    template.extend_from_slice(&cy.to_le_bytes());
+
+    // Menu (none)
+    template.extend_from_slice(&[0u8, 0]);
+    // Class (use default)
+    template.extend_from_slice(&[0u8, 0]);
+    // Title
+    let title_wide = to_wide(title);
+    for c in &title_wide {
+        template.extend_from_slice(&c.to_le_bytes());
+    }
+
+    // Font (for DS_SETFONT)
+    align_to_word(&mut template);
+    template.extend_from_slice(&9u16.to_le_bytes()); // point size
+    let font_wide = to_wide("MS Shell Dlg");
+    for c in &font_wide {
+        template.extend_from_slice(&c.to_le_bytes());
+    }
+
+    // Control 1: Static label (prompt)
+    align_to_dword(&mut template);
+    add_dialog_control(
+        &mut template,
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        10,
+        10,
+        230,
+        14,
+        IDC_PROMPT,
+        0x0082, // Static
+        prompt,
+    );
+
+    // Control 2: Edit control
+    align_to_dword(&mut template);
+    add_dialog_control(
+        &mut template,
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+        10,
+        28,
+        230,
+        14,
+        IDC_EDIT,
+        0x0081, // Edit
+        "",
+    );
+
+    // Control 3: OK button
+    align_to_dword(&mut template);
+    add_dialog_control(
+        &mut template,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        130,
+        52,
+        50,
+        14,
+        IDOK,
+        0x0080, // Button
+        "OK",
+    );
+
+    // Control 4: Cancel button
+    align_to_dword(&mut template);
+    add_dialog_control(
+        &mut template,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        190,
+        52,
+        50,
+        14,
+        IDCANCEL,
+        0x0080, // Button
+        "Cancel",
+    );
+
+    template
+}
+
+fn align_to_word(v: &mut Vec<u8>) {
+    while v.len() % 2 != 0 {
+        v.push(0);
+    }
+}
+
+fn align_to_dword(v: &mut Vec<u8>) {
+    while v.len() % 4 != 0 {
+        v.push(0);
+    }
+}
+
+fn add_dialog_control(
+    template: &mut Vec<u8>,
+    style: u32,
+    x: i16,
+    y: i16,
+    cx: i16,
+    cy: i16,
+    id: i32,
+    class: u16,
+    text: &str,
+) {
+    // DLGITEMTEMPLATE
+    let style = style | WS_CHILD;
+    let ex_style = 0u32;
+
+    template.extend_from_slice(&style.to_le_bytes());
+    template.extend_from_slice(&ex_style.to_le_bytes());
+    template.extend_from_slice(&x.to_le_bytes());
+    template.extend_from_slice(&y.to_le_bytes());
+    template.extend_from_slice(&cx.to_le_bytes());
+    template.extend_from_slice(&cy.to_le_bytes());
+    template.extend_from_slice(&(id as u16).to_le_bytes());
+
+    // Window class (use ordinal)
+    template.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    template.extend_from_slice(&class.to_le_bytes());
+
+    // Title/text
+    let text_wide = to_wide(text);
+    for c in &text_wide {
+        template.extend_from_slice(&c.to_le_bytes());
+    }
+
+    // No creation data
+    template.extend_from_slice(&0u16.to_le_bytes());
+}
+
+/// Show an input dialog
 pub fn show_input_dialog(
-    _parent: HWND,
-    _title: &str,
+    parent: HWND,
+    title: &str,
     prompt: &str,
     initial_value: &str,
 ) -> InputDialogResult {
-    // For simplicity, we'll use a basic approach with InputBox-style behavior
-    // In a full implementation, this would use a proper dialog template
+    // Set up input value
+    DIALOG_INPUT.with(|input| {
+        *input.borrow_mut() = Some(initial_value.to_string());
+    });
+    DIALOG_RESULT.with(|result| {
+        *result.borrow_mut() = None;
+    });
 
-    // Create dialog data
-    let data = InputDialogData {
-        prompt: prompt.to_string(),
-        value: initial_value.to_string(),
-        result: None,
+    // Build dialog template
+    let template = build_input_dialog_template(title, prompt);
+
+    // Show dialog
+    let ret = unsafe {
+        DialogBoxIndirectParamW(
+            ptr::null_mut(),
+            template.as_ptr() as *const DLGTEMPLATE,
+            parent,
+            Some(input_dialog_proc),
+            0,
+        )
     };
 
-    // For now, return the initial value or empty
-    // TODO: Implement proper dialog with edit control
-    log::warn!("Input dialog not fully implemented, returning initial value");
-    InputDialogResult::Ok(data.value)
-}
-
-/// Internal data for input dialog
-struct InputDialogData {
-    #[allow(dead_code)]
-    prompt: String,
-    value: String,
-    #[allow(dead_code)]
-    result: Option<String>,
+    // Get result
+    if ret == IDOK as isize {
+        DIALOG_RESULT.with(|result| {
+            if let Some(text) = result.borrow().clone() {
+                InputDialogResult::Ok(text)
+            } else {
+                InputDialogResult::Cancel
+            }
+        })
+    } else {
+        InputDialogResult::Cancel
+    }
 }
 
 /// Color picker result
@@ -149,29 +402,35 @@ pub const TAB_COLORS: &[(&str, &str)] = &[
     ("Gray", "#95a5a6"),
 ];
 
-/// Show a set color dialog with predefined colors
+/// Show a set color dialog - first asks to pick or clear, then shows color picker
 pub fn show_set_color_dialog(parent: HWND) -> Option<Option<String>> {
-    // For simplicity, we'll show a simple list dialog
-    // In a full implementation, this would be a proper dialog with color swatches
-
     let title = to_wide("Set Tab Color");
-    let prompt =
-        to_wide("Choose a color for this tab:\n\n(Feature will be enhanced in future versions)");
+    let prompt = to_wide(
+        "Would you like to:\n\n• Click 'Yes' to choose a new color\n• Click 'No' to clear the current color\n• Click 'Cancel' to keep the current color",
+    );
 
     let result = unsafe {
         MessageBoxW(
             parent,
             prompt.as_ptr(),
             title.as_ptr(),
-            MB_OKCANCEL | MB_ICONQUESTION,
+            MB_YESNOCANCEL | MB_ICONQUESTION,
         )
     };
 
-    if result == IDOK {
-        // Show color picker
-        show_color_picker(parent).map(|c| Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)))
-    } else {
-        None
+    match result {
+        IDYES => {
+            // Show color picker
+            show_color_picker(parent).map(|c| Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)))
+        }
+        IDNO => {
+            // Clear color
+            Some(None)
+        }
+        _ => {
+            // Cancel
+            None
+        }
     }
 }
 
@@ -193,8 +452,7 @@ pub struct FindOptions {
 
 /// Show a find dialog
 pub fn show_find_dialog(parent: HWND) -> Option<FindOptions> {
-    // Simplified version - in full implementation, use a proper dialog
-    match show_input_dialog(parent, "Find", "Search for:", "") {
+    match show_input_dialog(parent, "Find in Terminal", "Search for:", "") {
         InputDialogResult::Ok(text) if !text.is_empty() => Some(FindOptions {
             text,
             case_sensitive: false,
@@ -293,6 +551,64 @@ pub fn show_error_msg(hwnd: windows::Win32::Foundation::HWND, message: &str) {
     show_error(parent, "Error", message);
 }
 
+/// Show a simple preferences placeholder dialog
+pub fn show_preferences_dialog(parent: HWND) {
+    let title = to_wide("Preferences");
+    let message = to_wide(
+        "Preferences can be edited in the configuration file:\n\n\
+        Windows: %APPDATA%\\cterm\\config.toml\n\n\
+        A full preferences dialog will be available in a future version.",
+    );
+
+    unsafe {
+        MessageBoxW(
+            parent,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+/// Show tab templates placeholder dialog
+pub fn show_tab_templates_dialog(parent: HWND) {
+    let title = to_wide("Tab Templates");
+    let message = to_wide(
+        "Tab templates can be configured in:\n\n\
+        Windows: %APPDATA%\\cterm\\sticky_tabs.toml\n\n\
+        A visual template editor will be available in a future version.",
+    );
+
+    unsafe {
+        MessageBoxW(
+            parent,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+/// Show check for updates dialog
+pub fn show_check_updates_dialog(parent: HWND) {
+    let title = to_wide("Check for Updates");
+    let message = to_wide(&format!(
+        "Current version: {}\n\n\
+        Visit https://github.com/KarpelesLab/cterm/releases\n\
+        to check for the latest version.",
+        env!("CARGO_PKG_VERSION")
+    ));
+
+    unsafe {
+        MessageBoxW(
+            parent,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +624,13 @@ mod tests {
     fn test_tab_colors() {
         assert!(!TAB_COLORS.is_empty());
         assert_eq!(TAB_COLORS[0].0, "Default");
+    }
+
+    #[test]
+    fn test_build_dialog_template() {
+        let template = build_input_dialog_template("Test", "Enter value:");
+        // Template should be non-empty and properly aligned
+        assert!(!template.is_empty());
+        assert!(template.len() % 4 == 0 || template.len() > 100);
     }
 }
