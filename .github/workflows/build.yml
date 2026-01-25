@@ -39,7 +39,8 @@ jobs:
             libadwaita-1-dev \
             libpango1.0-dev \
             libcairo2-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            protobuf-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,6 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protobuf
+        run: brew install protobuf
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -74,6 +78,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protobuf
+        run: choco install protoc -y
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -101,7 +108,8 @@ jobs:
             libadwaita-1-dev \
             libpango1.0-dev \
             libcairo2-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            protobuf-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -124,6 +132,9 @@ jobs:
     needs: [format, lint-macos]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protobuf
+        run: brew install protobuf
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -155,7 +166,8 @@ jobs:
             libadwaita-1-dev \
             libpango1.0-dev \
             libcairo2-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            protobuf-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -207,7 +219,8 @@ jobs:
             libadwaita-1-dev \
             libpango1.0-dev \
             libcairo2-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            protobuf-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -251,6 +264,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protobuf
+        run: choco install protoc -y
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -272,6 +288,9 @@ jobs:
     needs: test-windows
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protobuf
+        run: choco install protoc -y
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -357,7 +376,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install gtk4 libadwaita pango cairo glib pkg-config
+          brew install gtk4 libadwaita pango cairo glib pkg-config protobuf
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -389,7 +408,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install gtk4 libadwaita pango cairo glib pkg-config
+          brew install gtk4 libadwaita pango cairo glib pkg-config protobuf
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
