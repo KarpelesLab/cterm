@@ -852,6 +852,11 @@ impl AppDelegate {
         };
         use std::os::unix::io::RawFd;
 
+        // Save crash state immediately before relaunch so buffers are preserved
+        // in case something goes wrong during the upgrade process
+        self.save_crash_state();
+        log::info!("Crash state saved before relaunch");
+
         let binary = match std::env::current_exe() {
             Ok(path) => path,
             Err(e) => {
