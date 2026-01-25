@@ -267,6 +267,7 @@ impl TerminalWidget {
     }
 
     /// Set an optional background color override (hex string like "#1a1b26")
+    #[allow(dead_code)] // Part of cross-platform interface, used on macOS
     pub fn set_background_override(&self, color: Option<&str>) {
         let rgb = color.and_then(|hex| {
             let hex = hex.trim_start_matches('#');
