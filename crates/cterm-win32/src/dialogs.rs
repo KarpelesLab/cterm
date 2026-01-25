@@ -4,8 +4,7 @@
 
 use std::ptr;
 
-use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::windef::{HWND, RECT};
+use winapi::shared::windef::HWND;
 use winapi::um::winuser::*;
 
 /// Convert a Rust string to a null-terminated wide string

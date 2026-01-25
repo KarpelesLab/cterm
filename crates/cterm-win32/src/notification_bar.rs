@@ -4,8 +4,11 @@
 
 use cterm_core::color::Rgb;
 use cterm_ui::{format_size, Theme};
+use windows::core::Interface;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
-use windows::Win32::Graphics::Direct2D::{ID2D1HwndRenderTarget, D2D1_ROUNDED_RECT};
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1HwndRenderTarget, ID2D1RenderTarget, D2D1_ROUNDED_RECT,
+};
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
 };
@@ -171,6 +174,9 @@ impl NotificationBar {
 
         let height = self.dpi.scale_f32(NOTIFICATION_BAR_HEIGHT as f32);
 
+        // Cast to parent interface to access render methods
+        let base: ID2D1RenderTarget = rt.cast()?;
+
         // Draw background
         let bg_rect = D2D_RECT_F {
             left: 0.0,
@@ -185,8 +191,8 @@ impl NotificationBar {
             (self.theme.ui.tab_bar_background.g as u16 + 20).min(255) as u8,
             (self.theme.ui.tab_bar_background.b as u16 + 30).min(255) as u8,
         );
-        let bg_brush = unsafe { rt.CreateSolidColorBrush(&rgb_to_d2d_color(bg_color), None)? };
-        unsafe { rt.FillRectangle(&bg_rect, &bg_brush) };
+        let bg_brush = unsafe { base.CreateSolidColorBrush(&rgb_to_d2d_color(bg_color), None)? };
+        unsafe { base.FillRectangle(&bg_rect, &bg_brush) };
 
         // Draw message text
         if let Some(ref file) = self.pending_file {
@@ -198,7 +204,7 @@ impl NotificationBar {
 
             let text_color = self.theme.ui.tab_active_text;
             let text_brush =
-                unsafe { rt.CreateSolidColorBrush(&rgb_to_d2d_color(text_color), None)? };
+                unsafe { base.CreateSolidColorBrush(&rgb_to_d2d_color(text_color), None)? };
 
             let text_wide: Vec<u16> = message.encode_utf16().collect();
             let text_width = self.save_button_rect.left - self.dpi.scale_f32(BUTTON_MARGIN * 2.0);
@@ -214,7 +220,7 @@ impl NotificationBar {
                 x: self.dpi.scale_f32(BUTTON_MARGIN),
                 y: 0.0,
             };
-            unsafe { rt.DrawTextLayout(text_origin, &layout, &text_brush, Default::default()) };
+            unsafe { base.DrawTextLayout(text_origin, &layout, &text_brush, Default::default()) };
         }
 
         // Draw buttons
@@ -245,9 +251,9 @@ impl NotificationBar {
 
         // Draw bottom border
         let border_color = rgb_to_d2d_color(self.theme.ui.border);
-        let border_brush = unsafe { rt.CreateSolidColorBrush(&border_color, None)? };
+        let border_brush = unsafe { base.CreateSolidColorBrush(&border_color, None)? };
         unsafe {
-            rt.DrawLine(
+            base.DrawLine(
                 D2D_POINT_2F { x: 0.0, y: height },
                 D2D_POINT_2F {
                     x: width,
@@ -272,6 +278,9 @@ impl NotificationBar {
         bg_color: Rgb,
         text_format: &IDWriteTextFormat,
     ) -> windows::core::Result<()> {
+        // Cast to parent interface to access render methods
+        let base: ID2D1RenderTarget = rt.cast()?;
+
         let rounded_rect = D2D1_ROUNDED_RECT {
             rect: *rect,
             radiusX: self.dpi.scale_f32(BUTTON_CORNER_RADIUS),
@@ -279,13 +288,13 @@ impl NotificationBar {
         };
 
         // Button background
-        let bg_brush = unsafe { rt.CreateSolidColorBrush(&rgb_to_d2d_color(bg_color), None)? };
-        unsafe { rt.FillRoundedRectangle(&rounded_rect, &bg_brush) };
+        let bg_brush = unsafe { base.CreateSolidColorBrush(&rgb_to_d2d_color(bg_color), None)? };
+        unsafe { base.FillRoundedRectangle(&rounded_rect, &bg_brush) };
 
         // Button text
         let text_color = Rgb::new(255, 255, 255);
         let text_brush =
-            unsafe { rt.CreateSolidColorBrush(&rgb_to_d2d_color(text_color), None)? };
+            unsafe { base.CreateSolidColorBrush(&rgb_to_d2d_color(text_color), None)? };
 
         let text_wide: Vec<u16> = label.encode_utf16().collect();
         let layout: IDWriteTextLayout = unsafe {
@@ -308,7 +317,7 @@ impl NotificationBar {
             x: rect.left,
             y: rect.top,
         };
-        unsafe { rt.DrawTextLayout(text_origin, &layout, &text_brush, Default::default()) };
+        unsafe { base.DrawTextLayout(text_origin, &layout, &text_brush, Default::default()) };
 
         Ok(())
     }

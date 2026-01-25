@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use cterm_core::color::{Color, Rgb};
 use cterm_core::{Cell, CellAttrs, Screen, Selection};
 use cterm_ui::theme::Theme;
-use windows::core::PCWSTR;
+use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
@@ -222,10 +222,11 @@ impl TerminalRenderer {
             return Ok(brush.clone());
         }
 
-        // Clone the render target (cheap COM reference count) to call methods
+        // Clone and cast to parent interface to access methods
         let rt = self.render_target.clone().unwrap();
+        let base: ID2D1RenderTarget = rt.cast()?;
         let d2d_color = rgb_to_d2d_color(color);
-        let brush = unsafe { rt.CreateSolidColorBrush(&d2d_color, None)? };
+        let brush = unsafe { base.CreateSolidColorBrush(&d2d_color, None)? };
 
         self.brush_cache.insert(key, brush.clone());
         Ok(brush)
@@ -338,15 +339,18 @@ impl TerminalRenderer {
         };
 
         let c = cell.c;
-        let needs_fg = c != ' ' && c != '\0' || attrs.has_underline() || attrs.contains(CellAttrs::STRIKETHROUGH);
+        let needs_fg = c != ' ' && c != '\0'
+            || attrs.has_underline()
+            || attrs.contains(CellAttrs::STRIKETHROUGH);
         let fg_brush = if needs_fg {
             Some(self.get_brush(fg)?)
         } else {
             None
         };
 
-        // Clone the render target to call methods (cheap COM reference count)
+        // Clone and cast to parent interface to access methods
         let rt = self.render_target.clone().unwrap();
+        let base: ID2D1RenderTarget = rt.cast()?;
 
         // Draw background if not default
         if let Some(ref brush) = bg_brush {
@@ -356,7 +360,7 @@ impl TerminalRenderer {
                 right: x + self.cell_dims.width,
                 bottom: y + self.cell_dims.height,
             };
-            unsafe { rt.FillRectangle(&rect, brush) };
+            unsafe { base.FillRectangle(&rect, brush) };
         }
 
         // Draw character
@@ -380,14 +384,21 @@ impl TerminalRenderer {
             };
 
             let origin = D2D_POINT_2F { x, y };
-            unsafe { rt.DrawTextLayout(origin, &layout, fg_brush.as_ref().unwrap(), Default::default()) };
+            unsafe {
+                base.DrawTextLayout(
+                    origin,
+                    &layout,
+                    fg_brush.as_ref().unwrap(),
+                    Default::default(),
+                )
+            };
         }
 
         // Draw underline
         if attrs.has_underline() {
             let underline_y = y + self.cell_dims.baseline + 2.0;
             unsafe {
-                rt.DrawLine(
+                base.DrawLine(
                     D2D_POINT_2F { x, y: underline_y },
                     D2D_POINT_2F {
                         x: x + self.cell_dims.width,
@@ -404,7 +415,7 @@ impl TerminalRenderer {
         if attrs.contains(CellAttrs::STRIKETHROUGH) {
             let strike_y = y + self.cell_dims.height / 2.0;
             unsafe {
-                rt.DrawLine(
+                base.DrawLine(
                     D2D_POINT_2F { x, y: strike_y },
                     D2D_POINT_2F {
                         x: x + self.cell_dims.width,
@@ -457,8 +468,9 @@ impl TerminalRenderer {
         let rows = screen.grid().height();
         let cols = screen.grid().width();
 
-        // Clone render target to call methods (cheap COM reference count)
+        // Clone and cast to parent interface to access methods
         let rt = self.render_target.clone().unwrap();
+        let base: ID2D1RenderTarget = rt.cast()?;
 
         for line in start.line..=end.line {
             if line >= rows {
@@ -483,7 +495,7 @@ impl TerminalRenderer {
                 bottom: y + self.cell_dims.height,
             };
 
-            unsafe { rt.FillRectangle(&rect, &brush) };
+            unsafe { base.FillRectangle(&rect, &brush) };
         }
 
         Ok(())
@@ -510,12 +522,13 @@ impl TerminalRenderer {
             bottom: y + self.cell_dims.height,
         };
 
-        // Clone render target to call methods (cheap COM reference count)
+        // Clone and cast to parent interface to access methods
         let rt = self.render_target.clone().unwrap();
+        let base: ID2D1RenderTarget = rt.cast()?;
 
         // Draw filled block cursor
         unsafe {
-            rt.FillRectangle(&rect, &brush);
+            base.FillRectangle(&rect, &brush);
         }
 
         // Draw the character under cursor with inverted color
@@ -542,7 +555,7 @@ impl TerminalRenderer {
 
                 let origin = D2D_POINT_2F { x, y };
                 unsafe {
-                    rt.DrawTextLayout(origin, &layout, &text_brush, Default::default());
+                    base.DrawTextLayout(origin, &layout, &text_brush, Default::default());
                 }
             }
         }

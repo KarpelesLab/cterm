@@ -2,7 +2,6 @@
 //!
 //! Manages the main window, tabs, terminal rendering, and message handling.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr;
 use std::rc::Rc;
