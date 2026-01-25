@@ -158,6 +158,7 @@ jobs:
         run: |
           mkdir -p release/cterm-linux-x86_64
           cp target/release/cterm release/cterm-linux-x86_64/
+          cp target/release/ctermd release/cterm-linux-x86_64/
           cp README.md LICENSE release/cterm-linux-x86_64/
           cd release && tar -czvf cterm-linux-x86_64.tar.gz cterm-linux-x86_64
 
@@ -197,6 +198,7 @@ jobs:
         run: |
           mkdir -p release/cterm-linux-arm64
           cp target/release/cterm release/cterm-linux-arm64/
+          cp target/release/ctermd release/cterm-linux-arm64/
           cp README.md LICENSE release/cterm-linux-arm64/
           cd release && tar -czvf cterm-linux-arm64.tar.gz cterm-linux-arm64
 
@@ -243,6 +245,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release/cterm-windows-x86_64
           Copy-Item target/release/cterm.exe release/cterm-windows-x86_64/
+          Copy-Item target/release/ctermd.exe release/cterm-windows-x86_64/
           Copy-Item README.md release/cterm-windows-x86_64/
           Copy-Item LICENSE release/cterm-windows-x86_64/
 
@@ -311,6 +314,12 @@ jobs:
           name: cterm-macos-x86_64-binary
           path: target/release/cterm
 
+      - name: Upload ctermd binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctermd-macos-x86_64-binary
+          path: target/release/ctermd
+
   build-macos-arm:
     name: Build macOS (Apple Silicon)
     runs-on: macos-latest
@@ -337,16 +346,29 @@ jobs:
           name: cterm-macos-x86_64-binary
           path: intel-binary
 
-      - name: Create universal binary
+      - name: Download Intel ctermd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ctermd-macos-x86_64-binary
+          path: intel-binary-ctermd
+
+      - name: Create universal binaries
         run: |
           mkdir -p universal-binary
+          # Create universal cterm binary
           lipo -create -output universal-binary/cterm \
             intel-binary/cterm \
             target/release/cterm
           chmod +x universal-binary/cterm
-          # Verify it's universal
-          file universal-binary/cterm
+          # Create universal ctermd binary
+          lipo -create -output universal-binary/ctermd \
+            intel-binary-ctermd/ctermd \
+            target/release/ctermd
+          chmod +x universal-binary/ctermd
+          # Verify they're universal
+          file universal-binary/cterm universal-binary/ctermd
           lipo -info universal-binary/cterm
+          lipo -info universal-binary/ctermd
 
       - name: Create app bundle
         run: |
@@ -402,6 +424,7 @@ jobs:
         run: |
           mkdir -p release/cterm-macos-universal
           cp universal-binary/cterm release/cterm-macos-universal/
+          cp universal-binary/ctermd release/cterm-macos-universal/
           cp README.md LICENSE release/cterm-macos-universal/
           cd release && tar -czvf cterm-macos-universal.tar.gz cterm-macos-universal
 
