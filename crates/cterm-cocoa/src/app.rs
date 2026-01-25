@@ -361,6 +361,12 @@ define_class!(
             crate::tab_templates::show_tab_templates(mtm, templates);
         }
 
+        #[unsafe(method(checkForUpdates:))]
+        fn action_check_for_updates(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            crate::update_dialog::check_for_updates_sync(mtm);
+        }
+
         #[unsafe(method(openTabTemplate:))]
         fn action_open_tab_template(&self, sender: Option<&objc2::runtime::AnyObject>) {
             use objc2_app_kit::NSMenuItem;

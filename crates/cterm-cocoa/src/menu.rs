@@ -458,6 +458,16 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
+    // Check for Updates
+    menu.addItem(&create_menu_item(
+        mtm,
+        "Check for Updates...",
+        Some(sel!(checkForUpdates:)),
+        "",
+    ));
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
     // Debug submenu (hidden by default, shown when Shift is held)
     let debug_menu = NSMenu::new(mtm);
     debug_menu.setTitle(&NSString::from_str("Debug"));

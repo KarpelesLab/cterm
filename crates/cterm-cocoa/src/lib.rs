@@ -36,6 +36,7 @@ pub mod preferences;
 pub mod tab_bar;
 pub mod tab_templates;
 pub mod terminal_view;
+pub mod update_dialog;
 #[cfg(unix)]
 pub mod upgrade_receiver;
 pub mod window;
