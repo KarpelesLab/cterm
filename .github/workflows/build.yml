@@ -158,15 +158,27 @@ jobs:
         run: |
           mkdir -p release/cterm-linux-x86_64
           cp target/release/cterm release/cterm-linux-x86_64/
-          cp target/release/ctermd release/cterm-linux-x86_64/
           cp README.md LICENSE release/cterm-linux-x86_64/
           cd release && tar -czvf cterm-linux-x86_64.tar.gz cterm-linux-x86_64
+
+      - name: Create ctermd release archive
+        run: |
+          mkdir -p release/ctermd-linux-x86_64
+          cp target/release/ctermd release/ctermd-linux-x86_64/
+          cp README.md LICENSE release/ctermd-linux-x86_64/
+          cd release && tar -czvf ctermd-linux-x86_64.tar.gz ctermd-linux-x86_64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-linux-x86_64
           path: release/cterm-linux-x86_64.tar.gz
+
+      - name: Upload ctermd artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctermd-linux-x86_64
+          path: release/ctermd-linux-x86_64.tar.gz
 
   build-linux-arm64:
     name: Build Linux (ARM64)
@@ -198,15 +210,27 @@ jobs:
         run: |
           mkdir -p release/cterm-linux-arm64
           cp target/release/cterm release/cterm-linux-arm64/
-          cp target/release/ctermd release/cterm-linux-arm64/
           cp README.md LICENSE release/cterm-linux-arm64/
           cd release && tar -czvf cterm-linux-arm64.tar.gz cterm-linux-arm64
+
+      - name: Create ctermd release archive
+        run: |
+          mkdir -p release/ctermd-linux-arm64
+          cp target/release/ctermd release/ctermd-linux-arm64/
+          cp README.md LICENSE release/ctermd-linux-arm64/
+          cd release && tar -czvf ctermd-linux-arm64.tar.gz ctermd-linux-arm64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cterm-linux-arm64
           path: release/cterm-linux-arm64.tar.gz
+
+      - name: Upload ctermd artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctermd-linux-arm64
+          path: release/ctermd-linux-arm64.tar.gz
 
   test-windows:
     name: Test (Windows)
@@ -245,9 +269,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release/cterm-windows-x86_64
           Copy-Item target/release/cterm.exe release/cterm-windows-x86_64/
-          Copy-Item target/release/ctermd.exe release/cterm-windows-x86_64/
           Copy-Item README.md release/cterm-windows-x86_64/
           Copy-Item LICENSE release/cterm-windows-x86_64/
+
+      - name: Prepare ctermd release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release/ctermd-windows-x86_64
+          Copy-Item target/release/ctermd.exe release/ctermd-windows-x86_64/
+          Copy-Item README.md release/ctermd-windows-x86_64/
+          Copy-Item LICENSE release/ctermd-windows-x86_64/
 
       - name: Install NSIS
         shell: pwsh
@@ -276,6 +307,11 @@ jobs:
         run: |
           Compress-Archive -Path release/cterm-windows-x86_64 -DestinationPath release/cterm-windows-x86_64.zip
 
+      - name: Create ctermd zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release/ctermd-windows-x86_64 -DestinationPath release/ctermd-windows-x86_64.zip
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -287,6 +323,12 @@ jobs:
         with:
           name: cterm-windows-x86_64
           path: release/cterm-windows-x86_64.zip
+
+      - name: Upload ctermd zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctermd-windows-x86_64
+          path: release/ctermd-windows-x86_64.zip
 
   build-macos-intel:
     name: Build macOS (Intel)
@@ -424,9 +466,15 @@ jobs:
         run: |
           mkdir -p release/cterm-macos-universal
           cp universal-binary/cterm release/cterm-macos-universal/
-          cp universal-binary/ctermd release/cterm-macos-universal/
           cp README.md LICENSE release/cterm-macos-universal/
           cd release && tar -czvf cterm-macos-universal.tar.gz cterm-macos-universal
+
+      - name: Create ctermd tar.gz
+        run: |
+          mkdir -p release/ctermd-macos-universal
+          cp universal-binary/ctermd release/ctermd-macos-universal/
+          cp README.md LICENSE release/ctermd-macos-universal/
+          cd release && tar -czvf ctermd-macos-universal.tar.gz ctermd-macos-universal
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -439,6 +487,12 @@ jobs:
         with:
           name: cterm-macos-universal
           path: release/cterm-macos-universal.tar.gz
+
+      - name: Upload ctermd tar.gz artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctermd-macos-universal
+          path: release/ctermd-macos-universal.tar.gz
 
   release:
     name: Create Release
@@ -466,6 +520,10 @@ jobs:
             artifacts/cterm-windows-installer/cterm-windows-x86_64-setup.exe
             artifacts/cterm-macos-universal/cterm-macos-universal.tar.gz
             artifacts/cterm-macos-dmg/cterm-macos-universal.dmg
+            artifacts/ctermd-linux-x86_64/ctermd-linux-x86_64.tar.gz
+            artifacts/ctermd-linux-arm64/ctermd-linux-arm64.tar.gz
+            artifacts/ctermd-windows-x86_64/ctermd-windows-x86_64.zip
+            artifacts/ctermd-macos-universal/ctermd-macos-universal.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true
