@@ -3,6 +3,7 @@
 use crate::proto::terminal_service_server::TerminalServiceServer;
 use crate::service::TerminalServiceImpl;
 use crate::session::SessionManager;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 use tonic::transport::Server;

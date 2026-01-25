@@ -175,8 +175,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build all
-        run: cargo build --release
+      - name: Build cterm
+        run: cargo build --release -p cterm-gtk
+
+      - name: Build ctermd
+        run: cargo build --release -p cterm-headless
 
       - name: List built binaries
         run: ls -la target/release/cterm* || true
@@ -231,8 +234,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build all
-        run: cargo build --release
+      - name: Build cterm
+        run: cargo build --release -p cterm-gtk
+
+      - name: Build ctermd
+        run: cargo build --release -p cterm-headless
 
       - name: List built binaries
         run: ls -la target/release/cterm* || true
@@ -304,8 +310,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build all
-        run: cargo build --release
+      - name: Build cterm
+        run: cargo build --release -p cterm-win32
+
+      - name: Build ctermd
+        run: cargo build --release -p cterm-headless
 
       - name: List built binaries
         shell: pwsh
