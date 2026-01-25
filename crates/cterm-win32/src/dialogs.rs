@@ -172,7 +172,7 @@ fn build_input_dialog_template(title: &str, prompt: &str) -> Vec<u8> {
     let cy = 80i16;
 
     // DLGTEMPLATE
-    template.extend_from_slice(&(style as u32).to_le_bytes());
+    template.extend_from_slice(&style.to_le_bytes());
     template.extend_from_slice(&ex_style.to_le_bytes());
     template.extend_from_slice(&c_dit.to_le_bytes());
     template.extend_from_slice(&x.to_le_bytes());
@@ -258,17 +258,18 @@ fn build_input_dialog_template(title: &str, prompt: &str) -> Vec<u8> {
 }
 
 fn align_to_word(v: &mut Vec<u8>) {
-    while v.len() % 2 != 0 {
+    while !v.len().is_multiple_of(2) {
         v.push(0);
     }
 }
 
 fn align_to_dword(v: &mut Vec<u8>) {
-    while v.len() % 4 != 0 {
+    while !v.len().is_multiple_of(4) {
         v.push(0);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_dialog_control(
     template: &mut Vec<u8>,
     style: u32,
@@ -631,6 +632,6 @@ mod tests {
         let template = build_input_dialog_template("Test", "Enter value:");
         // Template should be non-empty and properly aligned
         assert!(!template.is_empty());
-        assert!(template.len() % 4 == 0 || template.len() > 100);
+        assert!(template.len().is_multiple_of(4) || template.len() > 100);
     }
 }
