@@ -90,11 +90,15 @@ pub struct TabUpgradeState {
     pub template_name: Option<String>,
     /// Terminal state
     pub terminal: TerminalUpgradeState,
-    /// Index into the FD array for this tab's PTY
+    /// Index into the FD array for this tab's PTY (Unix)
+    /// Index into the handle array for this tab's PTY (Windows)
     pub pty_fd_index: usize,
-    /// Child process ID
+    /// Child process ID (Unix)
     #[cfg(unix)]
     pub child_pid: i32,
+    /// Child process ID (Windows)
+    #[cfg(windows)]
+    pub process_id: u32,
     /// Working directory of the shell
     pub cwd: Option<String>,
     /// Watchdog FD ID (for crash recovery matching)
@@ -103,7 +107,7 @@ pub struct TabUpgradeState {
 }
 
 impl TabUpgradeState {
-    /// Create a new tab upgrade state
+    /// Create a new tab upgrade state (Unix)
     #[cfg(unix)]
     pub fn new(id: u64, pty_fd_index: usize, child_pid: i32) -> Self {
         Self {
@@ -116,6 +120,21 @@ impl TabUpgradeState {
             child_pid,
             cwd: None,
             watchdog_fd_id: 0,
+        }
+    }
+
+    /// Create a new tab upgrade state (Windows)
+    #[cfg(windows)]
+    pub fn new(id: u64, pty_fd_index: usize, process_id: u32) -> Self {
+        Self {
+            id,
+            title: String::new(),
+            color: None,
+            template_name: None,
+            terminal: TerminalUpgradeState::default(),
+            pty_fd_index,
+            process_id,
+            cwd: None,
         }
     }
 

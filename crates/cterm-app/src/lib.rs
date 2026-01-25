@@ -26,4 +26,6 @@ pub use session::{Session, TabState, WindowState};
 pub use shortcuts::ShortcutManager;
 #[cfg(unix)]
 pub use upgrade::{execute_upgrade, receive_upgrade, UpgradeError};
+#[cfg(windows)]
+pub use upgrade::{execute_upgrade, receive_upgrade, HandleInfo, UpgradeError, WindowsUpgradeData};
 pub use upgrade::{UpdateError, UpdateInfo, Updater, UpgradeState};

@@ -687,14 +687,58 @@ mod windows {
             self.read_pipe.try_clone()
         }
 
-        /// Duplicate handles for transfer (placeholder - Windows handle passing is different)
+        /// Get all handles needed for upgrade transfer
+        ///
+        /// Returns (hpc, read_pipe, write_pipe, process_handle, process_id)
+        pub fn get_upgrade_handles(&self) -> (RawHandle, RawHandle, RawHandle, RawHandle, u32) {
+            (
+                self.hpc as RawHandle,
+                self.read_pipe.as_raw_handle(),
+                self.write_pipe.as_raw_handle(),
+                self.process_handle as RawHandle,
+                self.process_id,
+            )
+        }
+
+        /// Duplicate a handle for transfer to another process
+        ///
+        /// # Arguments
+        /// * `handle` - The handle to duplicate
+        /// * `target_process` - Handle to the target process (from OpenProcess)
+        ///
+        /// # Returns
+        /// The duplicated handle value in the target process
+        pub fn duplicate_handle_to_process(
+            handle: RawHandle,
+            target_process: HANDLE,
+        ) -> io::Result<RawHandle> {
+            use winapi::um::handleapi::DuplicateHandle;
+            use winapi::um::processthreadsapi::GetCurrentProcess;
+
+            let mut new_handle: HANDLE = INVALID_HANDLE_VALUE;
+            let result = unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    handle as HANDLE,
+                    target_process,
+                    &mut new_handle,
+                    0,
+                    FALSE,
+                    winapi::um::winnt::DUPLICATE_SAME_ACCESS,
+                )
+            };
+
+            if result == FALSE {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(new_handle as RawHandle)
+            }
+        }
+
+        /// Duplicate handles for transfer (for compatibility with Unix API)
         pub fn dup_fd(&self) -> io::Result<RawHandle> {
-            // On Windows, we'd use DuplicateHandle
-            // For now, return an error as seamless upgrade on Windows needs more work
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Handle duplication for upgrade not yet implemented on Windows",
-            ))
+            // Return the read pipe handle - caller should use get_upgrade_handles() for full transfer
+            Ok(self.read_pipe.as_raw_handle())
         }
 
         /// Get the raw handle (for compatibility)

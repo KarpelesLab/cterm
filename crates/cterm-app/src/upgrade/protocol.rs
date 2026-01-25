@@ -1,14 +1,16 @@
 //! Upgrade protocol - handles sending and receiving upgrade state
 //!
 //! This module provides the core protocol for seamless upgrades:
-//! - Sender side: serializes state and sends to new process via inherited FD
+//! - Sender side: serializes state and sends to new process via inherited FD/handle
 //! - Receiver side: deserializes state and reconstructs terminals
+//!
+//! On Unix: Uses socketpair + SCM_RIGHTS for FD passing
+//! On Windows: Uses STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST for handle inheritance
 
 #[cfg(unix)]
 use cterm_core::fd_passing;
 
 use std::io;
-#[cfg(unix)]
 use std::path::Path;
 
 #[cfg(unix)]
@@ -19,6 +21,9 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use std::process::Command;
+
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 
 use super::state::UpgradeState;
 
@@ -145,6 +150,299 @@ pub fn execute_upgrade(
     Ok(())
 }
 
+// ============================================================================
+// Windows Implementation
+// ============================================================================
+
+/// Windows handle info for upgrade transfer
+#[cfg(windows)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HandleInfo {
+    /// Pseudo console handle value (as usize for serialization)
+    pub hpc: usize,
+    /// Read pipe handle value
+    pub read_pipe: usize,
+    /// Write pipe handle value
+    pub write_pipe: usize,
+    /// Process handle value
+    pub process_handle: usize,
+    /// Process ID
+    pub process_id: u32,
+}
+
+/// Data sent over the upgrade pipe on Windows
+#[cfg(windows)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WindowsUpgradeData {
+    /// Handle information for each PTY (indexed by pty_fd_index in TabUpgradeState)
+    pub handles: Vec<HandleInfo>,
+    /// Serialized UpgradeState
+    pub state_bytes: Vec<u8>,
+}
+
+/// Execute an upgrade by sending state to a new process (Windows)
+///
+/// # Arguments
+/// * `new_binary` - Path to the new binary to execute
+/// * `state` - The upgrade state to transfer
+/// * `handles` - PTY handles to pass (tuples of hpc, read_pipe, write_pipe, process_handle, process_id)
+///
+/// # Returns
+/// Returns Ok(()) if the upgrade was successful
+#[cfg(windows)]
+pub fn execute_upgrade(
+    new_binary: &Path,
+    state: &UpgradeState,
+    handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
+) -> Result<(), UpgradeError> {
+    use std::ffi::OsStr;
+    use std::io::{Read, Write};
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::ptr;
+    use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
+    use winapi::um::handleapi::{CloseHandle, SetHandleInformation, INVALID_HANDLE_VALUE};
+    use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
+    use winapi::um::namedpipeapi::CreatePipe;
+    use winapi::um::processthreadsapi::{
+        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        UpdateProcThreadAttribute, PROCESS_INFORMATION,
+    };
+    use winapi::um::winbase::{EXTENDED_STARTUPINFO_PRESENT, HANDLE_FLAG_INHERIT, STARTUPINFOEXW};
+    use winapi::um::winnt::HANDLE;
+
+    const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
+
+    if handles.len() > MAX_FDS {
+        return Err(UpgradeError::TooManyFds(handles.len(), MAX_FDS));
+    }
+
+    // Serialize the state
+    let state_bytes =
+        bincode::serialize(state).map_err(|e| UpgradeError::Serialization(e.to_string()))?;
+
+    log::info!(
+        "State serialized: {} bytes, {} handle sets",
+        state_bytes.len(),
+        handles.len()
+    );
+
+    // Create a pipe for sending upgrade data to the new process
+    let mut read_pipe: HANDLE = INVALID_HANDLE_VALUE;
+    let mut write_pipe: HANDLE = INVALID_HANDLE_VALUE;
+
+    // Set up security attributes to allow inheritance
+    let mut sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as DWORD,
+        lpSecurityDescriptor: ptr::null_mut(),
+        bInheritHandle: TRUE,
+    };
+
+    let result = unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &mut sa, 0) };
+
+    if result == FALSE {
+        return Err(UpgradeError::Socket(format!(
+            "Failed to create pipe: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    // Make write_pipe non-inheritable (we keep it)
+    unsafe {
+        SetHandleInformation(write_pipe, HANDLE_FLAG_INHERIT, 0);
+    }
+
+    // Collect all handles that need to be inherited
+    let mut inheritable_handles: Vec<HANDLE> = Vec::new();
+
+    // Add the read pipe (for receiving upgrade data)
+    inheritable_handles.push(read_pipe);
+
+    // Mark all PTY handles as inheritable and add them to the list
+    for (hpc, read_h, write_h, process_h, _pid) in handles {
+        unsafe {
+            // Mark each handle as inheritable
+            SetHandleInformation(*hpc as HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            SetHandleInformation(*read_h as HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            SetHandleInformation(*write_h as HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            SetHandleInformation(*process_h as HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        }
+        inheritable_handles.push(*hpc as HANDLE);
+        inheritable_handles.push(*read_h as HANDLE);
+        inheritable_handles.push(*write_h as HANDLE);
+        inheritable_handles.push(*process_h as HANDLE);
+    }
+
+    log::info!(
+        "Prepared {} handles for inheritance",
+        inheritable_handles.len()
+    );
+
+    // Set up STARTUPINFOEX with explicit handle list
+    let mut attr_list_size: usize = 0;
+    unsafe {
+        InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut attr_list_size);
+    }
+
+    let attr_list = vec![0u8; attr_list_size];
+    let attr_list_ptr = attr_list.as_ptr() as *mut _;
+
+    if unsafe { InitializeProcThreadAttributeList(attr_list_ptr, 1, 0, &mut attr_list_size) }
+        == FALSE
+    {
+        unsafe {
+            CloseHandle(read_pipe);
+            CloseHandle(write_pipe);
+        }
+        return Err(UpgradeError::Spawn(format!(
+            "InitializeProcThreadAttributeList failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    // Add the handle list attribute
+    if unsafe {
+        UpdateProcThreadAttribute(
+            attr_list_ptr,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inheritable_handles.as_ptr() as *mut _,
+            inheritable_handles.len() * std::mem::size_of::<HANDLE>(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    } == FALSE
+    {
+        unsafe {
+            DeleteProcThreadAttributeList(attr_list_ptr);
+            CloseHandle(read_pipe);
+            CloseHandle(write_pipe);
+        }
+        return Err(UpgradeError::Spawn(format!(
+            "UpdateProcThreadAttribute failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let mut startup_info: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup_info.lpAttributeList = attr_list_ptr;
+
+    // Build command line with upgrade receiver argument
+    // Pass the pipe handle value as the argument
+    let cmd_line = format!(
+        "\"{}\" --upgrade-receiver {}",
+        new_binary.display(),
+        read_pipe as usize
+    );
+
+    let cmd_wide: Vec<u16> = OsStr::new(&cmd_line)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut process_info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+    // Create the new process
+    let result = unsafe {
+        CreateProcessW(
+            ptr::null(),
+            cmd_wide.as_ptr() as *mut _,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            TRUE, // Inherit handles
+            EXTENDED_STARTUPINFO_PRESENT,
+            ptr::null_mut(),
+            ptr::null(),
+            &mut startup_info.StartupInfo,
+            &mut process_info,
+        )
+    };
+
+    unsafe {
+        DeleteProcThreadAttributeList(attr_list_ptr);
+    }
+
+    if result == FALSE {
+        unsafe {
+            CloseHandle(read_pipe);
+            CloseHandle(write_pipe);
+        }
+        return Err(UpgradeError::Spawn(format!(
+            "CreateProcessW failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    log::info!(
+        "New process spawned with PID: {}",
+        process_info.dwProcessId
+    );
+
+    // Close handle to the new process thread (we don't need it)
+    unsafe {
+        CloseHandle(process_info.hThread);
+    }
+
+    // Close our copy of the read pipe (child has it now)
+    unsafe {
+        CloseHandle(read_pipe);
+    }
+
+    // Build the upgrade data with handle values
+    let handle_infos: Vec<HandleInfo> = handles
+        .iter()
+        .map(|(hpc, read_h, write_h, process_h, pid)| HandleInfo {
+            hpc: *hpc as usize,
+            read_pipe: *read_h as usize,
+            write_pipe: *write_h as usize,
+            process_handle: *process_h as usize,
+            process_id: *pid,
+        })
+        .collect();
+
+    let upgrade_data = WindowsUpgradeData {
+        handles: handle_infos,
+        state_bytes,
+    };
+
+    // Serialize and send the upgrade data
+    let data_bytes =
+        bincode::serialize(&upgrade_data).map_err(|e| UpgradeError::Serialization(e.to_string()))?;
+
+    // Write length prefix then data
+    let mut write_file = unsafe { std::fs::File::from_raw_handle(write_pipe as RawHandle) };
+    let len_bytes = (data_bytes.len() as u64).to_le_bytes();
+    write_file
+        .write_all(&len_bytes)
+        .map_err(|e| UpgradeError::Io(e))?;
+    write_file
+        .write_all(&data_bytes)
+        .map_err(|e| UpgradeError::Io(e))?;
+    write_file.flush().map_err(|e| UpgradeError::Io(e))?;
+
+    log::info!("Upgrade data sent ({} bytes)", data_bytes.len());
+
+    // Wait for acknowledgment
+    let mut ack = [0u8; 1];
+    write_file
+        .read_exact(&mut ack)
+        .map_err(|_| UpgradeError::AckTimeout)?;
+
+    if ack[0] != 1 {
+        return Err(UpgradeError::Socket("Invalid acknowledgment".to_string()));
+    }
+
+    log::info!("Acknowledgment received, upgrade successful");
+
+    // Close the process handle
+    unsafe {
+        CloseHandle(process_info.hProcess);
+    }
+
+    Ok(())
+}
+
 /// Receive upgrade state from the old process
 ///
 /// This is called by the new process when started with --upgrade-receiver
@@ -205,6 +503,95 @@ pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeE
     log::info!("Parent exited, proceeding with GTK startup");
 
     Ok((state, fds))
+}
+
+/// Receive upgrade state from the old process (Windows)
+///
+/// This is called by the new process when started with --upgrade-receiver
+///
+/// # Arguments
+/// * `handle` - The inherited pipe handle value (as usize from command line)
+///
+/// # Returns
+/// The upgrade state and handle info for PTYs
+#[cfg(windows)]
+pub fn receive_upgrade(
+    handle: usize,
+) -> Result<(UpgradeState, Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>), UpgradeError> {
+    use std::io::{Read, Write};
+    use std::os::windows::io::FromRawHandle;
+    use winapi::um::winnt::HANDLE;
+
+    log::info!("Receiving upgrade state from handle {}", handle);
+
+    // Create a File from the inherited handle
+    let mut pipe = unsafe { std::fs::File::from_raw_handle(handle as RawHandle) };
+
+    // Read length prefix
+    let mut len_bytes = [0u8; 8];
+    pipe.read_exact(&mut len_bytes)
+        .map_err(|e| UpgradeError::Io(e))?;
+    let data_len = u64::from_le_bytes(len_bytes) as usize;
+
+    if data_len > MAX_STATE_SIZE {
+        return Err(UpgradeError::Deserialization(format!(
+            "Data too large: {} bytes (max: {})",
+            data_len, MAX_STATE_SIZE
+        )));
+    }
+
+    log::info!("Expecting {} bytes of upgrade data", data_len);
+
+    // Read the data
+    let mut data_bytes = vec![0u8; data_len];
+    pipe.read_exact(&mut data_bytes)
+        .map_err(|e| UpgradeError::Io(e))?;
+
+    // Deserialize the Windows upgrade data
+    let upgrade_data: WindowsUpgradeData = bincode::deserialize(&data_bytes)
+        .map_err(|e| UpgradeError::Deserialization(e.to_string()))?;
+
+    log::info!(
+        "Received {} handle sets",
+        upgrade_data.handles.len()
+    );
+
+    // Deserialize the state
+    let state: UpgradeState = bincode::deserialize(&upgrade_data.state_bytes)
+        .map_err(|e| UpgradeError::Deserialization(e.to_string()))?;
+
+    log::info!(
+        "State deserialized: format_version={}, cterm_version={}, windows={}",
+        state.format_version,
+        state.cterm_version,
+        state.windows.len()
+    );
+
+    // Convert handle infos to raw handles
+    let handles: Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)> = upgrade_data
+        .handles
+        .iter()
+        .map(|h| {
+            (
+                h.hpc as RawHandle,
+                h.read_pipe as RawHandle,
+                h.write_pipe as RawHandle,
+                h.process_handle as RawHandle,
+                h.process_id,
+            )
+        })
+        .collect();
+
+    // Send acknowledgment
+    pipe.write_all(&[1]).map_err(|e| UpgradeError::Io(e))?;
+    pipe.flush().map_err(|e| UpgradeError::Io(e))?;
+
+    log::info!("Acknowledgment sent, proceeding with startup");
+
+    // On Windows, we don't need to wait for the parent like on Unix
+    // The handles are already inherited and the parent can exit
+
+    Ok((state, handles))
 }
 
 #[cfg(test)]
