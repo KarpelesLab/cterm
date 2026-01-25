@@ -18,7 +18,7 @@ native-windows-gui = "1.0"
 native-windows-derive = "1.0"
 
 # Windows APIs for Direct2D, DirectWrite, etc.
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
     "implement",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
