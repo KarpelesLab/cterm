@@ -198,7 +198,7 @@ pub fn execute_upgrade(
     use std::ffi::OsStr;
     use std::io::{Read, Write};
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::os::windows::io::FromRawHandle;
     use std::ptr;
     use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
     use winapi::um::handleapi::{CloseHandle, SetHandleInformation, INVALID_HANDLE_VALUE};
@@ -414,13 +414,11 @@ pub fn execute_upgrade(
     // Write length prefix then data
     let mut write_file = unsafe { std::fs::File::from_raw_handle(write_pipe as RawHandle) };
     let len_bytes = (data_bytes.len() as u64).to_le_bytes();
-    write_file
-        .write_all(&len_bytes)
-        .map_err(|e| UpgradeError::Io(e))?;
+    write_file.write_all(&len_bytes).map_err(UpgradeError::Io)?;
     write_file
         .write_all(&data_bytes)
-        .map_err(|e| UpgradeError::Io(e))?;
-    write_file.flush().map_err(|e| UpgradeError::Io(e))?;
+        .map_err(UpgradeError::Io)?;
+    write_file.flush().map_err(UpgradeError::Io)?;
 
     log::info!("Upgrade data sent ({} bytes)", data_bytes.len());
 
@@ -516,6 +514,7 @@ pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeE
 /// # Returns
 /// The upgrade state and handle info for PTYs
 #[cfg(windows)]
+#[allow(clippy::type_complexity)]
 pub fn receive_upgrade(
     handle: usize,
 ) -> Result<
@@ -527,7 +526,6 @@ pub fn receive_upgrade(
 > {
     use std::io::{Read, Write};
     use std::os::windows::io::FromRawHandle;
-    use winapi::um::winnt::HANDLE;
 
     log::info!("Receiving upgrade state from handle {}", handle);
 
@@ -536,8 +534,7 @@ pub fn receive_upgrade(
 
     // Read length prefix
     let mut len_bytes = [0u8; 8];
-    pipe.read_exact(&mut len_bytes)
-        .map_err(|e| UpgradeError::Io(e))?;
+    pipe.read_exact(&mut len_bytes).map_err(UpgradeError::Io)?;
     let data_len = u64::from_le_bytes(len_bytes) as usize;
 
     if data_len > MAX_STATE_SIZE {
@@ -551,8 +548,7 @@ pub fn receive_upgrade(
 
     // Read the data
     let mut data_bytes = vec![0u8; data_len];
-    pipe.read_exact(&mut data_bytes)
-        .map_err(|e| UpgradeError::Io(e))?;
+    pipe.read_exact(&mut data_bytes).map_err(UpgradeError::Io)?;
 
     // Deserialize the Windows upgrade data
     let upgrade_data: WindowsUpgradeData = bincode::deserialize(&data_bytes)
@@ -587,8 +583,8 @@ pub fn receive_upgrade(
         .collect();
 
     // Send acknowledgment
-    pipe.write_all(&[1]).map_err(|e| UpgradeError::Io(e))?;
-    pipe.flush().map_err(|e| UpgradeError::Io(e))?;
+    pipe.write_all(&[1]).map_err(UpgradeError::Io)?;
+    pipe.flush().map_err(UpgradeError::Io)?;
 
     log::info!("Acknowledgment sent, proceeding with startup");
 
