@@ -5,11 +5,11 @@
 
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::windef::HWND;
-use winapi::um::wingdi::{CreateFontW, FW_NORMAL, LOGPIXELSY};
+use winapi::um::winbase::MulDiv;
+use winapi::um::wingdi::{CreateFontW, GetDeviceCaps, FW_NORMAL, LOGPIXELSY};
 use winapi::um::winuser::*;
 
 use crate::dialog_utils::{create_button, create_label, set_edit_text, to_wide};
@@ -39,7 +39,7 @@ enum UpdateResult {
     Error(String),
 }
 
-/// Thread-local storage for update result
+// Thread-local storage for update result
 thread_local! {
     static PENDING_UPDATE: std::cell::RefCell<Option<UpdateResult>> = const { std::cell::RefCell::new(None) };
 }

@@ -6,7 +6,8 @@ use std::ptr;
 
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::windef::HWND;
-use winapi::um::wingdi::{CreateFontW, FW_NORMAL, LOGPIXELSY};
+use winapi::um::winbase::MulDiv;
+use winapi::um::wingdi::{CreateFontW, GetDeviceCaps, FW_NORMAL, LOGPIXELSY};
 use winapi::um::winuser::*;
 
 use crate::dialog_utils::{create_button, set_edit_text, to_wide};
@@ -295,6 +296,6 @@ unsafe fn refresh_logs(hwnd: HWND) {
     set_edit_text(edit, &logs);
 
     // Scroll to bottom
-    let line_count = SendMessageW(edit, EM_GETLINECOUNT, 0, 0);
-    SendMessageW(edit, EM_LINESCROLL, 0, line_count as LPARAM);
+    let line_count = SendMessageW(edit, EM_GETLINECOUNT as u32, 0, 0);
+    SendMessageW(edit, EM_LINESCROLL as u32, 0, line_count as LPARAM);
 }
