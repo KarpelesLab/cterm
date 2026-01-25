@@ -12,7 +12,7 @@ use gtk4::{
 };
 use parking_lot::Mutex;
 
-use cterm_app::config::Config;
+use cterm_app::config::{Config, StickyTabConfig};
 use cterm_app::upgrade::TerminalUpgradeState;
 use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
@@ -112,6 +112,105 @@ impl TerminalWidget {
             default_font_size: font_size,
             cell_dims,
             background_override: Rc::new(RefCell::new(None)),
+            on_exit: Rc::new(RefCell::new(None)),
+            on_bell: Rc::new(RefCell::new(None)),
+            on_title_change: Rc::new(RefCell::new(None)),
+            on_file_transfer: Rc::new(RefCell::new(None)),
+        };
+
+        // Set up drawing
+        widget.setup_drawing();
+
+        // Set up input handling
+        widget.setup_input();
+
+        // Set up PTY reading
+        widget.setup_pty_reader();
+
+        // Set up resize handling
+        widget.setup_resize();
+
+        Ok(widget)
+    }
+
+    /// Create a terminal widget from a sticky tab template
+    pub fn from_template(
+        config: &Config,
+        theme: &Theme,
+        template: &StickyTabConfig,
+    ) -> Result<Self, PtyError> {
+        // Get font settings
+        let font_family = config.appearance.font.family.clone();
+        let font_size = config.appearance.font.size;
+
+        // Calculate cell dimensions using Pango font metrics
+        let cell_dims = calculate_cell_dimensions(&font_family, font_size);
+
+        // Create drawing area with proper sizing
+        let drawing_area = DrawingArea::new();
+        drawing_area.set_can_focus(true);
+        drawing_area.set_focusable(true);
+        drawing_area.add_css_class("terminal");
+        drawing_area.set_vexpand(true);
+        drawing_area.set_hexpand(true);
+
+        // Set minimum size for 80x24 characters
+        let min_width = (cell_dims.width * 80.0).ceil() as i32;
+        let min_height = (cell_dims.height * 24.0).ceil() as i32;
+        drawing_area.set_size_request(min_width, min_height);
+
+        // Calculate initial terminal size (80x24 minimum)
+        let cols = 80;
+        let rows = 24;
+
+        // Create terminal with template settings
+        let screen_config = ScreenConfig {
+            scrollback_lines: config.general.scrollback_lines,
+        };
+
+        // Get command and args from template
+        let (command, args) = template.get_command_args();
+
+        let pty_config = PtyConfig {
+            shell: command,
+            args,
+            cwd: template.working_directory.clone(),
+            env: template
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            term: config.general.term.clone(),
+            ..Default::default()
+        };
+
+        let terminal = Terminal::with_shell(cols, rows, screen_config, &pty_config)?;
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        let cell_dims = Rc::new(RefCell::new(cell_dims));
+
+        // Parse background color override from template
+        let background_override = template.background_color.as_ref().and_then(|hex| {
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(Rgb::new(r, g, b))
+            } else {
+                None
+            }
+        });
+
+        let widget = Self {
+            drawing_area: drawing_area.clone(),
+            terminal: Arc::clone(&terminal),
+            theme: theme.clone(),
+            font_family,
+            font_size: Rc::new(RefCell::new(font_size)),
+            default_font_size: font_size,
+            cell_dims,
+            background_override: Rc::new(RefCell::new(background_override)),
             on_exit: Rc::new(RefCell::new(None)),
             on_bell: Rc::new(RefCell::new(None)),
             on_title_change: Rc::new(RefCell::new(None)),
@@ -267,7 +366,6 @@ impl TerminalWidget {
     }
 
     /// Set an optional background color override (hex string like "#1a1b26")
-    #[allow(dead_code)] // Part of cross-platform interface, used on macOS
     pub fn set_background_override(&self, color: Option<&str>) {
         let rgb = color.and_then(|hex| {
             let hex = hex.trim_start_matches('#');

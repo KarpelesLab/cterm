@@ -758,11 +758,48 @@ impl CtermWindow {
         // Tab Templates action
         {
             let window_clone = window.clone();
+            let notebook = notebook.clone();
+            let tabs = Rc::clone(&tabs);
+            let next_tab_id = Rc::clone(&next_tab_id);
+            let config = Rc::clone(&config);
+            let theme = theme.clone();
+            let tab_bar = tab_bar.clone();
+            let has_bell = Rc::clone(&has_bell);
+            let file_manager = Rc::clone(&self.file_manager);
+            let notification_bar = self.notification_bar.clone();
             let action = gio::SimpleAction::new("tab-templates", None);
             action.connect_activate(move |_, _| {
-                crate::tab_templates_dialog::show_tab_templates_dialog(&window_clone, || {
-                    log::info!("Tab templates saved");
-                });
+                let notebook = notebook.clone();
+                let tabs = Rc::clone(&tabs);
+                let next_tab_id = Rc::clone(&next_tab_id);
+                let config = Rc::clone(&config);
+                let theme = theme.clone();
+                let tab_bar = tab_bar.clone();
+                let window_for_tab = window_clone.clone();
+                let has_bell = Rc::clone(&has_bell);
+                let file_manager = Rc::clone(&file_manager);
+                let notification_bar = notification_bar.clone();
+                crate::tab_templates_dialog::show_tab_templates_dialog_with_open(
+                    &window_clone,
+                    || {
+                        log::info!("Tab templates saved");
+                    },
+                    move |template| {
+                        create_tab_from_template(
+                            &notebook,
+                            &tabs,
+                            &next_tab_id,
+                            &config,
+                            &theme,
+                            &tab_bar,
+                            &window_for_tab,
+                            &has_bell,
+                            &file_manager,
+                            &notification_bar,
+                            &template,
+                        );
+                    },
+                );
             });
             window.add_action(&action);
         }
@@ -1760,6 +1797,194 @@ fn create_docker_tab(
     if let Some(widget) = notebook.nth_page(Some(page_num)) {
         widget.grab_focus();
     }
+}
+
+/// Create a new terminal tab from a template
+#[allow(clippy::too_many_arguments)]
+pub fn create_tab_from_template(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    next_tab_id: &Rc<RefCell<u64>>,
+    config: &Rc<RefCell<Config>>,
+    theme: &Theme,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    has_bell: &Rc<RefCell<bool>>,
+    file_manager: &Rc<RefCell<PendingFileManager>>,
+    notification_bar: &NotificationBar,
+    template: &cterm_app::config::StickyTabConfig,
+) {
+    // Create terminal widget from template
+    let cfg = config.borrow();
+    let terminal = match TerminalWidget::from_template(&cfg, theme, template) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("Failed to create terminal from template: {}", e);
+            return;
+        }
+    };
+
+    // Generate unique tab ID
+    let tab_id = {
+        let mut id = next_tab_id.borrow_mut();
+        let current = *id;
+        *id += 1;
+        current
+    };
+
+    // Add to notebook
+    let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
+
+    // Add to tab bar with template name
+    tab_bar.add_tab(tab_id, &template.name);
+
+    // Set tab color if specified
+    if let Some(ref color) = template.color {
+        tab_bar.set_color(tab_id, Some(color));
+    }
+
+    // Set up close callback
+    let notebook_close = notebook.clone();
+    let tabs_close = Rc::clone(tabs);
+    let tab_bar_close = tab_bar.clone();
+    let window_close = window.clone();
+    tab_bar.set_on_close(tab_id, move || {
+        close_tab_by_id(
+            &notebook_close,
+            &tabs_close,
+            &tab_bar_close,
+            &window_close,
+            tab_id,
+        );
+    });
+
+    // Set up click callback
+    let notebook_click = notebook.clone();
+    let tabs_click = Rc::clone(tabs);
+    let tab_bar_click = tab_bar.clone();
+    tab_bar.set_on_click(tab_id, move || {
+        let tabs = tabs_click.borrow();
+        if let Some(idx) = tabs.iter().position(|t| t.id == tab_id) {
+            notebook_click.set_current_page(Some(idx as u32));
+            tab_bar_click.set_active(tab_id);
+            tab_bar_click.clear_bell(tab_id);
+            if let Some(widget) = notebook_click.nth_page(Some(idx as u32)) {
+                widget.grab_focus();
+            }
+        }
+    });
+
+    // Set up terminal exit callback
+    let notebook_exit = notebook.clone();
+    let tabs_exit = Rc::clone(tabs);
+    let tab_bar_exit = tab_bar.clone();
+    let window_exit = window.clone();
+    let keep_open = template.keep_open;
+    terminal.set_on_exit(move || {
+        if !keep_open {
+            close_tab_by_id(
+                &notebook_exit,
+                &tabs_exit,
+                &tab_bar_exit,
+                &window_exit,
+                tab_id,
+            );
+        }
+    });
+
+    // Set up bell callback
+    let tab_bar_bell = tab_bar.clone();
+    let notebook_bell = notebook.clone();
+    let tabs_bell = Rc::clone(tabs);
+    let window_bell = window.clone();
+    let has_bell_bell = Rc::clone(has_bell);
+    terminal.set_on_bell(move || {
+        let is_window_active = window_bell.is_active();
+        let is_current_tab = if let Some(current_page) = notebook_bell.current_page() {
+            let tabs = tabs_bell.borrow();
+            tabs.get(current_page as usize)
+                .map(|t| t.id == tab_id)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !is_window_active || !is_current_tab {
+            tab_bar_bell.show_bell(tab_id);
+            *has_bell_bell.borrow_mut() = true;
+            let current_title = window_bell
+                .title()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if !current_title.starts_with("\u{1F514}") {
+                window_bell.set_title(Some(&format!("\u{1F514} {}", current_title)));
+            }
+        }
+    });
+
+    // Set up title change callback
+    let tab_bar_title = tab_bar.clone();
+    terminal.set_on_title_change(move |title| {
+        tab_bar_title.set_title(tab_id, title);
+    });
+
+    // Set up file transfer callback
+    let file_manager_transfer = Rc::clone(file_manager);
+    let notification_bar_transfer = notification_bar.clone();
+    terminal.set_on_file_transfer(move |transfer| {
+        use cterm_core::FileTransferOperation;
+
+        match transfer {
+            FileTransferOperation::FileReceived { id, name, data } => {
+                log::info!(
+                    "File received: id={}, name={:?}, size={}",
+                    id,
+                    name,
+                    data.len()
+                );
+                let size = data.len();
+                let mut manager = file_manager_transfer.borrow_mut();
+                manager.set_pending(id, name.clone(), data);
+                drop(manager);
+                notification_bar_transfer.show_file(id, name.as_deref(), size);
+            }
+            FileTransferOperation::StreamingFileReceived { id, result } => {
+                log::info!(
+                    "Streaming file received: id={}, name={:?}, size={}",
+                    id,
+                    result.params.name,
+                    result.total_bytes
+                );
+                let size = result.total_bytes;
+                let name = result.params.name.clone();
+                let mut manager = file_manager_transfer.borrow_mut();
+                manager.set_pending_streaming(id, name.clone(), result.data);
+                drop(manager);
+                notification_bar_transfer.show_file(id, name.as_deref(), size);
+            }
+        }
+    });
+
+    // Store terminal with its ID
+    tabs.borrow_mut().push(TabEntry {
+        id: tab_id,
+        title: template.name.clone(),
+        terminal,
+    });
+
+    // Update tab bar visibility
+    tab_bar.update_visibility();
+
+    // Switch to new tab and focus terminal
+    notebook.set_current_page(Some(page_num));
+    tab_bar.set_active(tab_id);
+
+    // Focus the terminal widget
+    if let Some(widget) = notebook.nth_page(Some(page_num)) {
+        widget.grab_focus();
+    }
+
+    log::info!("Created tab from template: {}", template.name);
 }
 
 /// Close current tab

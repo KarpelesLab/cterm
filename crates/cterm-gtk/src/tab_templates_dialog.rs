@@ -60,6 +60,15 @@ struct TemplateWidgets {
 
 /// Show the tab templates dialog
 pub fn show_tab_templates_dialog(parent: &impl IsA<Window>, on_save: impl Fn() + 'static) {
+    show_tab_templates_dialog_with_open(parent, on_save, |_| {});
+}
+
+/// Show the tab templates dialog with an "Open" callback
+pub fn show_tab_templates_dialog_with_open<F, G>(parent: &impl IsA<Window>, on_save: F, on_open: G)
+where
+    F: Fn() + 'static,
+    G: Fn(StickyTabConfig) + 'static,
+{
     let templates = load_sticky_tabs().unwrap_or_default();
     let templates = Rc::new(RefCell::new(templates));
 
@@ -72,6 +81,7 @@ pub fn show_tab_templates_dialog(parent: &impl IsA<Window>, on_save: impl Fn() +
         .build();
 
     dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Open", ResponseType::Other(1));
     dialog.add_button("Save", ResponseType::Ok);
 
     let content = dialog.content_area();
@@ -214,27 +224,46 @@ pub fn show_tab_templates_dialog(parent: &impl IsA<Window>, on_save: impl Fn() +
 
     // Handle dialog response
     let templates_for_save = Rc::clone(&templates);
+    let templates_for_open = Rc::clone(&templates);
     let widgets_for_save = Rc::clone(&widgets);
+    let widgets_for_open = Rc::clone(&widgets);
+    let on_open = Rc::new(on_open);
+    let on_open_clone = Rc::clone(&on_open);
     dialog.connect_response(move |dialog, response| {
-        if response == ResponseType::Ok {
-            // Save current fields to template before saving
-            if let Some(index) = widgets_for_save.template_combo.active() {
-                let mut templates = templates_for_save.borrow_mut();
-                if let Some(template) = templates.get_mut(index as usize) {
-                    save_widgets_to_template(&widgets_for_save, template);
+        match response {
+            ResponseType::Ok => {
+                // Save current fields to template before saving
+                if let Some(index) = widgets_for_save.template_combo.active() {
+                    let mut templates = templates_for_save.borrow_mut();
+                    if let Some(template) = templates.get_mut(index as usize) {
+                        save_widgets_to_template(&widgets_for_save, template);
+                    }
                 }
-            }
 
-            // Save to disk
-            let templates = templates_for_save.borrow();
-            if let Err(e) = save_sticky_tabs(&templates) {
-                log::error!("Failed to save tab templates: {}", e);
-            } else {
-                log::info!("Tab templates saved ({} templates)", templates.len());
+                // Save to disk
+                let templates = templates_for_save.borrow();
+                if let Err(e) = save_sticky_tabs(&templates) {
+                    log::error!("Failed to save tab templates: {}", e);
+                } else {
+                    log::info!("Tab templates saved ({} templates)", templates.len());
+                }
+                on_save();
+                dialog.close();
             }
-            on_save();
+            ResponseType::Other(1) => {
+                // Open button - get current template and open it
+                if let Some(index) = widgets_for_open.template_combo.active() {
+                    let templates = templates_for_open.borrow();
+                    if let Some(template) = templates.get(index as usize) {
+                        on_open_clone(template.clone());
+                    }
+                }
+                dialog.close();
+            }
+            _ => {
+                dialog.close();
+            }
         }
-        dialog.close();
     });
 
     dialog.present();
