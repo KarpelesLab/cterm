@@ -255,9 +255,11 @@ Custom themes can be added as TOML files in the `themes/` configuration subdirec
 - [x] Windows native UI (Win32/Direct2D)
 - [x] Seamless upgrades (macOS/Linux/Windows)
 - [x] Copy as HTML with formatting
-- [ ] Split panes
-- [ ] Session save/restore across restarts
-- [ ] Plugin system
+
+### Future
+
+- Split panes
+- Plugin system
 
 ## License
 
