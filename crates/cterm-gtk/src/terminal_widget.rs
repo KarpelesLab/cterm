@@ -44,6 +44,8 @@ pub struct TerminalWidget {
     font_size: Rc<RefCell<f64>>,
     default_font_size: f64,
     cell_dims: Rc<RefCell<CellDimensions>>,
+    /// Optional background color override (from template)
+    background_override: Rc<RefCell<Option<cterm_core::color::Rgb>>>,
     on_exit: EventCallback,
     on_bell: EventCallback,
     on_title_change: TitleCallback,
@@ -109,6 +111,7 @@ impl TerminalWidget {
             font_size: Rc::new(RefCell::new(font_size)),
             default_font_size: font_size,
             cell_dims,
+            background_override: Rc::new(RefCell::new(None)),
             on_exit: Rc::new(RefCell::new(None)),
             on_bell: Rc::new(RefCell::new(None)),
             on_title_change: Rc::new(RefCell::new(None)),
@@ -167,6 +170,7 @@ impl TerminalWidget {
             font_size: Rc::new(RefCell::new(font_size)),
             default_font_size: font_size,
             cell_dims,
+            background_override: Rc::new(RefCell::new(None)),
             on_exit: Rc::new(RefCell::new(None)),
             on_bell: Rc::new(RefCell::new(None)),
             on_title_change: Rc::new(RefCell::new(None)),
@@ -260,6 +264,24 @@ impl TerminalWidget {
         if let Err(e) = term.write_str(s) {
             log::error!("Failed to write to terminal: {}", e);
         }
+    }
+
+    /// Set an optional background color override (hex string like "#1a1b26")
+    pub fn set_background_override(&self, color: Option<&str>) {
+        let rgb = color.and_then(|hex| {
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(cterm_core::color::Rgb::new(r, g, b))
+            } else {
+                None
+            }
+        });
+        *self.background_override.borrow_mut() = rgb;
+        // Trigger redraw to apply new background
+        self.drawing_area.queue_draw();
     }
 
     /// Increase font size (zoom in)
@@ -515,12 +537,22 @@ impl TerminalWidget {
         let font_family = self.font_family.clone();
         let font_size = Rc::clone(&self.font_size);
         let cell_dims = Rc::clone(&self.cell_dims);
+        let background_override = Rc::clone(&self.background_override);
 
         self.drawing_area
             .set_draw_func(move |_area, cr, _width, _height| {
                 let font_size = *font_size.borrow();
                 let dims = *cell_dims.borrow();
-                draw_terminal(cr, &terminal, &theme, &font_family, font_size, dims);
+                let bg_override = *background_override.borrow();
+                draw_terminal(
+                    cr,
+                    &terminal,
+                    &theme,
+                    &font_family,
+                    font_size,
+                    dims,
+                    bg_override,
+                );
             });
     }
 
@@ -1000,13 +1032,15 @@ fn draw_terminal(
     font_family: &str,
     font_size: f64,
     cell_dims: CellDimensions,
+    background_override: Option<cterm_core::color::Rgb>,
 ) {
     let term = terminal.lock();
     let screen = term.screen();
     let palette = &theme.colors;
 
-    // Draw background
-    let (r, g, b) = palette.background.to_f64();
+    // Draw background (use override if set, otherwise use theme)
+    let bg = background_override.as_ref().unwrap_or(&palette.background);
+    let (r, g, b) = bg.to_f64();
     cr.set_source_rgb(r, g, b);
     cr.paint().ok();
 

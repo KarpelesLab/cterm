@@ -1230,7 +1230,13 @@ impl TerminalView {
         // Create CoreGraphics renderer first to get cell dimensions
         let font_name = &config.appearance.font.family;
         let font_size = config.appearance.font.size;
-        let renderer = CGRenderer::new(mtm, font_name, font_size, theme);
+        let mut renderer = CGRenderer::new(mtm, font_name, font_size, theme);
+
+        // Apply background color override from template if set
+        if let Some(ref bg_color) = template.background_color {
+            renderer.set_background_override(Some(bg_color));
+        }
+
         let (cell_width, cell_height) = renderer.cell_size();
 
         // Create terminal with default size (will resize later)

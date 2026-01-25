@@ -63,6 +63,8 @@ pub struct TerminalRenderer {
     dpi: DpiInfo,
     brush_cache: HashMap<u32, ID2D1SolidColorBrush>,
     hwnd: HWND,
+    /// Optional background color override (from template)
+    background_override: Option<Rgb>,
 }
 
 impl TerminalRenderer {
@@ -98,6 +100,7 @@ impl TerminalRenderer {
             dpi: DpiInfo::system(),
             brush_cache: HashMap::new(),
             hwnd,
+            background_override: None,
         };
 
         renderer.create_device_resources()?;
@@ -252,6 +255,21 @@ impl TerminalRenderer {
         self.cell_dims
     }
 
+    /// Set an optional background color override (hex string like "#1a1b26")
+    pub fn set_background_override(&mut self, color: Option<&str>) {
+        self.background_override = color.and_then(|hex| {
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(Rgb::new(r, g, b))
+            } else {
+                None
+            }
+        });
+    }
+
     /// Calculate terminal size in cells
     pub fn terminal_size(&self, width: u32, height: u32) -> (usize, usize) {
         let cols = (width as f32 / self.cell_dims.width).floor() as usize;
@@ -270,8 +288,12 @@ impl TerminalRenderer {
             let rt = self.render_target.as_ref().unwrap();
             rt.BeginDraw();
 
-            // Clear with background color
-            let bg_color = rgb_to_d2d_color(self.theme.colors.background);
+            // Clear with background color (use override if set)
+            let bg = self
+                .background_override
+                .as_ref()
+                .unwrap_or(&self.theme.colors.background);
+            let bg_color = rgb_to_d2d_color(*bg);
             rt.Clear(Some(&bg_color));
         }
 

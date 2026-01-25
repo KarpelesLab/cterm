@@ -500,6 +500,8 @@ pub struct StickyTabConfig {
     pub color: Option<String>,
     /// Theme override for this tab (None = use default theme)
     pub theme: Option<String>,
+    /// Locked background color (hex) - overrides theme background
+    pub background_color: Option<String>,
     /// Whether to auto-start this tab on launch
     #[serde(default)]
     pub auto_start: bool,
@@ -527,6 +529,7 @@ impl Default for StickyTabConfig {
             working_directory: None,
             color: None,
             theme: None,
+            background_color: None,
             auto_start: false,
             keep_open: false,
             unique: false,

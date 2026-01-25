@@ -409,6 +409,11 @@ mod unix {
                 .unwrap_or_else(|_| CString::new("xterm-256color").unwrap());
             libc::setenv(term.as_ptr(), term_value.as_ptr(), 1);
 
+            // Set COLORTERM to indicate true color support
+            let colorterm = CString::new("COLORTERM").unwrap();
+            let colorterm_value = CString::new("truecolor").unwrap();
+            libc::setenv(colorterm.as_ptr(), colorterm_value.as_ptr(), 1);
+
             // Determine the shell to execute
             let shell = config.shell.clone().unwrap_or_else(get_default_shell);
 
@@ -860,14 +865,18 @@ mod windows {
             });
             let cwd_ptr = cwd_wide.as_ref().map(|v| v.as_ptr()).unwrap_or(ptr::null());
 
+            // Build environment block with TERM and COLORTERM
+            let env_block = build_environment_block(config);
+            let env_ptr = env_block.as_ptr() as *mut _;
+
             let result = CreateProcessW(
                 ptr::null(),
                 cmd_wide.as_ptr() as *mut _,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 FALSE,
-                EXTENDED_STARTUPINFO_PRESENT,
-                ptr::null_mut(),
+                EXTENDED_STARTUPINFO_PRESENT | 0x400, // CREATE_UNICODE_ENVIRONMENT
+                env_ptr,
                 cwd_ptr,
                 &mut startup_info.StartupInfo,
                 &mut process_info,
@@ -916,6 +925,39 @@ mod windows {
         }
         // Fall back to cmd.exe
         "cmd.exe".to_string()
+    }
+
+    /// Build a Windows environment block with TERM and COLORTERM set
+    fn build_environment_block(config: &PtyConfig) -> Vec<u16> {
+        use std::collections::HashMap;
+
+        // Start with current environment
+        let mut env_map: HashMap<String, String> = std::env::vars().collect();
+
+        // Add config environment variables
+        for (key, value) in &config.env {
+            env_map.insert(key.clone(), value.clone());
+        }
+
+        // Set TERM (use config value or default to xterm-256color)
+        let term_value = config.term.as_deref().unwrap_or("xterm-256color");
+        env_map.insert("TERM".to_string(), term_value.to_string());
+
+        // Set COLORTERM to indicate true color support
+        env_map.insert("COLORTERM".to_string(), "truecolor".to_string());
+
+        // Build the environment block
+        // Format: KEY1=VALUE1\0KEY2=VALUE2\0...\0\0
+        let mut block: Vec<u16> = Vec::new();
+        for (key, value) in &env_map {
+            let entry = format!("{}={}", key, value);
+            block.extend(OsStr::new(&entry).encode_wide());
+            block.push(0);
+        }
+        // Double null terminator at the end
+        block.push(0);
+
+        block
     }
 }
 

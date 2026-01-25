@@ -22,6 +22,8 @@ pub struct CGRenderer {
     theme: Theme,
     cell_width: f64,
     cell_height: f64,
+    /// Optional background color override (from template)
+    background_override: Option<Rgb>,
 }
 
 impl CGRenderer {
@@ -48,7 +50,23 @@ impl CGRenderer {
             theme: theme.clone(),
             cell_width,
             cell_height,
+            background_override: None,
         }
+    }
+
+    /// Set an optional background color override (hex string like "#1a1b26")
+    pub fn set_background_override(&mut self, color: Option<&str>) {
+        self.background_override = color.and_then(|hex| {
+            let hex = hex.trim_start_matches('#');
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(Rgb::new(r, g, b))
+            } else {
+                None
+            }
+        });
     }
 
     /// Get the advance width for a character
@@ -332,7 +350,11 @@ impl CGRenderer {
     }
 
     fn draw_background(&self, bounds: NSRect) {
-        let bg = &self.theme.colors.background;
+        // Use background override if set, otherwise use theme background
+        let bg = self
+            .background_override
+            .as_ref()
+            .unwrap_or(&self.theme.colors.background);
         unsafe {
             let color = Self::ns_color(bg.r, bg.g, bg.b);
             let _: () = msg_send![&*color, setFill];
