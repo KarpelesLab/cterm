@@ -539,7 +539,10 @@ mod windows {
 
     // SAFETY: Windows HANDLEs are just integer values that can be safely sent between threads.
     // The underlying resources are managed by the Windows kernel and are not tied to any thread.
+    // The Pty struct doesn't have any internal mutability that would cause data races,
+    // and all access to HANDLEs goes through Windows kernel which handles synchronization.
     unsafe impl Send for Pty {}
+    unsafe impl Sync for Pty {}
 
     impl Pty {
         /// Create a new PTY and spawn the shell
