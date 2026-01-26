@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -12,7 +13,33 @@ use gtk4::{
 use cterm_app::config::{
     config_dir, Config, CursorStyleConfig, NewTabPosition, TabBarPosition, TabBarVisibility,
 };
-use cterm_app::git_sync;
+use cterm_app::{git_sync, PullResult};
+
+/// Format a Unix timestamp as a human-readable relative time
+fn format_timestamp(ts: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let diff = now - ts;
+
+    if diff < 60 {
+        "Just now".to_string()
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+    } else if diff < 604800 {
+        let days = diff / 86400;
+        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    } else {
+        let weeks = diff / 604800;
+        format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
+    }
+}
 
 /// Show the "Set Title" dialog
 pub fn show_set_title_dialog<F>(parent: &impl IsA<Window>, current_title: &str, callback: F)
@@ -290,7 +317,6 @@ struct PreferencesWidgets {
     scrollback_spin: SpinButton,
     confirm_switch: Switch,
     copy_select_switch: Switch,
-    git_remote_entry: Entry,
     // Appearance
     theme_combo: ComboBoxText,
     font_entry: Entry,
@@ -306,35 +332,134 @@ struct PreferencesWidgets {
     close_switch: Switch,
     // Shortcuts
     shortcut_entries: Vec<(String, Entry)>,
+    // Git Sync
+    git_remote_entry: Entry,
+    git_status_label: Label,
+    git_branch_label: Label,
+    git_last_sync_label: Label,
+    git_changes_label: Label,
+    on_save_callback: Rc<RefCell<Option<Box<dyn Fn(Config)>>>>,
+    base_config: Rc<RefCell<Config>>,
 }
 
 impl PreferencesWidgets {
-    /// Handle git remote setup and sync.
-    /// Returns true if remote config was pulled and should be reloaded.
-    fn handle_git_sync(&self) -> bool {
+    /// Perform sync now - pull then push
+    fn sync_now(&self) {
+        let Some(dir) = config_dir() else {
+            log::error!("No config directory found");
+            return;
+        };
+
+        // First, check if we need to initialize with remote
         let remote_url = self.git_remote_entry.text().to_string();
-        if let Some(dir) = config_dir() {
-            if !remote_url.is_empty() {
-                // Initialize repo with remote if needed
-                match git_sync::init_with_remote(&dir, &remote_url) {
-                    Ok(git_sync::InitResult::PulledRemote) => {
-                        // Remote config was pulled - caller should reload
-                        log::info!("Pulled config from remote");
-                        return true;
-                    }
-                    Ok(_) => {
-                        // Commit and push changes
-                        if let Err(e) = git_sync::commit_and_push(&dir, "Update configuration") {
-                            log::error!("Failed to push config: {}", e);
+        if !remote_url.is_empty() && git_sync::get_remote_url(&dir).is_none() {
+            // Initialize with the new remote
+            match git_sync::init_with_remote(&dir, &remote_url) {
+                Ok(git_sync::InitResult::PulledRemote) => {
+                    log::info!("Pulled config from remote");
+                    self.update_status_display();
+                    // Reload config and trigger callback
+                    if let Ok(new_config) = cterm_app::load_config() {
+                        if let Some(ref callback) = *self.on_save_callback.borrow() {
+                            callback(new_config.clone());
                         }
+                        *self.base_config.borrow_mut() = new_config;
                     }
-                    Err(e) => {
-                        log::error!("Failed to set git remote: {}", e);
-                    }
+                    return;
+                }
+                Ok(_) => {
+                    log::info!("Git remote initialized");
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize git remote: {}", e);
+                    return;
                 }
             }
         }
-        false
+
+        // Perform sync: pull then push
+        match git_sync::pull_with_conflict_resolution(&dir) {
+            Ok(PullResult::Updated) => {
+                log::info!("Pulled updates from remote");
+                // Reload config
+                if let Ok(new_config) = cterm_app::load_config() {
+                    if let Some(ref callback) = *self.on_save_callback.borrow() {
+                        callback(new_config.clone());
+                    }
+                    *self.base_config.borrow_mut() = new_config;
+                }
+            }
+            Ok(PullResult::ConflictsResolved(files)) => {
+                log::info!("Pulled with conflicts resolved: {:?}", files);
+                if let Ok(new_config) = cterm_app::load_config() {
+                    if let Some(ref callback) = *self.on_save_callback.borrow() {
+                        callback(new_config.clone());
+                    }
+                    *self.base_config.borrow_mut() = new_config;
+                }
+            }
+            Ok(PullResult::UpToDate) => {
+                log::info!("Already up to date");
+            }
+            Ok(PullResult::NoRemote) | Ok(PullResult::NotARepo) => {
+                log::info!("No remote configured or not a repo");
+            }
+            Err(e) => {
+                log::error!("Sync failed: {}", e);
+            }
+        }
+
+        // Push any local changes
+        if git_sync::is_git_repo(&dir) {
+            if let Err(e) = git_sync::commit_and_push(&dir, "Sync configuration") {
+                log::error!("Failed to push: {}", e);
+            }
+        }
+
+        self.update_status_display();
+    }
+
+    /// Update the status display labels
+    fn update_status_display(&self) {
+        let status = config_dir()
+            .map(|dir| git_sync::get_sync_status(&dir))
+            .unwrap_or_default();
+
+        // Update status label
+        let status_text = if !status.is_repo {
+            "Not initialized"
+        } else if status.remote_url.is_none() {
+            "No remote configured"
+        } else {
+            "Configured"
+        };
+        self.git_status_label.set_text(status_text);
+
+        // Update branch label
+        let branch_text = status.branch.clone().unwrap_or_else(|| "-".to_string());
+        self.git_branch_label.set_text(&branch_text);
+
+        // Update last sync label
+        let last_sync_text = if let Some(ts) = status.last_commit_time {
+            format_timestamp(ts)
+        } else {
+            "-".to_string()
+        };
+        self.git_last_sync_label.set_text(&last_sync_text);
+
+        // Update changes label
+        let changes_text = if status.has_local_changes {
+            "Uncommitted changes"
+        } else if status.commits_ahead > 0 && status.commits_behind > 0 {
+            "Diverged from remote"
+        } else if status.commits_ahead > 0 {
+            "Ahead of remote"
+        } else if status.commits_behind > 0 {
+            "Behind remote"
+        } else {
+            "Up to date"
+        };
+        self.git_changes_label.set_text(changes_text);
     }
 
     fn collect_config(&self, base_config: &Config) -> Config {
@@ -429,7 +554,7 @@ pub fn show_preferences_dialog(
     content.append(&notebook);
 
     // General tab
-    let (general_page, scrollback_spin, confirm_switch, copy_select_switch, git_remote_entry) =
+    let (general_page, scrollback_spin, confirm_switch, copy_select_switch) =
         create_general_preferences(config);
     notebook.append_page(&general_page, Some(&Label::new(Some("General"))));
 
@@ -455,11 +580,26 @@ pub fn show_preferences_dialog(
     let (shortcuts_page, shortcut_entries) = create_shortcuts_preferences(config);
     notebook.append_page(&shortcuts_page, Some(&Label::new(Some("Shortcuts"))));
 
+    // Git Sync tab
+    let (
+        git_sync_page,
+        git_remote_entry,
+        git_status_label,
+        git_branch_label,
+        git_last_sync_label,
+        git_changes_label,
+        sync_button,
+    ) = create_git_sync_preferences();
+    notebook.append_page(&git_sync_page, Some(&Label::new(Some("Git Sync"))));
+
+    let on_save_callback: Rc<RefCell<Option<Box<dyn Fn(Config)>>>> =
+        Rc::new(RefCell::new(Some(Box::new(on_save))));
+    let base_config = Rc::new(RefCell::new(config.clone()));
+
     let widgets = Rc::new(PreferencesWidgets {
         scrollback_spin,
         confirm_switch,
         copy_select_switch,
-        git_remote_entry,
         theme_combo,
         font_entry,
         size_spin,
@@ -472,25 +612,44 @@ pub fn show_preferences_dialog(
         new_combo,
         close_switch,
         shortcut_entries,
+        git_remote_entry,
+        git_status_label,
+        git_branch_label,
+        git_last_sync_label,
+        git_changes_label,
+        on_save_callback: Rc::clone(&on_save_callback),
+        base_config: Rc::clone(&base_config),
     });
 
-    let base_config = config.clone();
+    // Connect sync button
+    let widgets_for_sync = Rc::clone(&widgets);
+    sync_button.connect_clicked(move |_| {
+        widgets_for_sync.sync_now();
+    });
+
+    let widgets_for_response = Rc::clone(&widgets);
     dialog.connect_response(move |dialog, response| match response {
         ResponseType::Ok | ResponseType::Apply => {
-            // Handle git sync first to see if we should reload
-            let pulled_remote = widgets.handle_git_sync();
+            let final_config =
+                widgets_for_response.collect_config(&widgets_for_response.base_config.borrow());
 
-            let final_config = if pulled_remote {
-                // Reload config from the pulled files
-                cterm_app::load_config().unwrap_or_else(|e| {
-                    log::warn!("Failed to reload config after git pull: {}", e);
-                    widgets.collect_config(&base_config)
-                })
-            } else {
-                widgets.collect_config(&base_config)
-            };
+            // Save config and sync if git is configured
+            if let Err(e) = cterm_app::config::save_config(&final_config) {
+                log::error!("Failed to save config: {}", e);
+            }
 
-            on_save(final_config);
+            // If git sync is configured, commit and push
+            if let Some(dir) = config_dir() {
+                if git_sync::is_git_repo(&dir) && git_sync::get_remote_url(&dir).is_some() {
+                    if let Err(e) = git_sync::commit_and_push(&dir, "Update configuration") {
+                        log::error!("Failed to push config: {}", e);
+                    }
+                }
+            }
+
+            if let Some(ref callback) = *widgets_for_response.on_save_callback.borrow() {
+                callback(final_config);
+            }
             if response == ResponseType::Ok {
                 dialog.close();
             }
@@ -503,7 +662,7 @@ pub fn show_preferences_dialog(
     dialog.present();
 }
 
-fn create_general_preferences(config: &Config) -> (GtkBox, SpinButton, Switch, Switch, Entry) {
+fn create_general_preferences(config: &Config) -> (GtkBox, SpinButton, Switch, Switch) {
     let page = GtkBox::new(Orientation::Vertical, 12);
     page.set_margin_top(12);
     page.set_margin_bottom(12);
@@ -543,59 +702,8 @@ fn create_general_preferences(config: &Config) -> (GtkBox, SpinButton, Switch, S
     copy_select_switch.set_halign(Align::Start);
     grid.attach(&copy_select_switch, 1, 2, 1, 1);
 
-    // Git Sync section separator
-    let git_header = Label::new(Some("Git Sync"));
-    git_header.set_halign(Align::Start);
-    git_header.set_margin_top(12);
-    git_header.add_css_class("heading");
-    grid.attach(&git_header, 0, 3, 2, 1);
-
-    // Git remote URL
-    let git_label = Label::new(Some("Git Remote URL:"));
-    git_label.set_halign(Align::End);
-    grid.attach(&git_label, 0, 4, 1, 1);
-
-    let git_entry = Entry::new();
-    git_entry.set_placeholder_text(Some("https://github.com/user/cterm-config.git"));
-    git_entry.set_hexpand(true);
-    // Load existing remote if present
-    if let Some(dir) = config_dir() {
-        if let Some(url) = git_sync::get_remote_url(&dir) {
-            git_entry.set_text(&url);
-        }
-    }
-    grid.attach(&git_entry, 1, 4, 1, 1);
-
-    // Git status label
-    let status_label = Label::new(Some("Status:"));
-    status_label.set_halign(Align::End);
-    grid.attach(&status_label, 0, 5, 1, 1);
-
-    let status_text = if let Some(dir) = config_dir() {
-        if git_sync::is_git_repo(&dir) {
-            if git_sync::get_remote_url(&dir).is_some() {
-                "Configured"
-            } else {
-                "No remote set"
-            }
-        } else {
-            "Not initialized"
-        }
-    } else {
-        "Config dir not found"
-    };
-    let status_value = Label::new(Some(status_text));
-    status_value.set_halign(Align::Start);
-    grid.attach(&status_value, 1, 5, 1, 1);
-
     page.append(&grid);
-    (
-        page,
-        scrollback_spin,
-        confirm_switch,
-        copy_select_switch,
-        git_entry,
-    )
+    (page, scrollback_spin, confirm_switch, copy_select_switch)
 }
 
 fn create_appearance_preferences(
@@ -845,4 +953,134 @@ fn create_shortcuts_preferences(config: &Config) -> (GtkBox, Vec<(String, Entry)
     scroll.set_child(Some(&grid));
     page.append(&scroll);
     (page, entries)
+}
+
+fn create_git_sync_preferences() -> (GtkBox, Entry, Label, Label, Label, Label, Button) {
+    let page = GtkBox::new(Orientation::Vertical, 12);
+    page.set_margin_top(12);
+    page.set_margin_bottom(12);
+    page.set_margin_start(12);
+    page.set_margin_end(12);
+
+    // Get sync status
+    let status = config_dir()
+        .map(|dir| git_sync::get_sync_status(&dir))
+        .unwrap_or_default();
+
+    // Remote Repository section
+    let remote_header = Label::new(Some("Remote Repository"));
+    remote_header.set_halign(Align::Start);
+    remote_header.add_css_class("heading");
+    page.append(&remote_header);
+
+    let remote_grid = Grid::new();
+    remote_grid.set_row_spacing(8);
+    remote_grid.set_column_spacing(12);
+
+    // Git remote URL
+    let git_label = Label::new(Some("Git Remote URL:"));
+    git_label.set_halign(Align::End);
+    remote_grid.attach(&git_label, 0, 0, 1, 1);
+
+    let git_entry = Entry::new();
+    git_entry.set_placeholder_text(Some("https://github.com/user/cterm-config.git"));
+    git_entry.set_hexpand(true);
+    if let Some(url) = &status.remote_url {
+        git_entry.set_text(url);
+    }
+    remote_grid.attach(&git_entry, 1, 0, 1, 1);
+
+    page.append(&remote_grid);
+
+    // Status section
+    let status_header = Label::new(Some("Sync Status"));
+    status_header.set_halign(Align::Start);
+    status_header.set_margin_top(12);
+    status_header.add_css_class("heading");
+    page.append(&status_header);
+
+    let status_grid = Grid::new();
+    status_grid.set_row_spacing(8);
+    status_grid.set_column_spacing(12);
+
+    // Status
+    let status_label_title = Label::new(Some("Status:"));
+    status_label_title.set_halign(Align::End);
+    status_grid.attach(&status_label_title, 0, 0, 1, 1);
+
+    let status_text = if !status.is_repo {
+        "Not initialized"
+    } else if status.remote_url.is_none() {
+        "No remote configured"
+    } else {
+        "Configured"
+    };
+    let git_status_label = Label::new(Some(status_text));
+    git_status_label.set_halign(Align::Start);
+    status_grid.attach(&git_status_label, 1, 0, 1, 1);
+
+    // Branch
+    let branch_label_title = Label::new(Some("Branch:"));
+    branch_label_title.set_halign(Align::End);
+    status_grid.attach(&branch_label_title, 0, 1, 1, 1);
+
+    let branch_text = status.branch.clone().unwrap_or_else(|| "-".to_string());
+    let git_branch_label = Label::new(Some(&branch_text));
+    git_branch_label.set_halign(Align::Start);
+    status_grid.attach(&git_branch_label, 1, 1, 1, 1);
+
+    // Last sync
+    let last_sync_label_title = Label::new(Some("Last sync:"));
+    last_sync_label_title.set_halign(Align::End);
+    status_grid.attach(&last_sync_label_title, 0, 2, 1, 1);
+
+    let last_sync_text = if let Some(ts) = status.last_commit_time {
+        format_timestamp(ts)
+    } else {
+        "-".to_string()
+    };
+    let git_last_sync_label = Label::new(Some(&last_sync_text));
+    git_last_sync_label.set_halign(Align::Start);
+    status_grid.attach(&git_last_sync_label, 1, 2, 1, 1);
+
+    // Changes
+    let changes_label_title = Label::new(Some("Changes:"));
+    changes_label_title.set_halign(Align::End);
+    status_grid.attach(&changes_label_title, 0, 3, 1, 1);
+
+    let changes_text = if status.has_local_changes {
+        "Uncommitted changes"
+    } else if status.commits_ahead > 0 && status.commits_behind > 0 {
+        "Diverged from remote"
+    } else if status.commits_ahead > 0 {
+        "Ahead of remote"
+    } else if status.commits_behind > 0 {
+        "Behind remote"
+    } else {
+        "Up to date"
+    };
+    let git_changes_label = Label::new(Some(changes_text));
+    git_changes_label.set_halign(Align::Start);
+    status_grid.attach(&git_changes_label, 1, 3, 1, 1);
+
+    page.append(&status_grid);
+
+    // Sync Now button
+    let button_box = GtkBox::new(Orientation::Horizontal, 12);
+    button_box.set_margin_top(12);
+
+    let sync_button = Button::with_label("Sync Now");
+    button_box.append(&sync_button);
+
+    page.append(&button_box);
+
+    (
+        page,
+        git_entry,
+        git_status_label,
+        git_branch_label,
+        git_last_sync_label,
+        git_changes_label,
+        sync_button,
+    )
 }

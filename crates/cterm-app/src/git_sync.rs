@@ -8,7 +8,7 @@ use std::process::Command;
 use thiserror::Error;
 
 /// Git sync errors
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum GitError {
     #[error("Git command failed: {0}")]
     CommandFailed(String),
@@ -17,7 +17,59 @@ pub enum GitError {
     InvalidPath,
 
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
+
+    #[error("Merge conflict: {0}")]
+    MergeConflict(String),
+}
+
+impl From<std::io::Error> for GitError {
+    fn from(e: std::io::Error) -> Self {
+        GitError::Io(e.to_string())
+    }
+}
+
+/// Helper function to convert io::Error to GitError
+fn io_err(e: std::io::Error) -> GitError {
+    GitError::Io(e.to_string())
+}
+
+/// Git sync status information
+#[derive(Debug, Clone, Default)]
+pub struct SyncStatus {
+    /// Whether the config directory is a git repository
+    pub is_repo: bool,
+    /// Remote URL if configured
+    pub remote_url: Option<String>,
+    /// Current branch name
+    pub branch: Option<String>,
+    /// Last commit message
+    pub last_commit: Option<String>,
+    /// Last commit timestamp (Unix timestamp)
+    pub last_commit_time: Option<i64>,
+    /// Whether there are uncommitted local changes
+    pub has_local_changes: bool,
+    /// Whether there are unpushed commits
+    pub has_unpushed: bool,
+    /// Number of commits ahead of remote
+    pub commits_ahead: u32,
+    /// Number of commits behind remote
+    pub commits_behind: u32,
+}
+
+/// Result of a pull operation
+#[derive(Debug, Clone)]
+pub enum PullResult {
+    /// Already up to date
+    UpToDate,
+    /// Changes were pulled successfully
+    Updated,
+    /// Conflicts were resolved automatically
+    ConflictsResolved(Vec<String>),
+    /// No remote configured
+    NoRemote,
+    /// Not a git repository
+    NotARepo,
 }
 
 /// Check if the config directory is a git repository
@@ -47,6 +99,61 @@ pub fn get_remote_url(config_dir: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Get detailed sync status for the config directory
+pub fn get_sync_status(config_dir: &Path) -> SyncStatus {
+    let mut status = SyncStatus::default();
+
+    if !is_git_repo(config_dir) {
+        return status;
+    }
+
+    status.is_repo = true;
+    status.remote_url = get_remote_url(config_dir);
+
+    // Get current branch
+    if let Ok(branch) = run_git(config_dir, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        status.branch = Some(branch.trim().to_string());
+    }
+
+    // Get last commit message and time
+    if let Ok(log) = run_git(config_dir, &["log", "-1", "--format=%s%n%ct"]) {
+        let lines: Vec<&str> = log.trim().lines().collect();
+        if lines.len() >= 2 {
+            status.last_commit = Some(lines[0].to_string());
+            if let Ok(ts) = lines[1].parse::<i64>() {
+                status.last_commit_time = Some(ts);
+            }
+        }
+    }
+
+    // Check for local changes
+    if let Ok(porcelain) = run_git(config_dir, &["status", "--porcelain"]) {
+        status.has_local_changes = !porcelain.trim().is_empty();
+    }
+
+    // Check ahead/behind status (requires fetch first, so use cached info)
+    if let Some(ref branch) = status.branch {
+        let upstream = format!("origin/{}", branch);
+        // Check how many commits ahead
+        if let Ok(ahead) = run_git(
+            config_dir,
+            &["rev-list", "--count", &format!("{}..HEAD", upstream)],
+        ) {
+            status.commits_ahead = ahead.trim().parse().unwrap_or(0);
+        }
+        // Check how many commits behind
+        if let Ok(behind) = run_git(
+            config_dir,
+            &["rev-list", "--count", &format!("HEAD..{}", upstream)],
+        ) {
+            status.commits_behind = behind.trim().parse().unwrap_or(0);
+        }
+        status.has_unpushed = status.commits_ahead > 0;
+    }
+
+    status
 }
 
 /// Result of initializing a git repo with a remote
@@ -119,16 +226,33 @@ pub fn init_with_remote(config_dir: &Path, remote_url: &str) -> Result<InitResul
 /// Pull from remote (with rebase to avoid merge commits)
 /// Returns true if changes were pulled
 pub fn pull(config_dir: &Path) -> Result<bool, GitError> {
+    match pull_with_conflict_resolution(config_dir)? {
+        PullResult::Updated | PullResult::ConflictsResolved(_) => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+/// Pull from remote with detailed result and conflict resolution
+pub fn pull_with_conflict_resolution(config_dir: &Path) -> Result<PullResult, GitError> {
     if !is_git_repo(config_dir) {
-        return Ok(false);
+        return Ok(PullResult::NotARepo);
     }
 
     // Check if we have a remote configured
     if get_remote_url(config_dir).is_none() {
-        return Ok(false);
+        return Ok(PullResult::NoRemote);
     }
 
-    // First fetch to see what's available
+    // Stash any local changes first
+    let had_changes = run_git(config_dir, &["status", "--porcelain"])
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if had_changes {
+        let _ = run_git(config_dir, &["stash", "push", "-m", "cterm-auto-stash"]);
+    }
+
+    // Fetch to see what's available
     run_git(config_dir, &["fetch", "origin"])?;
 
     // Determine which branch to pull (main or master)
@@ -138,21 +262,85 @@ pub fn pull(config_dir: &Path) -> Result<bool, GitError> {
         "master"
     } else {
         log::warn!("No main or master branch found on remote");
-        return Ok(false);
+        if had_changes {
+            let _ = run_git(config_dir, &["stash", "pop"]);
+        }
+        return Ok(PullResult::NoRemote);
     };
 
-    // Try to pull with rebase and autostash
-    let output = run_git(
-        config_dir,
-        &["pull", "--rebase", "--autostash", "origin", branch],
-    )?;
+    // Try to pull with rebase
+    let pull_result = run_git(config_dir, &["pull", "--rebase", "origin", branch]);
 
-    // Check if "Already up to date" or similar
-    let up_to_date = output.contains("Already up to date")
-        || output.contains("up-to-date")
-        || output.contains("Already up-to-date");
+    let result = match pull_result {
+        Ok(output) => {
+            let up_to_date = output.contains("Already up to date")
+                || output.contains("up-to-date")
+                || output.contains("Already up-to-date");
 
-    Ok(!up_to_date)
+            if up_to_date {
+                PullResult::UpToDate
+            } else {
+                PullResult::Updated
+            }
+        }
+        Err(_) => {
+            // Rebase failed - likely conflicts
+            log::warn!("Pull with rebase failed, attempting conflict resolution");
+
+            // Abort the rebase
+            let _ = run_git(config_dir, &["rebase", "--abort"]);
+
+            // Try a different approach: reset to remote and reapply local changes
+            let resolved_files = resolve_conflicts_by_taking_remote(config_dir, branch)?;
+
+            if resolved_files.is_empty() {
+                PullResult::Updated
+            } else {
+                PullResult::ConflictsResolved(resolved_files)
+            }
+        }
+    };
+
+    // Restore stashed changes if we had any
+    if had_changes {
+        // Try to apply stash - if it conflicts, resolve by preferring stash (local) changes
+        if run_git(config_dir, &["stash", "pop"]).is_err() {
+            log::warn!("Stash pop had conflicts, resolving by keeping local changes");
+            // Get list of conflicted files
+            if let Ok(status) = run_git(config_dir, &["status", "--porcelain"]) {
+                for line in status.lines() {
+                    if line.starts_with("UU ") || line.starts_with("AA ") {
+                        let file = line[3..].trim();
+                        // For config files, keep the local (stashed) version
+                        let _ = run_git(config_dir, &["checkout", "--theirs", file]);
+                        let _ = run_git(config_dir, &["add", file]);
+                    }
+                }
+            }
+            // Drop the stash since we've handled it
+            let _ = run_git(config_dir, &["stash", "drop"]);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Resolve conflicts by taking remote version for config files
+/// This is a simple strategy that keeps remote config and discards conflicting local changes
+fn resolve_conflicts_by_taking_remote(
+    config_dir: &Path,
+    branch: &str,
+) -> Result<Vec<String>, GitError> {
+    let mut resolved_files = Vec::new();
+
+    // Hard reset to remote branch
+    let remote_ref = format!("origin/{}", branch);
+    run_git(config_dir, &["reset", "--hard", &remote_ref])?;
+
+    log::info!("Reset to remote {} to resolve conflicts", remote_ref);
+    resolved_files.push(format!("Reset to {}", remote_ref));
+
+    Ok(resolved_files)
 }
 
 /// Commit and push all changes
@@ -213,7 +401,7 @@ pub fn clone_repo(remote_url: &str, target_dir: &Path) -> Result<(), GitError> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = target_dir.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(GitError::Io)?;
+            std::fs::create_dir_all(parent).map_err(io_err)?;
             log::info!("Created parent directory: {}", parent.display());
         }
     }
@@ -223,7 +411,7 @@ pub fn clone_repo(remote_url: &str, target_dir: &Path) -> Result<(), GitError> {
         .args(["clone", remote_url])
         .arg(target_dir)
         .output()
-        .map_err(GitError::Io)?;
+        .map_err(io_err)?;
 
     if output.status.success() {
         log::info!(
@@ -262,7 +450,7 @@ pub fn prepare_working_directory(
         }
         _ => {
             // No git remote, just create the directory
-            std::fs::create_dir_all(working_dir).map_err(GitError::Io)?;
+            std::fs::create_dir_all(working_dir).map_err(io_err)?;
             log::info!("Created working directory: {}", working_dir.display());
             Ok(false)
         }
@@ -302,7 +490,7 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
         .args(args)
         .current_dir(dir)
         .output()
-        .map_err(GitError::Io)?;
+        .map_err(io_err)?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

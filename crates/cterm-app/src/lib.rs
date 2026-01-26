@@ -27,8 +27,9 @@ pub use crash_recovery::{
     WatchdogError,
 };
 pub use git_sync::{
-    clone_repo, get_directory_remote_url, get_remote_url, init_with_remote, is_git_repo,
-    prepare_working_directory, GitError, InitResult,
+    clone_repo, get_directory_remote_url, get_remote_url, get_sync_status, init_with_remote,
+    is_git_repo, prepare_working_directory, pull_with_conflict_resolution, GitError, InitResult,
+    PullResult, SyncStatus,
 };
 pub use session::{Session, TabState, WindowState};
 pub use shortcuts::ShortcutManager;
