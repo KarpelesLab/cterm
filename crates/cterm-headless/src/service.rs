@@ -272,7 +272,7 @@ impl TerminalService for TerminalServiceImpl {
             CursorPosition {
                 row: screen.cursor.row as u32,
                 col: screen.cursor.col as u32,
-                visible: screen.cursor.visible,
+                visible: screen.modes.show_cursor,
                 style: CursorStyle::Block as i32,
             }
         });

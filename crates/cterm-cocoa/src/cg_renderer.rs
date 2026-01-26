@@ -187,9 +187,9 @@ impl CGRenderer {
         // Draw images (Sixel, etc.)
         self.render_images(screen);
 
-        // Draw cursor (only when not scrolled back)
+        // Draw cursor (only when visible and not scrolled back)
         let cursor = &screen.cursor;
-        if cursor.visible && screen.scroll_offset == 0 {
+        if screen.modes.show_cursor && screen.scroll_offset == 0 {
             let cursor_x = cursor.col as f64 * self.cell_width;
             let cursor_y = cursor.row as f64 * self.cell_height;
             self.draw_cursor(cursor_x, cursor_y);

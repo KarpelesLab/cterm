@@ -103,7 +103,7 @@ pub fn screen_to_proto(screen: &Screen, include_scrollback: bool) -> proto::GetS
     let cursor = proto::CursorPosition {
         row: screen.cursor.row as u32,
         col: screen.cursor.col as u32,
-        visible: screen.cursor.visible,
+        visible: screen.modes.show_cursor,
         style: proto::CursorStyle::Block as i32,
     };
 

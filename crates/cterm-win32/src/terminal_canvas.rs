@@ -525,11 +525,12 @@ impl TerminalRenderer {
 
     /// Draw the cursor
     fn draw_cursor(&mut self, screen: &Screen) -> windows::core::Result<()> {
-        let cursor = &screen.cursor;
-
-        if !cursor.visible {
+        // Check DECTCEM mode for cursor visibility
+        if !screen.modes.show_cursor {
             return Ok(());
         }
+
+        let cursor = &screen.cursor;
 
         let x = cursor.col as f32 * self.cell_dims.width;
         let y = cursor.row as f32 * self.cell_dims.height;
