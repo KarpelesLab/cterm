@@ -33,6 +33,12 @@ pub const MAX_STATE_SIZE: usize = 64 * 1024 * 1024;
 /// Maximum number of file descriptors to transfer
 pub const MAX_FDS: usize = 256;
 
+/// Magic number for upgrade protocol header (ASCII "CTRM")
+pub const UPGRADE_MAGIC: u32 = 0x4D525443;
+
+/// Header size: magic (4 bytes) + version (4 bytes)
+pub const HEADER_SIZE: usize = 8;
+
 /// Errors that can occur during upgrade
 #[derive(Debug, thiserror::Error)]
 pub enum UpgradeError {
@@ -56,6 +62,12 @@ pub enum UpgradeError {
 
     #[error("Too many file descriptors: {0} (max: {1})")]
     TooManyFds(usize, usize),
+
+    #[error("Invalid magic number in upgrade data")]
+    InvalidMagic,
+
+    #[error("Incompatible format version: got {0}, expected {1}")]
+    VersionMismatch(u32, u32),
 }
 
 /// Execute an upgrade by sending state to a new process
@@ -89,13 +101,19 @@ pub fn execute_upgrade(
 
     log::info!("Created socketpair, child FD: {}", child_fd);
 
-    // Serialize the state
+    // Serialize the state with version header
     let state_bytes =
         bincode::serialize(state).map_err(|e| UpgradeError::Serialization(e.to_string()))?;
 
+    // Prepend magic and version header
+    let mut data_with_header = Vec::with_capacity(HEADER_SIZE + state_bytes.len());
+    data_with_header.extend_from_slice(&UPGRADE_MAGIC.to_le_bytes());
+    data_with_header.extend_from_slice(&UpgradeState::FORMAT_VERSION.to_le_bytes());
+    data_with_header.extend_from_slice(&state_bytes);
+
     log::info!(
         "State serialized: {} bytes, {} FDs",
-        state_bytes.len(),
+        data_with_header.len(),
         fds.len()
     );
 
@@ -130,7 +148,7 @@ pub fn execute_upgrade(
     drop(child_sock);
 
     // Send the state and FDs over the parent socket
-    fd_passing::send_fds(&parent_sock, fds, &state_bytes)?;
+    fd_passing::send_fds(&parent_sock, fds, &data_with_header)?;
 
     log::info!("State and FDs sent");
 
@@ -217,13 +235,19 @@ pub fn execute_upgrade(
         return Err(UpgradeError::TooManyFds(handles.len(), MAX_FDS));
     }
 
-    // Serialize the state
+    // Serialize the state with version header
     let state_bytes =
         bincode::serialize(state).map_err(|e| UpgradeError::Serialization(e.to_string()))?;
 
+    // Prepend magic and version header
+    let mut data_with_header = Vec::with_capacity(HEADER_SIZE + state_bytes.len());
+    data_with_header.extend_from_slice(&UPGRADE_MAGIC.to_le_bytes());
+    data_with_header.extend_from_slice(&UpgradeState::FORMAT_VERSION.to_le_bytes());
+    data_with_header.extend_from_slice(&state_bytes);
+
     log::info!(
         "State serialized: {} bytes, {} handle sets",
-        state_bytes.len(),
+        data_with_header.len(),
         handles.len()
     );
 
@@ -404,7 +428,7 @@ pub fn execute_upgrade(
 
     let upgrade_data = WindowsUpgradeData {
         handles: handle_infos,
-        state_bytes,
+        state_bytes: data_with_header,
     };
 
     // Serialize and send the upgrade data
@@ -470,8 +494,29 @@ pub fn receive_upgrade(fd: RawFd) -> Result<(UpgradeState, Vec<RawFd>), UpgradeE
         fds.len()
     );
 
-    // Deserialize the state
-    let state: UpgradeState = bincode::deserialize(&buf[..data_len])
+    // Validate header
+    if data_len < HEADER_SIZE {
+        return Err(UpgradeError::Deserialization(
+            "Data too short for header".to_string(),
+        ));
+    }
+
+    let magic = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+    let version = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+
+    if magic != UPGRADE_MAGIC {
+        return Err(UpgradeError::InvalidMagic);
+    }
+
+    if version != UpgradeState::FORMAT_VERSION {
+        return Err(UpgradeError::VersionMismatch(
+            version,
+            UpgradeState::FORMAT_VERSION,
+        ));
+    }
+
+    // Deserialize the state (after header)
+    let state: UpgradeState = bincode::deserialize(&buf[HEADER_SIZE..data_len])
         .map_err(|e| UpgradeError::Deserialization(e.to_string()))?;
 
     log::info!(
@@ -556,8 +601,29 @@ pub fn receive_upgrade(
 
     log::info!("Received {} handle sets", upgrade_data.handles.len());
 
-    // Deserialize the state
-    let state: UpgradeState = bincode::deserialize(&upgrade_data.state_bytes)
+    // Validate header
+    if upgrade_data.state_bytes.len() < HEADER_SIZE {
+        return Err(UpgradeError::Deserialization(
+            "State data too short for header".to_string(),
+        ));
+    }
+
+    let magic = u32::from_le_bytes(upgrade_data.state_bytes[0..4].try_into().unwrap());
+    let version = u32::from_le_bytes(upgrade_data.state_bytes[4..8].try_into().unwrap());
+
+    if magic != UPGRADE_MAGIC {
+        return Err(UpgradeError::InvalidMagic);
+    }
+
+    if version != UpgradeState::FORMAT_VERSION {
+        return Err(UpgradeError::VersionMismatch(
+            version,
+            UpgradeState::FORMAT_VERSION,
+        ));
+    }
+
+    // Deserialize the state (after header)
+    let state: UpgradeState = bincode::deserialize(&upgrade_data.state_bytes[HEADER_SIZE..])
         .map_err(|e| UpgradeError::Deserialization(e.to_string()))?;
 
     log::info!(

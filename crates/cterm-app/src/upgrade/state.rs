@@ -22,7 +22,8 @@ pub struct UpgradeState {
 
 impl UpgradeState {
     /// Current format version
-    pub const FORMAT_VERSION: u32 = 1;
+    /// Increment this when making incompatible changes to serialized types
+    pub const FORMAT_VERSION: u32 = 2;
 
     /// Create a new upgrade state
     pub fn new(cterm_version: &str) -> Self {
