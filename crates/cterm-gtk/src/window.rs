@@ -1081,7 +1081,11 @@ impl CtermWindow {
                         }
                         Action::QuickOpenTemplate => {
                             // Activate the quick-open action
-                            window.activate_action("quick-open", None);
+                            gtk4::prelude::ActionGroupExt::activate_action(
+                                &window,
+                                "quick-open",
+                                None,
+                            );
                             return glib::Propagation::Stop;
                         }
                         _ => {}

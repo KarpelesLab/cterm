@@ -11,7 +11,7 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{
     Box as GtkBox, CssProvider, Entry, EventControllerKey, Label, ListBox, ListBoxRow, Orientation,
-    ScrolledWindow, Widget,
+    ScrolledWindow,
 };
 
 /// Height of the Quick Open overlay
