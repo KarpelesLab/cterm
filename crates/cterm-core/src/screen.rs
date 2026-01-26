@@ -838,11 +838,25 @@ impl Screen {
 
         // Add to scrollback if not in alternate screen and scrolling from top
         if !self.modes.alternate_screen && self.scroll_region.top == 0 {
+            let lines_added = scrolled.len();
+            let mut lines_removed = 0;
             for row in scrolled {
                 if self.scrollback.len() >= self.config.scrollback_lines {
                     self.scrollback.pop_front();
+                    lines_removed += 1;
                 }
                 self.scrollback.push_back(row);
+            }
+
+            // If user is viewing scrollback (not at bottom), adjust scroll_offset
+            // to keep the same content visible. Adding lines pushes content "up"
+            // (increasing offset needed), while removing from front pushes content
+            // "down" (decreasing offset needed).
+            if self.scroll_offset > 0 {
+                let net_change = lines_added.saturating_sub(lines_removed);
+                self.scroll_offset += net_change;
+                // Cap at scrollback length (in case viewed content was removed)
+                self.scroll_offset = self.scroll_offset.min(self.scrollback.len());
             }
         }
 
