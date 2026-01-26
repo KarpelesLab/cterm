@@ -15,6 +15,9 @@ use cterm_app::config::{
 };
 use cterm_app::{git_sync, PullResult};
 
+/// Type alias for the on_save callback to avoid clippy::type_complexity warning
+type SaveCallback = Rc<RefCell<Option<Box<dyn Fn(Config)>>>>;
+
 /// Format a Unix timestamp as a human-readable relative time
 fn format_timestamp(ts: i64) -> String {
     let now = SystemTime::now()
@@ -338,7 +341,7 @@ struct PreferencesWidgets {
     git_branch_label: Label,
     git_last_sync_label: Label,
     git_changes_label: Label,
-    on_save_callback: Rc<RefCell<Option<Box<dyn Fn(Config)>>>>,
+    on_save_callback: SaveCallback,
     base_config: Rc<RefCell<Config>>,
 }
 
@@ -592,8 +595,7 @@ pub fn show_preferences_dialog(
     ) = create_git_sync_preferences();
     notebook.append_page(&git_sync_page, Some(&Label::new(Some("Git Sync"))));
 
-    let on_save_callback: Rc<RefCell<Option<Box<dyn Fn(Config)>>>> =
-        Rc::new(RefCell::new(Some(Box::new(on_save))));
+    let on_save_callback: SaveCallback = Rc::new(RefCell::new(Some(Box::new(on_save))));
     let base_config = Rc::new(RefCell::new(config.clone()));
 
     let widgets = Rc::new(PreferencesWidgets {
