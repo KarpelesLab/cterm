@@ -480,6 +480,9 @@ jobs:
           # Copy binary
           cp universal-binary/cterm "$APP_DIR/Contents/MacOS/"
 
+          # Copy icon
+          cp packaging/macos/cterm.icns "$APP_DIR/Contents/Resources/"
+
           # Get version from Cargo.toml
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 
