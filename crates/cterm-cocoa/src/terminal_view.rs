@@ -1211,7 +1211,74 @@ impl TerminalView {
         let view_ptr = &*this as *const _ as usize;
 
         // Spawn shell and register with watchdog
-        this.spawn_shell(config, state.clone());
+        this.spawn_shell(config, state.clone(), None);
+        this.register_pty_with_watchdog();
+
+        // Start the redraw check loop
+        this.schedule_redraw_check(view_ptr, state);
+
+        this
+    }
+
+    /// Create a terminal view with a specified working directory
+    pub fn new_with_cwd(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        cwd: Option<String>,
+    ) -> Retained<Self> {
+        // Create CoreGraphics renderer first to get cell dimensions
+        let font_name = &config.appearance.font.family;
+        let font_size = config.appearance.font.size;
+        let renderer = CGRenderer::new(mtm, font_name, font_size, theme);
+        let (cell_width, cell_height) = renderer.cell_size();
+
+        // Create terminal with default size (will resize later)
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        // Set cell height hint for sixel image positioning
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        // Create shared state for PTY thread communication
+        let state = Arc::new(ViewState {
+            needs_redraw: AtomicBool::new(false),
+            pty_closed: AtomicBool::new(false),
+            view_invalid: AtomicBool::new(false),
+        });
+
+        // Initial frame
+        let frame = NSRect::new(NSPoint::ZERO, NSSize::new(800.0, 600.0));
+
+        // Allocate and initialize
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(TerminalViewIvars {
+            terminal: terminal.clone(),
+            renderer: RefCell::new(Some(renderer)),
+            cell_width,
+            cell_height,
+            state: state.clone(),
+            is_selecting: Cell::new(false),
+            template_name: RefCell::new(None),
+            #[cfg(unix)]
+            watchdog_fd_id: Cell::new(0),
+            marked_text: RefCell::new(String::new()),
+            notification_bar: RefCell::new(None),
+            file_manager: RefCell::new(PendingFileManager::new()),
+            color_palette: theme.colors.clone(),
+        });
+
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+
+        // Create notification bar
+        this.setup_notification_bar(mtm);
+
+        // Store view pointer as usize for thread-safe passing
+        // Safety: We only use this pointer on the main thread via dispatch
+        let view_ptr = &*this as *const _ as usize;
+
+        // Spawn shell and register with watchdog
+        this.spawn_shell(config, state.clone(), cwd);
         this.register_pty_with_watchdog();
 
         // Start the redraw check loop
@@ -1568,7 +1635,7 @@ impl TerminalView {
     }
 
     /// Spawn the shell process
-    fn spawn_shell(&self, config: &Config, state: Arc<ViewState>) {
+    fn spawn_shell(&self, config: &Config, state: Arc<ViewState>, cwd: Option<String>) {
         let shell =
             config.general.default_shell.clone().unwrap_or_else(|| {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
@@ -1587,7 +1654,7 @@ impl TerminalView {
             },
             shell: Some(shell.clone()),
             args,
-            cwd: None,
+            cwd: cwd.map(std::path::PathBuf::from),
             env: Vec::new(),
             term: config.general.term.clone(),
         };
@@ -1801,6 +1868,16 @@ impl TerminalView {
     #[cfg(unix)]
     pub fn foreground_process_name(&self) -> Option<String> {
         self.ivars().terminal.lock().foreground_process_name()
+    }
+
+    /// Get the current working directory of the foreground process (if any)
+    #[cfg(unix)]
+    pub fn foreground_cwd(&self) -> Option<String> {
+        self.ivars()
+            .terminal
+            .lock()
+            .foreground_cwd()
+            .map(|p| p.to_string_lossy().into_owned())
     }
 
     /// Request display update

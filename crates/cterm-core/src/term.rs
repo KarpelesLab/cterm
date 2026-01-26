@@ -268,6 +268,12 @@ impl Terminal {
         self.pty.as_ref().and_then(|p| p.foreground_process_name())
     }
 
+    /// Get the current working directory of the foreground process
+    #[cfg(unix)]
+    pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+        self.pty.as_ref().and_then(|p| p.foreground_cwd())
+    }
+
     /// Get terminal width
     pub fn cols(&self) -> usize {
         self.screen.width()

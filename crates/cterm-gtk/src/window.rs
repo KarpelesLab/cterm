@@ -171,6 +171,21 @@ impl CtermWindow {
             let notification_bar = self.notification_bar.clone();
             let action = gio::SimpleAction::new("new-tab", None);
             action.connect_activate(move |_, _| {
+                // Get the current working directory from the active terminal
+                #[cfg(unix)]
+                let cwd = {
+                    let tabs_borrow = tabs.borrow();
+                    if let Some(page_idx) = notebook.current_page() {
+                        tabs_borrow
+                            .get(page_idx as usize)
+                            .and_then(|entry| entry.terminal.foreground_cwd())
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(not(unix))]
+                let cwd: Option<String> = None;
+
                 create_new_tab(
                     &notebook,
                     &tabs,
@@ -182,6 +197,7 @@ impl CtermWindow {
                     &has_bell,
                     &file_manager,
                     &notification_bar,
+                    cwd,
                 );
             });
             window.add_action(&action);
@@ -915,6 +931,21 @@ impl CtermWindow {
                 if let Some(action) = shortcuts.match_event(key, modifiers) {
                     match action {
                         Action::NewTab => {
+                            // Get the current working directory from the active terminal
+                            #[cfg(unix)]
+                            let cwd = {
+                                let tabs_borrow = tabs.borrow();
+                                if let Some(page_idx) = notebook.current_page() {
+                                    tabs_borrow
+                                        .get(page_idx as usize)
+                                        .and_then(|entry| entry.terminal.foreground_cwd())
+                                } else {
+                                    None
+                                }
+                            };
+                            #[cfg(not(unix))]
+                            let cwd: Option<String> = None;
+
                             create_new_tab(
                                 &notebook,
                                 &tabs,
@@ -926,6 +957,7 @@ impl CtermWindow {
                                 &has_bell,
                                 &file_manager,
                                 &notification_bar,
+                                cwd,
                             );
                             return glib::Propagation::Stop;
                         }
@@ -1346,6 +1378,21 @@ impl CtermWindow {
 
         // New tab button
         self.tab_bar.set_on_new_tab(move || {
+            // Get the current working directory from the active terminal
+            #[cfg(unix)]
+            let cwd = {
+                let tabs_borrow = tabs.borrow();
+                if let Some(page_idx) = notebook.current_page() {
+                    tabs_borrow
+                        .get(page_idx as usize)
+                        .and_then(|entry| entry.terminal.foreground_cwd())
+                } else {
+                    None
+                }
+            };
+            #[cfg(not(unix))]
+            let cwd: Option<String> = None;
+
             create_new_tab(
                 &notebook,
                 &tabs,
@@ -1357,12 +1404,27 @@ impl CtermWindow {
                 &has_bell,
                 &file_manager,
                 &notification_bar,
+                cwd,
             );
         });
     }
 
     /// Create a new tab
     pub fn new_tab(&self) {
+        // Get the current working directory from the active terminal
+        #[cfg(unix)]
+        let cwd = {
+            let tabs = self.tabs.borrow();
+            if let Some(page_idx) = self.notebook.current_page() {
+                tabs.get(page_idx as usize)
+                    .and_then(|entry| entry.terminal.foreground_cwd())
+            } else {
+                None
+            }
+        };
+        #[cfg(not(unix))]
+        let cwd: Option<String> = None;
+
         create_new_tab(
             &self.notebook,
             &self.tabs,
@@ -1374,6 +1436,7 @@ impl CtermWindow {
             &self.has_bell,
             &self.file_manager,
             &self.notification_bar,
+            cwd,
         );
     }
 }
@@ -1391,10 +1454,11 @@ fn create_new_tab(
     has_bell: &Rc<RefCell<bool>>,
     file_manager: &Rc<RefCell<PendingFileManager>>,
     notification_bar: &NotificationBar,
+    cwd: Option<String>,
 ) {
-    // Create terminal widget
+    // Create terminal widget with inherited cwd
     let cfg = config.borrow();
-    let terminal = match TerminalWidget::new(&cfg, theme) {
+    let terminal = match TerminalWidget::new_with_cwd(&cfg, theme, cwd) {
         Ok(t) => t,
         Err(e) => {
             log::error!("Failed to create terminal: {}", e);

@@ -125,7 +125,20 @@ define_class!(
         #[unsafe(method(newWindowForTab:))]
         fn new_window_for_tab(&self, _sender: Option<&objc2::runtime::AnyObject>) -> *mut NSWindow {
             let mtm = MainThreadMarker::from(self);
-            let new_window = CtermWindow::new(mtm, &self.ivars().config, &self.ivars().theme);
+
+            // Get the current working directory from the active terminal
+            #[cfg(unix)]
+            let cwd = self
+                .ivars()
+                .active_terminal
+                .borrow()
+                .as_ref()
+                .and_then(|t| t.foreground_cwd());
+            #[cfg(not(unix))]
+            let cwd: Option<String> = None;
+
+            let new_window =
+                CtermWindow::new_with_cwd(mtm, &self.ivars().config, &self.ivars().theme, cwd);
 
             // Register with AppDelegate for tracking
             let app = NSApplication::sharedApplication(mtm);
@@ -224,6 +237,74 @@ impl CtermWindow {
 
         // Create the terminal view
         let terminal = TerminalView::new(mtm, config, theme);
+        this.setContentView(Some(&terminal));
+
+        // Set content resize increments to snap to character grid
+        let (cell_width, cell_height) = terminal.cell_size();
+        this.setContentResizeIncrements(NSSize::new(cell_width, cell_height));
+
+        *this.ivars().active_terminal.borrow_mut() = Some(terminal);
+
+        this
+    }
+
+    /// Create a window with a specified working directory
+    pub fn new_with_cwd(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        cwd: Option<String>,
+    ) -> Retained<Self> {
+        // Calculate initial window size for 80x24 terminal
+        let cell_width = config.appearance.font.size * 0.6; // Approximate
+        let cell_height = config.appearance.font.size * 1.2;
+        let width = cell_width * 80.0;
+        let height = cell_height * 24.0;
+
+        let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(width, height));
+
+        let style_mask = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable;
+
+        // Allocate and initialize
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(CtermWindowIvars {
+            config: config.clone(),
+            theme: theme.clone(),
+            shortcuts: ShortcutManager::from_config(&config.shortcuts),
+            active_terminal: RefCell::new(None),
+            pending_tab_color: RefCell::new(None),
+        });
+
+        let this: Retained<Self> = unsafe {
+            msg_send![
+                super(this),
+                initWithContentRect: content_rect,
+                styleMask: style_mask,
+                backing: 2u64, // NSBackingStoreBuffered
+                defer: false
+            ]
+        };
+
+        // Set window title
+        this.setTitle(&NSString::from_str("cterm"));
+
+        // Set minimum size
+        this.setMinSize(NSSize::new(400.0, 200.0));
+
+        // Prevent macOS from releasing window on close (we manage lifetime)
+        unsafe { this.setReleasedWhenClosed(false) };
+
+        // Enable native macOS window tabbing
+        this.setTabbingMode(NSWindowTabbingMode::Preferred);
+
+        // Set self as delegate
+        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+
+        // Create the terminal view with cwd
+        let terminal = TerminalView::new_with_cwd(mtm, config, theme, cwd);
         this.setContentView(Some(&terminal));
 
         // Set content resize increments to snap to character grid
@@ -385,8 +466,20 @@ impl CtermWindow {
     pub fn create_new_tab(&self) {
         let mtm = MainThreadMarker::from(self);
 
-        // Create a new window with the same configuration
-        let new_window = CtermWindow::new(mtm, &self.ivars().config, &self.ivars().theme);
+        // Get the current working directory from the active terminal
+        #[cfg(unix)]
+        let cwd = self
+            .ivars()
+            .active_terminal
+            .borrow()
+            .as_ref()
+            .and_then(|t| t.foreground_cwd());
+        #[cfg(not(unix))]
+        let cwd: Option<String> = None;
+
+        // Create a new window with the same configuration and inherited cwd
+        let new_window =
+            CtermWindow::new_with_cwd(mtm, &self.ivars().config, &self.ivars().theme, cwd);
 
         // Register with AppDelegate for tracking (important for relaunch/upgrade)
         let app = NSApplication::sharedApplication(mtm);

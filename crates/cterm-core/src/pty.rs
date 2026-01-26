@@ -292,6 +292,66 @@ mod unix {
                 .map(|s| s.trim().to_string())
         }
 
+        /// Get the current working directory of the foreground process
+        ///
+        /// Returns the cwd if it can be determined, None otherwise.
+        #[cfg(target_os = "macos")]
+        pub fn foreground_cwd(&self) -> Option<PathBuf> {
+            let fg_pgid = self.foreground_process_group().unwrap_or(self.child_pid);
+
+            // On macOS, use proc_pidinfo with PROC_PIDVNODEPATHINFO
+            #[repr(C)]
+            struct VnodePathInfo {
+                pvi_cdir: VnodeInfoPath,
+                pvi_rdir: VnodeInfoPath,
+            }
+
+            #[repr(C)]
+            struct VnodeInfoPath {
+                vip_vi: [u8; 152],    // vnode_info structure (we don't need the details)
+                vip_path: [u8; 1024], // MAXPATHLEN
+            }
+
+            const PROC_PIDVNODEPATHINFO: i32 = 9;
+
+            let mut info: VnodePathInfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<VnodePathInfo>() as i32;
+
+            let ret = unsafe {
+                libc::proc_pidinfo(
+                    fg_pgid,
+                    PROC_PIDVNODEPATHINFO,
+                    0,
+                    &mut info as *mut _ as *mut libc::c_void,
+                    size,
+                )
+            };
+
+            if ret > 0 {
+                // Extract the path from the cdir vnode info
+                let path_bytes = &info.pvi_cdir.vip_path;
+                let nul_pos = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                let path_str = std::str::from_utf8(&path_bytes[..nul_pos]).ok()?;
+                if !path_str.is_empty() {
+                    return Some(PathBuf::from(path_str));
+                }
+            }
+
+            None
+        }
+
+        /// Get the current working directory of the foreground process
+        #[cfg(not(target_os = "macos"))]
+        pub fn foreground_cwd(&self) -> Option<PathBuf> {
+            let fg_pgid = self.foreground_process_group().unwrap_or(self.child_pid);
+
+            // On Linux, read the symlink at /proc/<pid>/cwd
+            std::fs::read_link(format!("/proc/{}/cwd", fg_pgid)).ok()
+        }
+
         /// Try to clone the reader for concurrent access
         pub fn try_clone_reader(&self) -> io::Result<File> {
             let new_fd = unsafe { libc::dup(self.master_fd) };
