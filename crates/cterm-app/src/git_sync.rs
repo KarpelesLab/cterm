@@ -744,4 +744,421 @@ mod tests {
         // Parent should exist even if clone failed
         assert!(temp.path().join("a").join("b").exists());
     }
+
+    // =========================================================================
+    // Integration tests using local bare repository as remote
+    // =========================================================================
+
+    /// Helper to create a bare repository that can be used as a "remote"
+    fn create_bare_remote(temp: &TempDir) -> std::path::PathBuf {
+        let bare_path = temp.path().join("remote.git");
+        fs::create_dir_all(&bare_path).unwrap();
+        run_git(&bare_path, &["init", "--bare"]).unwrap();
+        bare_path
+    }
+
+    /// Helper to create a working repo with a remote pointing to a bare repo
+    fn create_repo_with_remote(temp: &TempDir, bare_path: &Path) -> std::path::PathBuf {
+        let repo_path = temp.path().join("repo");
+        fs::create_dir_all(&repo_path).unwrap();
+        run_git(&repo_path, &["init"]).unwrap();
+
+        // Configure user for commits
+        run_git(&repo_path, &["config", "user.name", "Test User"]).unwrap();
+        run_git(&repo_path, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Add remote - use file:// URL for local bare repo
+        let remote_url = format!("file://{}", bare_path.display());
+        run_git(&repo_path, &["remote", "add", "origin", &remote_url]).unwrap();
+
+        repo_path
+    }
+
+    /// Helper to create a file and commit it
+    fn create_and_commit_file(repo: &Path, filename: &str, content: &str, message: &str) {
+        fs::write(repo.join(filename), content).unwrap();
+        run_git(repo, &["add", filename]).unwrap();
+        run_git(repo, &["commit", "-m", message]).unwrap();
+    }
+
+    #[test]
+    fn test_push_to_bare_remote() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+        let repo = create_repo_with_remote(&temp, &bare);
+
+        // Create initial commit
+        create_and_commit_file(&repo, "config.toml", "key = \"value\"", "Initial commit");
+
+        // Push should succeed
+        let result = run_git(&repo, &["push", "-u", "origin", "main"]);
+        // If main doesn't work, try master (git version dependent)
+        if result.is_err() {
+            run_git(&repo, &["branch", "-M", "master"]).unwrap();
+            run_git(&repo, &["push", "-u", "origin", "master"]).unwrap();
+        }
+
+        // Verify remote has the commit
+        let log = run_git(&bare, &["log", "--oneline"]).unwrap();
+        assert!(log.contains("Initial commit"));
+    }
+
+    #[test]
+    fn test_commit_and_push_to_bare_remote() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+        let repo = create_repo_with_remote(&temp, &bare);
+
+        // Create initial commit and push to establish branch
+        create_and_commit_file(&repo, "init.txt", "init", "Initial commit");
+        let _ = run_git(&repo, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo, &["branch", "-M", "master"])?;
+            run_git(&repo, &["push", "-u", "origin", "master"])
+        });
+
+        // Now test commit_and_push
+        fs::write(repo.join("config.toml"), "setting = true").unwrap();
+        commit_and_push(&repo, "Update config").unwrap();
+
+        // Verify remote has both commits
+        let log = run_git(&bare, &["log", "--oneline"]).unwrap();
+        assert!(log.contains("Update config"));
+    }
+
+    #[test]
+    fn test_pull_from_bare_remote() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create first repo, commit, and push
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "version = 1", "Version 1");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to second repo
+        let repo2 = temp.path().join("repo2");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &repo2).unwrap();
+
+        // Configure user in repo2
+        run_git(&repo2, &["config", "user.name", "Test User"]).unwrap();
+        run_git(&repo2, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Make changes in repo1 and push
+        create_and_commit_file(&repo1, "config.toml", "version = 2", "Version 2");
+        run_git(&repo1, &["push"]).unwrap();
+
+        // Pull in repo2
+        let result = pull_with_conflict_resolution(&repo2).unwrap();
+        assert!(matches!(result, PullResult::Updated));
+
+        // Verify repo2 has the new content
+        let content = fs::read_to_string(repo2.join("config.toml")).unwrap();
+        assert!(content.contains("version = 2"));
+    }
+
+    #[test]
+    fn test_pull_already_up_to_date() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+        let repo = create_repo_with_remote(&temp, &bare);
+
+        // Create initial commit and push
+        create_and_commit_file(&repo, "config.toml", "data = 1", "Initial");
+        let _ = run_git(&repo, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo, &["branch", "-M", "master"])?;
+            run_git(&repo, &["push", "-u", "origin", "master"])
+        });
+
+        // Pull should report up to date
+        let result = pull_with_conflict_resolution(&repo).unwrap();
+        assert!(matches!(result, PullResult::UpToDate));
+    }
+
+    #[test]
+    fn test_sync_status_commits_ahead() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+        let repo = create_repo_with_remote(&temp, &bare);
+
+        // Create initial commit and push
+        create_and_commit_file(&repo, "config.toml", "v1", "Initial");
+        let _ = run_git(&repo, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo, &["branch", "-M", "master"])?;
+            run_git(&repo, &["push", "-u", "origin", "master"])
+        });
+
+        // Make local commit without pushing
+        create_and_commit_file(&repo, "config.toml", "v2", "Local change");
+
+        let status = get_sync_status(&repo);
+        assert!(status.is_repo);
+        assert!(status.commits_ahead >= 1);
+        assert_eq!(status.commits_behind, 0);
+        assert!(!status.has_local_changes); // Changes are committed
+        assert!(status.has_unpushed);
+    }
+
+    #[test]
+    fn test_sync_status_commits_behind() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create repo1 and push
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "v1", "Initial");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to repo2
+        let repo2 = temp.path().join("repo2");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &repo2).unwrap();
+        run_git(&repo2, &["config", "user.name", "Test"]).unwrap();
+        run_git(&repo2, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Push new commit from repo1
+        create_and_commit_file(&repo1, "config.toml", "v2", "Remote change");
+        run_git(&repo1, &["push"]).unwrap();
+
+        // Fetch in repo2 to update remote tracking
+        run_git(&repo2, &["fetch"]).unwrap();
+
+        let status = get_sync_status(&repo2);
+        assert!(status.is_repo);
+        assert_eq!(status.commits_ahead, 0);
+        assert!(status.commits_behind >= 1);
+    }
+
+    #[test]
+    fn test_sync_status_local_changes() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+        let repo = create_repo_with_remote(&temp, &bare);
+
+        // Create initial commit
+        create_and_commit_file(&repo, "config.toml", "v1", "Initial");
+        let _ = run_git(&repo, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo, &["branch", "-M", "master"])?;
+            run_git(&repo, &["push", "-u", "origin", "master"])
+        });
+
+        // Make uncommitted changes
+        fs::write(repo.join("config.toml"), "v2").unwrap();
+
+        let status = get_sync_status(&repo);
+        assert!(status.has_local_changes);
+    }
+
+    #[test]
+    fn test_conflict_resolution_remote_wins() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create repo1 and push
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "original", "Initial");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to repo2
+        let repo2 = temp.path().join("repo2");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &repo2).unwrap();
+        run_git(&repo2, &["config", "user.name", "Test"]).unwrap();
+        run_git(&repo2, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Make conflicting changes: repo1 changes and pushes
+        create_and_commit_file(&repo1, "config.toml", "remote version", "Remote update");
+        run_git(&repo1, &["push"]).unwrap();
+
+        // repo2 makes a different change to the same file and commits
+        create_and_commit_file(&repo2, "config.toml", "local version", "Local update");
+
+        // Pull should resolve conflict (remote wins based on the implementation)
+        let result = pull_with_conflict_resolution(&repo2).unwrap();
+
+        // The implementation does hard reset to remote on rebase failure,
+        // so remote version should win
+        let content = fs::read_to_string(repo2.join("config.toml")).unwrap();
+        // After conflict resolution, content should be from remote
+        assert!(
+            matches!(result, PullResult::ConflictsResolved(_))
+                || matches!(result, PullResult::Updated),
+            "Expected conflict resolution or update, got {:?}",
+            result
+        );
+        assert!(
+            content.contains("remote version"),
+            "Remote version should win, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_pull_with_local_uncommitted_changes() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create repo1 and push
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "v1", "Initial");
+        create_and_commit_file(&repo1, "other.toml", "data", "Add other file");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to repo2
+        let repo2 = temp.path().join("repo2");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &repo2).unwrap();
+        run_git(&repo2, &["config", "user.name", "Test"]).unwrap();
+        run_git(&repo2, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Make changes in repo1 and push (to a different file)
+        create_and_commit_file(&repo1, "other.toml", "new data", "Update other");
+        run_git(&repo1, &["push"]).unwrap();
+
+        // Make uncommitted local changes in repo2 (to config.toml)
+        fs::write(repo2.join("config.toml"), "local uncommitted").unwrap();
+
+        // Pull should stash, pull, and restore local changes
+        let result = pull_with_conflict_resolution(&repo2);
+        assert!(result.is_ok(), "Pull should succeed: {:?}", result);
+
+        // Local uncommitted changes to config.toml should be preserved
+        let config_content = fs::read_to_string(repo2.join("config.toml")).unwrap();
+        assert!(
+            config_content.contains("local uncommitted"),
+            "Local changes should be preserved, got: {}",
+            config_content
+        );
+
+        // Remote changes to other.toml should be pulled
+        let other_content = fs::read_to_string(repo2.join("other.toml")).unwrap();
+        assert!(
+            other_content.contains("new data"),
+            "Remote changes should be pulled, got: {}",
+            other_content
+        );
+    }
+
+    #[test]
+    fn test_init_with_remote_pulls_existing_content() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create repo1 and push initial content
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "remote content", "Initial");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Create new repo and init with remote
+        let repo2 = temp.path().join("repo2");
+        fs::create_dir_all(&repo2).unwrap();
+        let remote_url = format!("file://{}", bare.display());
+        let result = init_with_remote(&repo2, &remote_url).unwrap();
+
+        // Should pull remote content
+        assert_eq!(result, InitResult::PulledRemote);
+
+        // Verify content was pulled
+        let content = fs::read_to_string(repo2.join("config.toml")).unwrap();
+        assert!(content.contains("remote content"));
+    }
+
+    #[test]
+    fn test_clone_and_verify_content() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create source repo with content
+        let source = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(
+            &source,
+            "config.toml",
+            "[general]\ntheme = \"dark\"",
+            "Config",
+        );
+
+        // Create subdirectory and file
+        fs::create_dir_all(source.join("themes")).unwrap();
+        fs::write(source.join("themes/custom.toml"), "name = \"custom\"").unwrap();
+        run_git(&source, &["add", "themes/custom.toml"]).unwrap();
+        run_git(&source, &["commit", "-m", "Add theme"]).unwrap();
+
+        let _ = run_git(&source, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&source, &["branch", "-M", "master"])?;
+            run_git(&source, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to new location
+        let clone_path = temp.path().join("cloned");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &clone_path).unwrap();
+
+        // Verify all content
+        assert!(clone_path.join("config.toml").exists());
+        assert!(clone_path.join("themes/custom.toml").exists());
+
+        let config = fs::read_to_string(clone_path.join("config.toml")).unwrap();
+        assert!(config.contains("theme = \"dark\""));
+
+        let theme = fs::read_to_string(clone_path.join("themes/custom.toml")).unwrap();
+        assert!(theme.contains("name = \"custom\""));
+    }
+
+    #[test]
+    fn test_multiple_commits_sync() {
+        let temp = TempDir::new().unwrap();
+        let bare = create_bare_remote(&temp);
+
+        // Create repo1 and push
+        let repo1 = create_repo_with_remote(&temp, &bare);
+        create_and_commit_file(&repo1, "config.toml", "v1", "Version 1");
+        let _ = run_git(&repo1, &["push", "-u", "origin", "main"]).or_else(|_| {
+            run_git(&repo1, &["branch", "-M", "master"])?;
+            run_git(&repo1, &["push", "-u", "origin", "master"])
+        });
+
+        // Clone to repo2
+        let repo2 = temp.path().join("repo2");
+        let remote_url = format!("file://{}", bare.display());
+        clone_repo(&remote_url, &repo2).unwrap();
+        run_git(&repo2, &["config", "user.name", "Test"]).unwrap();
+        run_git(&repo2, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Make multiple commits in repo1
+        create_and_commit_file(&repo1, "config.toml", "v2", "Version 2");
+        create_and_commit_file(&repo1, "config.toml", "v3", "Version 3");
+        create_and_commit_file(&repo1, "config.toml", "v4", "Version 4");
+        run_git(&repo1, &["push"]).unwrap();
+
+        // Fetch and check status before pull
+        run_git(&repo2, &["fetch"]).unwrap();
+        let status = get_sync_status(&repo2);
+        assert!(status.commits_behind >= 3, "Should be 3+ commits behind");
+
+        // Pull all commits
+        let result = pull_with_conflict_resolution(&repo2).unwrap();
+        assert!(matches!(result, PullResult::Updated));
+
+        // Verify final state
+        let content = fs::read_to_string(repo2.join("config.toml")).unwrap();
+        assert!(content.contains("v4"));
+
+        let status = get_sync_status(&repo2);
+        assert_eq!(status.commits_behind, 0);
+    }
 }
