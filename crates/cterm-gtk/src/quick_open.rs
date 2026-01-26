@@ -33,6 +33,7 @@ pub struct QuickOpenOverlay {
     /// Results list
     results_list: ListBox,
     /// Scrolled window for results
+    #[allow(dead_code)]
     results_scroll: ScrolledWindow,
     /// All available templates
     templates: Rc<RefCell<Vec<StickyTabConfig>>>,
@@ -215,6 +216,7 @@ impl QuickOpenOverlay {
     }
 
     /// Check if the overlay is visible
+    #[allow(dead_code)]
     pub fn is_visible(&self) -> bool {
         self.container.is_visible()
     }
