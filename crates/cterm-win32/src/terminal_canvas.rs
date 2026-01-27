@@ -114,8 +114,9 @@ impl TerminalRenderer {
         let mut rect = RECT::default();
         unsafe { GetClientRect(self.hwnd, &mut rect)? };
 
-        let width = (rect.right - rect.left) as u32;
-        let height = (rect.bottom - rect.top) as u32;
+        // Ensure minimum size of 1x1 to avoid D2D errors
+        let width = ((rect.right - rect.left) as u32).max(1);
+        let height = ((rect.bottom - rect.top) as u32).max(1);
 
         // Get DPI
         self.dpi = DpiInfo::for_window(self.hwnd);
@@ -169,6 +170,9 @@ impl TerminalRenderer {
 
         let scaled_font_size = self.dpi.scale_f32(self.font_size);
 
+        // Locale for DirectWrite (empty string = user default)
+        let locale: Vec<u16> = "".encode_utf16().chain(std::iter::once(0)).collect();
+
         // Create normal text format
         let text_format = unsafe {
             self.dwrite_factory.CreateTextFormat(
@@ -178,7 +182,7 @@ impl TerminalRenderer {
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 scaled_font_size,
-                PCWSTR::null(),
+                PCWSTR(locale.as_ptr()),
             )?
         };
 
@@ -191,7 +195,7 @@ impl TerminalRenderer {
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 scaled_font_size,
-                PCWSTR::null(),
+                PCWSTR(locale.as_ptr()),
             )?
         };
 
