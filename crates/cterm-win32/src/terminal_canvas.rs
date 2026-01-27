@@ -162,42 +162,67 @@ impl TerminalRenderer {
 
     /// Create text format and measure cell dimensions
     fn create_text_format(&mut self) -> windows::core::Result<()> {
-        let font_family_wide: Vec<u16> = self
-            .font_family
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
         let scaled_font_size = self.dpi.scale_f32(self.font_size);
 
         // Locale for DirectWrite (empty string = user default)
         let locale: Vec<u16> = "".encode_utf16().chain(std::iter::once(0)).collect();
 
-        // Create normal text format
-        let text_format = unsafe {
-            self.dwrite_factory.CreateTextFormat(
-                PCWSTR(font_family_wide.as_ptr()),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                scaled_font_size,
-                PCWSTR(locale.as_ptr()),
-            )?
-        };
+        // Try each font in the comma-separated list until one works
+        let font_families: Vec<&str> = self.font_family.split(',').map(|s| s.trim()).collect();
 
-        // Create bold text format
-        let text_format_bold = unsafe {
-            self.dwrite_factory.CreateTextFormat(
-                PCWSTR(font_family_wide.as_ptr()),
-                None,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                scaled_font_size,
-                PCWSTR(locale.as_ptr()),
-            )?
-        };
+        let mut text_format = None;
+        let mut text_format_bold = None;
+
+        for font_family in &font_families {
+            let font_family_wide: Vec<u16> = font_family
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+
+            // Try to create normal text format
+            let result = unsafe {
+                self.dwrite_factory.CreateTextFormat(
+                    PCWSTR(font_family_wide.as_ptr()),
+                    None,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    scaled_font_size,
+                    PCWSTR(locale.as_ptr()),
+                )
+            };
+
+            if let Ok(tf) = result {
+                // Also create bold variant
+                let bold_result = unsafe {
+                    self.dwrite_factory.CreateTextFormat(
+                        PCWSTR(font_family_wide.as_ptr()),
+                        None,
+                        DWRITE_FONT_WEIGHT_BOLD,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        scaled_font_size,
+                        PCWSTR(locale.as_ptr()),
+                    )
+                };
+
+                if let Ok(tfb) = bold_result {
+                    text_format = Some(tf);
+                    text_format_bold = Some(tfb);
+                    log::info!("Using font: {}", font_family);
+                    break;
+                }
+            }
+        }
+
+        // If no font worked, return error
+        let text_format = text_format.ok_or_else(|| {
+            windows::core::Error::new(
+                windows::core::HRESULT(-1),
+                format!("No suitable font found in: {}", self.font_family).into(),
+            )
+        })?;
+        let text_format_bold = text_format_bold.unwrap();
 
         // Measure cell dimensions using 'M' character
         let test_char: Vec<u16> = "M".encode_utf16().collect();

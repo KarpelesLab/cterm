@@ -289,7 +289,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            family: "monospace".into(),
+            family: Self::default_font_family().into(),
             size: 12.0,
             ligatures: true,
             line_height: 1.0,
@@ -299,6 +299,27 @@ impl Default for FontConfig {
 }
 
 impl FontConfig {
+    /// Get the default font family for the current platform
+    fn default_font_family() -> &'static str {
+        #[cfg(target_os = "windows")]
+        {
+            // Cascadia Mono is included with Windows Terminal and newer Windows
+            // Consolas is the fallback, included since Windows Vista
+            "Cascadia Mono, Consolas"
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // SF Mono is the system monospace font on macOS
+            // Menlo is the fallback for older systems
+            "SF Mono, Menlo"
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            // On Linux, use generic monospace which respects fontconfig
+            "monospace"
+        }
+    }
+
     /// Create config for JetBrains Mono
     pub fn jetbrains_mono() -> Self {
         Self {
