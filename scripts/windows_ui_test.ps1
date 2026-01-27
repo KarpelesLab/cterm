@@ -67,6 +67,7 @@ function Take-Screenshot {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
 
 public struct RECT {
     public int Left;
@@ -76,6 +77,8 @@ public struct RECT {
 }
 
 public class User32 {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
     [DllImport("user32.dll")]
     public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
@@ -91,7 +94,36 @@ public class User32 {
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern int GetWindowTextLength(IntPtr hWnd);
+
     public const uint WM_CLOSE = 0x0010;
+
+    public static IntPtr FindWindowByProcessId(uint processId) {
+        IntPtr result = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == processId && IsWindowVisible(hWnd)) {
+                int length = GetWindowTextLength(hWnd);
+                if (length > 0) {
+                    result = hWnd;
+                    return false; // Stop enumeration
+                }
+            }
+            return true; // Continue
+        }, IntPtr.Zero);
+        return result;
+    }
 }
 "@
 
@@ -114,15 +146,18 @@ $process = Start-Process -FilePath $CtermPath -PassThru
 Log "Process started with PID: $($process.Id)"
 
 # Wait for window to appear
-Log "Waiting for window..."
+Log "Waiting for window (PID: $($process.Id))..."
 $hwnd = [System.IntPtr]::Zero
 $attempts = 0
 $maxAttempts = 30
 
 while ($hwnd -eq [System.IntPtr]::Zero -and $attempts -lt $maxAttempts) {
     Start-Sleep -Milliseconds 500
-    $hwnd = [User32]::FindWindow("ctermWindow", $null)
+    $hwnd = [User32]::FindWindowByProcessId($process.Id)
     $attempts++
+    if ($attempts % 5 -eq 0) {
+        Log "  Attempt $attempts/$maxAttempts..."
+    }
 }
 
 if ($hwnd -eq [System.IntPtr]::Zero) {
