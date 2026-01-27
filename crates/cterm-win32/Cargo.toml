@@ -62,3 +62,7 @@ winapi = { version = "0.3", features = [
     "winuser",
     "wingdi",
 ]}
+
+[dev-dependencies]
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }

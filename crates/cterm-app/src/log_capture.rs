@@ -2,8 +2,14 @@
 //!
 //! Captures log messages in a ring buffer while forwarding to env_logger,
 //! allowing users to view application logs without running from a terminal.
+//!
+//! When the `CTERM_LOG_FILE` environment variable is set, logs are also
+//! written to the specified file path for test automation.
 
 use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use log::{Level, Log, Metadata, Record};
@@ -77,6 +83,9 @@ impl LogBuffer {
 /// Global log buffer
 static LOG_BUFFER: Mutex<Option<LogBuffer>> = Mutex::new(None);
 
+/// Global log file handle (for test automation)
+static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+
 /// Logger that captures to ring buffer and forwards to env_logger
 struct CapturingLogger {
     env_logger: env_logger::Logger,
@@ -97,9 +106,18 @@ impl Log for CapturingLogger {
                 timestamp: std::time::SystemTime::now(),
             };
 
+            // Add to in-memory buffer
             if let Ok(mut guard) = LOG_BUFFER.lock() {
                 if let Some(ref mut buffer) = *guard {
-                    buffer.push(entry);
+                    buffer.push(entry.clone());
+                }
+            }
+
+            // Write to log file if configured
+            if let Ok(mut guard) = LOG_FILE.lock() {
+                if let Some(ref mut file) = *guard {
+                    let _ = writeln!(file, "{}", entry.format());
+                    let _ = file.flush();
                 }
             }
         }
@@ -110,17 +128,44 @@ impl Log for CapturingLogger {
 
     fn flush(&self) {
         self.env_logger.flush();
+        if let Ok(mut guard) = LOG_FILE.lock() {
+            if let Some(ref mut file) = *guard {
+                let _ = file.flush();
+            }
+        }
     }
 }
 
 /// Initialize the capturing logger
 ///
 /// This should be called instead of `env_logger::init()`.
+///
+/// If the `CTERM_LOG_FILE` environment variable is set, logs will also
+/// be written to that file path for test automation.
 pub fn init() {
     // Initialize the buffer
     {
         let mut guard = LOG_BUFFER.lock().unwrap();
         *guard = Some(LogBuffer::new());
+    }
+
+    // Check for log file environment variable
+    if let Ok(log_path) = std::env::var("CTERM_LOG_FILE") {
+        let path = PathBuf::from(&log_path);
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Open or create the log file
+        if let Ok(file) = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
+            let mut guard = LOG_FILE.lock().unwrap();
+            *guard = Some(file);
+        }
     }
 
     // Build env_logger
