@@ -241,17 +241,13 @@ impl WindowState {
                 }
 
                 // Request redraw
-                log::debug!("PTY reader: posting WM_APP_PTY_DATA to hwnd {:#x}", hwnd);
                 unsafe {
-                    let result = PostMessageW(
+                    let _ = PostMessageW(
                         Some(HWND(hwnd as *mut _)),
                         WM_APP_PTY_DATA,
                         WPARAM(tab_id as usize),
                         LPARAM(0),
                     );
-                    if let Err(e) = result {
-                        log::error!("PostMessageW failed: {}", e);
-                    }
                 }
             }
 
@@ -389,10 +385,10 @@ impl WindowState {
 
     /// Invalidate and request redraw
     pub fn invalidate(&self) {
-        log::debug!("Invalidating window for repaint");
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
-            // Force immediate repaint
+            // Force immediate repaint - without UpdateWindow, WM_PAINT may be
+            // deferred until the message queue is empty, causing blank terminal
             let _ = UpdateWindow(self.hwnd);
         };
     }
@@ -400,7 +396,6 @@ impl WindowState {
     /// Render the window
     pub fn render(&mut self) -> windows::core::Result<()> {
         if self.renderer.is_none() {
-            log::warn!("Render called but renderer is None");
             return Ok(());
         }
 
@@ -410,20 +405,10 @@ impl WindowState {
         // Render active terminal
         if let Some(terminal) = terminal {
             let term = terminal.lock().unwrap();
-            let screen = term.screen();
-            log::debug!(
-                "Rendering: grid {}x{}, cursor at ({}, {})",
-                screen.grid().width(),
-                screen.grid().height(),
-                screen.cursor.col,
-                screen.cursor.row
-            );
             // Now get the renderer and render
             if let Some(renderer) = self.renderer.as_mut() {
-                renderer.render(screen)?;
+                renderer.render(term.screen())?;
             }
-        } else {
-            log::warn!("No active terminal to render");
         }
 
         Ok(())
@@ -1204,9 +1189,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let _ = unsafe { BeginPaint(hwnd, &mut ps) };
-            if let Err(e) = state.render() {
-                log::error!("Render failed: {}", e);
-            }
+            state.render().ok();
             let _ = unsafe { EndPaint(hwnd, &ps) };
             LRESULT(0)
         }
@@ -1279,7 +1262,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
         WM_APP_PTY_DATA => {
             let tab_id = wparam.0 as u64;
-            log::debug!("WM_APP_PTY_DATA received for tab {}", tab_id);
             state.on_pty_data(tab_id);
             LRESULT(0)
         }
