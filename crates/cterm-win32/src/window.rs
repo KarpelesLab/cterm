@@ -854,6 +854,7 @@ impl WindowState {
 
     /// Handle PTY data received
     pub fn on_pty_data(&mut self, tab_id: u64) {
+        log::debug!("on_pty_data: tab_id={}", tab_id);
         // Check for file transfers from the terminal
         if let Some(tab) = self.tabs.iter().find(|t| t.id == tab_id) {
             if let Ok(mut terminal) = tab.terminal.lock() {
