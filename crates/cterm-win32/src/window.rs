@@ -239,13 +239,17 @@ impl WindowState {
                 }
 
                 // Request redraw
+                log::debug!("PTY reader: posting WM_APP_PTY_DATA to hwnd {:#x}", hwnd);
                 unsafe {
-                    let _ = PostMessageW(
+                    let result = PostMessageW(
                         Some(HWND(hwnd as *mut _)),
                         WM_APP_PTY_DATA,
                         WPARAM(tab_id as usize),
                         LPARAM(0),
                     );
+                    if let Err(e) = result {
+                        log::error!("PostMessageW failed: {}", e);
+                    }
                 }
             }
 
@@ -1271,6 +1275,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
         WM_APP_PTY_DATA => {
             let tab_id = wparam.0 as u64;
+            log::debug!("WM_APP_PTY_DATA received for tab {}", tab_id);
             state.on_pty_data(tab_id);
             LRESULT(0)
         }
