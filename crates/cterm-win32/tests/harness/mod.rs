@@ -55,8 +55,10 @@ impl TestHarness {
         // Find the cterm executable
         let exe_path = find_cterm_exe()?;
 
-        // Create test output directory
-        let test_dir = std::env::temp_dir().join("cterm_test");
+        // Create test output directory (use CTERM_TEST_DIR env var if set, for CI)
+        let test_dir = std::env::var("CTERM_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("cterm_test"));
         std::fs::create_dir_all(&test_dir)?;
 
         // Create screenshot directory

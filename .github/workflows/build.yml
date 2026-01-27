@@ -336,6 +336,31 @@ jobs:
       - name: Run ctermd integration tests
         run: cargo test -p cterm-headless --test grpc_integration -- --test-threads=1
 
+      - name: Build cterm for UI tests
+        run: cargo build -p cterm
+
+      - name: Run UI integration tests
+        run: cargo test -p cterm-win32 --test ui_integration -- --test-threads=1 --nocapture
+        env:
+          CTERM_TEST_DIR: ${{ runner.temp }}/cterm_test
+        continue-on-error: true
+
+      - name: Upload UI test screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ui-test-screenshots
+          path: ${{ runner.temp }}/cterm_test/screenshots/
+          if-no-files-found: ignore
+
+      - name: Upload UI test logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ui-test-logs
+          path: ${{ runner.temp }}/cterm_test/*.log
+          if-no-files-found: ignore
+
   build-windows:
     name: Build Windows
     runs-on: windows-latest
