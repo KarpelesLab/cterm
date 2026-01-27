@@ -343,6 +343,7 @@ jobs:
         run: cargo test -p cterm-win32 --test ui_integration -- --test-threads=1 --nocapture
         env:
           CTERM_TEST_DIR: ${{ runner.temp }}/cterm_test
+        timeout-minutes: 5
         continue-on-error: true
 
       - name: Upload UI test screenshots
