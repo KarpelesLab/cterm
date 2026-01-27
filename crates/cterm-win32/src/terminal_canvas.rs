@@ -217,10 +217,8 @@ impl TerminalRenderer {
 
         // If no font worked, return error
         let text_format = text_format.ok_or_else(|| {
-            windows::core::Error::new(
-                windows::core::HRESULT(-1),
-                format!("No suitable font found in: {}", self.font_family).into(),
-            )
+            let msg = format!("No suitable font found in: {}", self.font_family);
+            windows::core::Error::new(windows::core::HRESULT(-1), msg)
         })?;
         let text_format_bold = text_format_bold.unwrap();
 
