@@ -385,12 +385,14 @@ impl WindowState {
 
     /// Invalidate and request redraw
     pub fn invalidate(&self) {
+        log::debug!("invalidate: calling InvalidateRect and UpdateWindow");
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
             // Force immediate repaint - without UpdateWindow, WM_PAINT may be
             // deferred until the message queue is empty, causing blank terminal
             let _ = UpdateWindow(self.hwnd);
         };
+        log::debug!("invalidate: done");
     }
 
     /// Render the window
@@ -1188,6 +1190,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
     match msg {
         WM_PAINT => {
+            log::debug!("WM_PAINT received");
             let mut ps = PAINTSTRUCT::default();
             let _ = unsafe { BeginPaint(hwnd, &mut ps) };
             state.render().ok();
