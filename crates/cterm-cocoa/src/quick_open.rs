@@ -99,6 +99,12 @@ define_class!(
         fn control_text_did_change(&self, _notification: &objc2_foundation::NSNotification) {
             self.update_filter();
         }
+
+        #[unsafe(method(controlTextDidEndEditing:))]
+        fn control_text_did_end_editing(&self, _notification: &objc2_foundation::NSNotification) {
+            // Text field lost focus - dismiss the overlay
+            self.hide();
+        }
     }
 
     impl QuickOpenOverlay {
