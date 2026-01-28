@@ -427,7 +427,6 @@ impl WindowState {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.render(term.screen())?;
             }
-        } else {
         }
 
         Ok(())
