@@ -923,11 +923,39 @@ impl AppDelegate {
 
         log::info!("Performing seamless relaunch: {}", binary.display());
 
-        let windows = self.ivars().windows.borrow();
         let mut upgrade_state = UpgradeState::new(env!("CARGO_PKG_VERSION"));
         let mut fds: Vec<RawFd> = Vec::new();
 
-        for window in windows.iter() {
+        // Get windows in tab order using macOS native tabbedWindows
+        // This preserves the actual visual tab order instead of creation order
+        let windows = self.ivars().windows.borrow();
+        let ordered_windows: Vec<Retained<CtermWindow>> = if let Some(first_window) = windows.first() {
+            // Get tabbedWindows from the first window to get correct tab order
+            let tabbed: Option<Retained<objc2_foundation::NSArray<NSWindow>>> =
+                unsafe { msg_send![&**first_window, tabbedWindows] };
+
+            if let Some(tabbed_windows) = tabbed {
+                // Convert NSWindow refs back to CtermWindow refs by matching pointers
+                tabbed_windows
+                    .iter()
+                    .filter_map(|nswin| {
+                        let nswin_ptr = Retained::as_ptr(&nswin);
+                        windows
+                            .iter()
+                            .find(|w| Retained::as_ptr(*w) as *const NSWindow == nswin_ptr)
+                            .cloned()
+                    })
+                    .collect()
+            } else {
+                // Fallback to our stored order
+                windows.iter().cloned().collect()
+            }
+        } else {
+            Vec::new()
+        };
+        drop(windows);
+
+        for window in ordered_windows.iter() {
             let mut window_state = WindowUpgradeState::new();
 
             // Get window frame
@@ -969,9 +997,6 @@ impl AppDelegate {
                 upgrade_state.windows.push(window_state);
             }
         }
-
-        // Release windows borrow before potentially exiting
-        drop(windows);
 
         if upgrade_state.windows.is_empty() {
             log::warn!("No terminals to preserve in relaunch");
