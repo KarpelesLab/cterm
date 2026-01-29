@@ -226,6 +226,8 @@ impl QuickOpenOverlay {
             stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
             stack.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
             stack.setSpacing(2.0);
+            // Use GravityAreas distribution to prevent rows from stretching to fill
+            stack.setDistribution(objc2_app_kit::NSStackViewDistribution::GravityAreas);
             stack
         };
 
