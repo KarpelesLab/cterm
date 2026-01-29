@@ -521,6 +521,24 @@ fn create_window_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
+    // Select Tab by number (Cmd+1 through Cmd+9)
+    for i in 1..=9 {
+        let title = if i == 9 {
+            "Select Last Tab".to_string()
+        } else {
+            format!("Select Tab {}", i)
+        };
+        let item = NSMenuItem::new(mtm);
+        item.setTitle(&NSString::from_str(&title));
+        unsafe { item.setAction(Some(sel!(selectTabByNumber:))) };
+        item.setTag(i as isize);
+        item.setKeyEquivalent(&NSString::from_str(&format!("{}", i)));
+        item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+        menu.addItem(&item);
+    }
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
     // Bring All to Front
     menu.addItem(&create_menu_item(
         mtm,

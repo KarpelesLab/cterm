@@ -448,6 +448,46 @@ define_class!(
             }
         }
 
+        /// Select a tab by number (1-8 for specific tabs, 9 for last tab)
+        #[unsafe(method(selectTabByNumber:))]
+        fn action_select_tab_by_number(&self, sender: Option<&objc2::runtime::AnyObject>) {
+            let Some(sender) = sender else { return };
+            let mtm = MainThreadMarker::from(self);
+            let app = NSApplication::sharedApplication(mtm);
+
+            // Get the tag (1-9) from the menu item
+            let tag: isize = unsafe { msg_send![sender, tag] };
+
+            // Get current key window
+            if let Some(key_window) = app.keyWindow() {
+                // Get all tabbed windows
+                let tabbed_windows: Option<objc2::rc::Retained<objc2_foundation::NSArray<NSWindow>>> =
+                    unsafe { msg_send![&key_window, tabbedWindows] };
+
+                if let Some(windows) = tabbed_windows {
+                    let count = windows.len();
+                    if count == 0 {
+                        return;
+                    }
+
+                    // Determine which tab to select
+                    let index = if tag == 9 {
+                        // Cmd+9 selects the last tab
+                        count - 1
+                    } else {
+                        // Cmd+1 through Cmd+8 select tabs 0-7
+                        (tag as usize).saturating_sub(1)
+                    };
+
+                    // Select the tab if it exists
+                    if let Some(window) = windows.iter().nth(index) {
+                        window.makeKeyAndOrderFront(None);
+                        log::debug!("Selected tab {}", index + 1);
+                    }
+                }
+            }
+        }
+
         /// Open a new tab running in a Docker devcontainer
         #[unsafe(method(openInContainer:))]
         fn action_open_in_container(&self, _sender: Option<&objc2::runtime::AnyObject>) {
