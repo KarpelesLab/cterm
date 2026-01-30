@@ -336,6 +336,69 @@ define_class!(
         fn should_terminate_after_last_window_closed(&self, _sender: &NSApplication) -> bool {
             true
         }
+
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn application_should_terminate(
+            &self,
+            _sender: &NSApplication,
+        ) -> objc2_app_kit::NSApplicationTerminateReply {
+            use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplicationTerminateReply};
+
+            // Check if config says to confirm close with running processes
+            if !self.ivars().config.general.confirm_close_with_running {
+                return NSApplicationTerminateReply::TerminateNow;
+            }
+
+            // Collect all windows with running processes
+            #[cfg(unix)]
+            let running_processes: Vec<String> = {
+                let windows = self.ivars().windows.borrow();
+                windows
+                    .iter()
+                    .filter_map(|window| {
+                        if let Some(terminal) = window.active_terminal() {
+                            if terminal.has_foreground_process() {
+                                return terminal.foreground_process_name();
+                            }
+                        }
+                        None
+                    })
+                    .collect()
+            };
+
+            #[cfg(not(unix))]
+            let running_processes: Vec<String> = Vec::new();
+
+            if running_processes.is_empty() {
+                return NSApplicationTerminateReply::TerminateNow;
+            }
+
+            // Show confirmation dialog
+            let mtm = MainThreadMarker::from(self);
+            let alert = NSAlert::new(mtm);
+
+            let message = if running_processes.len() == 1 {
+                format!("\"{}\" is still running", running_processes[0])
+            } else {
+                format!("{} processes are still running", running_processes.len())
+            };
+
+            alert.setMessageText(&NSString::from_str(&message));
+            alert.setInformativeText(&NSString::from_str(
+                "Quitting will terminate the running process(es). Are you sure you want to quit?",
+            ));
+            alert.setAlertStyle(NSAlertStyle::Warning);
+
+            alert.addButtonWithTitle(&NSString::from_str("Quit"));
+            alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+
+            let response = alert.runModal();
+            if response == NSAlertFirstButtonReturn {
+                NSApplicationTerminateReply::TerminateNow
+            } else {
+                NSApplicationTerminateReply::TerminateCancel
+            }
+        }
     }
 
     // Menu action handlers

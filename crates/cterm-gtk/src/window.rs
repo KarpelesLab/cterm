@@ -153,6 +153,9 @@ impl CtermWindow {
         // Set up tab bar callbacks
         cterm_window.setup_tab_bar_callbacks();
 
+        // Set up close request handler for process confirmation
+        cterm_window.setup_close_request_handler();
+
         cterm_window
     }
 
@@ -233,9 +236,10 @@ impl CtermWindow {
             let tabs = Rc::clone(&tabs);
             let tab_bar = tab_bar.clone();
             let window_clone = window.clone();
+            let config = Rc::clone(&config);
             let action = gio::SimpleAction::new("close-tab", None);
             action.connect_activate(move |_, _| {
-                close_current_tab(&notebook, &tabs, &tab_bar, &window_clone);
+                close_current_tab(&notebook, &tabs, &tab_bar, &window_clone, &config);
             });
             window.add_action(&action);
         }
@@ -1472,6 +1476,63 @@ impl CtermWindow {
         });
     }
 
+    /// Set up close request handler to confirm when closing with running processes
+    #[cfg(unix)]
+    fn setup_close_request_handler(&self) {
+        let tabs = Rc::clone(&self.tabs);
+        let config = Rc::clone(&self.config);
+        let window = self.window.clone();
+
+        self.window.connect_close_request(move |win| {
+            // Check if we should confirm close with running processes
+            let confirm_close = config.borrow().general.confirm_close_with_running;
+            if !confirm_close {
+                return glib::Propagation::Proceed;
+            }
+
+            // Collect tabs with running processes
+            let running_processes: Vec<(String, String)> = {
+                let tabs = tabs.borrow();
+                tabs.iter()
+                    .filter_map(|tab| {
+                        if tab.terminal.has_foreground_process() {
+                            let process_name = tab
+                                .terminal
+                                .foreground_process_name()
+                                .unwrap_or_else(|| "a process".to_string());
+                            Some((tab.title.clone(), process_name))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            if running_processes.is_empty() {
+                // No running processes, allow close
+                return glib::Propagation::Proceed;
+            }
+
+            // Show confirmation dialog
+            let window_clone = window.clone();
+            dialogs::show_close_confirmation_dialog(win, running_processes, move |confirmed| {
+                if confirmed {
+                    // User confirmed, destroy the window
+                    window_clone.destroy();
+                }
+            });
+
+            // Inhibit the close for now - dialog callback will handle it
+            glib::Propagation::Stop
+        });
+    }
+
+    /// Set up close request handler (non-Unix fallback - no process detection)
+    #[cfg(not(unix))]
+    fn setup_close_request_handler(&self) {
+        // No process detection on non-Unix platforms
+    }
+
     /// Create a new tab
     pub fn new_tab(&self) {
         // Get the current working directory from the active terminal
@@ -1543,17 +1604,19 @@ fn create_new_tab(
     // Add to tab bar
     tab_bar.add_tab(tab_id, "Terminal");
 
-    // Set up close callback
+    // Set up close callback (with confirmation for running processes)
     let notebook_close = notebook.clone();
     let tabs_close = Rc::clone(tabs);
     let tab_bar_close = tab_bar.clone();
     let window_close = window.clone();
+    let config_close = Rc::clone(config);
     tab_bar.set_on_close(tab_id, move || {
-        close_tab_by_id(
+        request_close_tab_by_id(
             &notebook_close,
             &tabs_close,
             &tab_bar_close,
             &window_close,
+            &config_close,
             tab_id,
         );
     });
@@ -1761,17 +1824,19 @@ fn create_docker_tab(
     // Set Docker blue color
     tab_bar.set_color(tab_id, Some("#0db7ed"));
 
-    // Set up close callback
+    // Set up close callback (with confirmation for running processes)
     let notebook_close = notebook.clone();
     let tabs_close = Rc::clone(tabs);
     let tab_bar_close = tab_bar.clone();
     let window_close = window.clone();
+    let config_close = Rc::clone(config);
     tab_bar.set_on_close(tab_id, move || {
-        close_tab_by_id(
+        request_close_tab_by_id(
             &notebook_close,
             &tabs_close,
             &tab_bar_close,
             &window_close,
+            &config_close,
             tab_id,
         );
     });
@@ -1979,17 +2044,19 @@ fn create_tab_from_template(
         tab_bar.set_color(tab_id, Some(color));
     }
 
-    // Set up close callback
+    // Set up close callback (with confirmation for running processes)
     let notebook_close = notebook.clone();
     let tabs_close = Rc::clone(tabs);
     let tab_bar_close = tab_bar.clone();
     let window_close = window.clone();
+    let config_close = Rc::clone(config);
     tab_bar.set_on_close(tab_id, move || {
-        close_tab_by_id(
+        request_close_tab_by_id(
             &notebook_close,
             &tabs_close,
             &tab_bar_close,
             &window_close,
+            &config_close,
             tab_id,
         );
     });
@@ -2123,12 +2190,13 @@ fn create_tab_from_template(
     log::info!("Created tab from template: {}", template.name);
 }
 
-/// Close current tab
+/// Close current tab (with confirmation if process is running)
 fn close_current_tab(
     notebook: &Notebook,
     tabs: &Rc<RefCell<Vec<TabEntry>>>,
     tab_bar: &TabBar,
     window: &ApplicationWindow,
+    config: &Rc<RefCell<Config>>,
 ) {
     if let Some(page_idx) = notebook.current_page() {
         let tab_id = {
@@ -2136,12 +2204,12 @@ fn close_current_tab(
             tabs.get(page_idx as usize).map(|t| t.id)
         };
         if let Some(id) = tab_id {
-            close_tab_by_id(notebook, tabs, tab_bar, window, id);
+            request_close_tab_by_id(notebook, tabs, tab_bar, window, config, id);
         }
     }
 }
 
-/// Close tab by ID
+/// Close tab by ID (unconditionally - used when process has already exited)
 fn close_tab_by_id(
     notebook: &Notebook,
     tabs: &Rc<RefCell<Vec<TabEntry>>>,
@@ -2184,6 +2252,70 @@ fn close_tab_by_id(
             widget.grab_focus();
         }
     }
+}
+
+/// Request to close tab by ID - checks for running processes and confirms with user if needed
+#[cfg(unix)]
+fn request_close_tab_by_id(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    config: &Rc<RefCell<Config>>,
+    id: u64,
+) {
+    // Check if we should confirm close with running processes
+    let confirm_close = config.borrow().general.confirm_close_with_running;
+
+    // Find the tab and check for running process
+    let process_info: Option<(String, String)> = {
+        let tabs = tabs.borrow();
+        tabs.iter().find(|t| t.id == id).and_then(|tab| {
+            if confirm_close && tab.terminal.has_foreground_process() {
+                let process_name = tab
+                    .terminal
+                    .foreground_process_name()
+                    .unwrap_or_else(|| "a process".to_string());
+                Some((tab.title.clone(), process_name))
+            } else {
+                None
+            }
+        })
+    };
+
+    if let Some((tab_title, process_name)) = process_info {
+        // Show confirmation dialog
+        let notebook = notebook.clone();
+        let tabs = Rc::clone(tabs);
+        let tab_bar = tab_bar.clone();
+        let window = window.clone();
+
+        dialogs::show_close_confirmation_dialog(
+            &window,
+            vec![(tab_title, process_name)],
+            move |confirmed| {
+                if confirmed {
+                    close_tab_by_id(&notebook, &tabs, &tab_bar, &window, id);
+                }
+            },
+        );
+    } else {
+        // No running process or confirmation disabled - close directly
+        close_tab_by_id(notebook, tabs, tab_bar, window, id);
+    }
+}
+
+/// Request to close tab by ID - non-Unix fallback (no process detection)
+#[cfg(not(unix))]
+fn request_close_tab_by_id(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    _config: &Rc<RefCell<Config>>,
+    id: u64,
+) {
+    close_tab_by_id(notebook, tabs, tab_bar, window, id);
 }
 
 /// Close all tabs except the current one

@@ -447,6 +447,18 @@ impl TerminalWidget {
             .map(|p| p.to_string_lossy().into_owned())
     }
 
+    /// Check if there's a foreground process running (other than the shell)
+    #[cfg(unix)]
+    pub fn has_foreground_process(&self) -> bool {
+        self.terminal.lock().has_foreground_process()
+    }
+
+    /// Get the name of the foreground process (if any)
+    #[cfg(unix)]
+    pub fn foreground_process_name(&self) -> Option<String> {
+        self.terminal.lock().foreground_process_name()
+    }
+
     /// Write a string to the terminal (for paste operations)
     pub fn write_str(&self, s: &str) {
         let mut term = self.terminal.lock();

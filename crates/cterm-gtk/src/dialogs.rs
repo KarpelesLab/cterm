@@ -1086,3 +1086,71 @@ fn create_git_sync_preferences() -> (GtkBox, Entry, Label, Label, Label, Label, 
         sync_button,
     )
 }
+
+/// Show a confirmation dialog when closing with running processes
+///
+/// Returns a future that resolves to true if the user confirms, false otherwise.
+/// The `processes` parameter is a list of (tab_title, process_name) tuples.
+pub fn show_close_confirmation_dialog<F>(
+    parent: &impl IsA<Window>,
+    processes: Vec<(String, String)>,
+    callback: F,
+) where
+    F: Fn(bool) + 'static,
+{
+    let dialog = Dialog::builder()
+        .title("Processes Running")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Close Anyway", ResponseType::Ok);
+
+    let content = dialog.content_area();
+    content.set_spacing(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    // Build message based on number of processes
+    let message = if processes.len() == 1 {
+        let (_, process_name) = &processes[0];
+        format!("\"{}\" is still running.", process_name)
+    } else {
+        format!("{} processes are still running.", processes.len())
+    };
+
+    let message_label = Label::new(Some(&message));
+    message_label.set_halign(Align::Start);
+    message_label.set_wrap(true);
+    content.append(&message_label);
+
+    // If multiple processes, list them
+    if processes.len() > 1 {
+        let list_box = GtkBox::new(Orientation::Vertical, 4);
+        list_box.set_margin_top(8);
+        for (tab_title, process_name) in &processes {
+            let item = Label::new(Some(&format!("• {} ({})", process_name, tab_title)));
+            item.set_halign(Align::Start);
+            list_box.append(&item);
+        }
+        content.append(&list_box);
+    }
+
+    let info_label = Label::new(Some(
+        "Closing will terminate the running process(es). Are you sure?",
+    ));
+    info_label.set_halign(Align::Start);
+    info_label.set_wrap(true);
+    info_label.set_margin_top(8);
+    content.append(&info_label);
+
+    dialog.connect_response(move |dialog, response| {
+        callback(response == ResponseType::Ok);
+        dialog.close();
+    });
+
+    dialog.present();
+}

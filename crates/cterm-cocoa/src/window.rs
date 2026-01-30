@@ -72,6 +72,11 @@ define_class!(
 
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _sender: &NSWindow) -> objc2::runtime::Bool {
+            // Check if config says to confirm close with running processes
+            if !self.ivars().config.general.confirm_close_with_running {
+                return objc2::runtime::Bool::YES;
+            }
+
             // Check if there's a foreground process running
             #[cfg(unix)]
             if let Some(terminal) = self.ivars().active_terminal.borrow().as_ref() {
