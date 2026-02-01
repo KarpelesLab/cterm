@@ -66,30 +66,11 @@ impl NotificationBar {
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
 
-        // Set background color
+        // Enable layer backing for the view
         this.setWantsLayer(true);
-        if let Some(layer) = this.layer() {
-            unsafe {
-                // Use CGColorCreateGenericRGB to create CGColor directly
-                // This avoids NSColor CGColor conversion issues on some macOS versions
-                #[link(name = "CoreGraphics", kind = "framework")]
-                extern "C" {
-                    fn CGColorCreateGenericRGB(
-                        red: f64,
-                        green: f64,
-                        blue: f64,
-                        alpha: f64,
-                    ) -> *mut std::ffi::c_void;
-                    fn CGColorRelease(color: *mut std::ffi::c_void);
-                }
-
-                let cg_color = CGColorCreateGenericRGB(0.2, 0.2, 0.2, 0.95);
-                if !cg_color.is_null() {
-                    let _: () = msg_send![&*layer, setBackgroundColor: cg_color];
-                    CGColorRelease(cg_color);
-                }
-            }
-        }
+        // Note: Background color setting removed due to CGColorRef type compatibility issues
+        // with objc2 on some macOS versions. The notification bar will use the default
+        // transparent background, which still works fine visually.
 
         // Create and position UI elements
         this.setup_ui(mtm, width);

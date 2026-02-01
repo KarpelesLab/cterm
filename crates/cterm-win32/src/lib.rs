@@ -184,7 +184,9 @@ mod tests {
             fullscreen: false,
             maximized: false,
             title: None,
+            no_watchdog: false,
         };
         assert!(!args.fullscreen);
+        assert!(!args.no_watchdog);
     }
 }
