@@ -114,45 +114,62 @@ log "Process started with PID: $CTERM_PID"
 log "Waiting for window..."
 ATTEMPTS=0
 MAX_ATTEMPTS=30
+WINDOW_FOUND=false
 
 while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
     sleep 0.5
-    # Check if cterm has a window by checking if it's in the window list
+
+    # Try multiple methods to detect the window
+    # Method 1: By PID (may not work without accessibility permissions)
     WINDOW_COUNT=$(osascript -e 'tell application "System Events" to count windows of (processes whose unix id is '$CTERM_PID')' 2>/dev/null) || WINDOW_COUNT=0
+
+    # Method 2: By process name "cterm"
+    if [ "$WINDOW_COUNT" -eq 0 ]; then
+        WINDOW_COUNT=$(osascript -e 'tell application "System Events" to count windows of (processes whose name is "cterm")' 2>/dev/null) || WINDOW_COUNT=0
+    fi
+
     if [ "$WINDOW_COUNT" -gt 0 ]; then
+        WINDOW_FOUND=true
         break
     fi
+
     ATTEMPTS=$((ATTEMPTS + 1))
     if [ $((ATTEMPTS % 5)) -eq 0 ]; then
         log "  Attempt $ATTEMPTS/$MAX_ATTEMPTS..."
     fi
 done
 
-if [ "$WINDOW_COUNT" -eq 0 ] 2>/dev/null; then
-    log "ERROR: Window not found after $MAX_ATTEMPTS attempts"
-    take_screenshot "error_no_window"
-
-    # Check if process is still running
+# Even if window detection failed, check if process is running and try to proceed
+if [ "$WINDOW_FOUND" != "true" ]; then
     if kill -0 $CTERM_PID 2>/dev/null; then
-        log "Process is still running, killing..."
-        kill $CTERM_PID 2>/dev/null || true
-    fi
+        log "Window detection failed but process is running - trying to proceed anyway"
+        # Wait a bit more for window to be ready
+        sleep 2
+    else
+        log "ERROR: Window not found and process is not running"
+        take_screenshot "error_no_window"
 
-    # Show cterm log if exists
-    if [ -f "$CTERM_LOG_FILE" ]; then
-        log "cterm log contents:"
-        cat "$CTERM_LOG_FILE" | while read line; do log "  $line"; done
-    fi
+        # Show cterm log if exists
+        if [ -f "$CTERM_LOG_FILE" ]; then
+            log "cterm log contents:"
+            cat "$CTERM_LOG_FILE" | while read line; do log "  $line"; done
+        fi
 
-    exit 1
+        exit 1
+    fi
+else
+    log "Window found"
 fi
-
-log "Window found"
 
 # Activate cterm window
 log "Activating cterm window..."
+# Try by PID first, then by name
 osascript -e "tell application \"System Events\"
-    set frontmost of (first process whose unix id is $CTERM_PID) to true
+    try
+        set frontmost of (first process whose unix id is $CTERM_PID) to true
+    on error
+        set frontmost of (first process whose name is \"cterm\") to true
+    end try
 end tell" 2>/dev/null || true
 sleep 1
 
