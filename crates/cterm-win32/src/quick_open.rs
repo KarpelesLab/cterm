@@ -73,8 +73,8 @@ unsafe extern "system" fn quick_open_dialog_proc(
             let notification = ((wparam >> 16) & 0xFFFF) as u16;
             let id = (wparam & 0xFFFF) as i32;
 
-            match (id, notification as u32) {
-                (IDC_SEARCH_EDIT, EN_CHANGE) => {
+            match (id, notification) {
+                (IDC_SEARCH_EDIT, n) if n == EN_CHANGE => {
                     // Search text changed - update filter
                     let edit = GetDlgItem(hwnd, IDC_SEARCH_EDIT);
                     let len = GetWindowTextLengthW(edit) as usize;
@@ -85,7 +85,7 @@ unsafe extern "system" fn quick_open_dialog_proc(
                     0
                 }
 
-                (IDC_RESULTS_LIST, LBN_DBLCLK) => {
+                (IDC_RESULTS_LIST, n) if n == LBN_DBLCLK => {
                     // Double-click on list item - select it
                     let listbox = GetDlgItem(hwnd, IDC_RESULTS_LIST);
                     let sel = SendMessageW(listbox, LB_GETCURSEL, 0, 0) as i32;

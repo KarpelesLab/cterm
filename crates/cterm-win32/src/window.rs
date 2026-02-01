@@ -202,34 +202,36 @@ impl WindowState {
         };
 
         // Build the shell command and args from the template
-        let (shell, args) = if let Some(ref cmd) = template.command {
+        let (shell, args) = if let Some(ref docker) = template.docker {
+            // Docker tab
+            match docker.mode {
+                cterm_app::config::DockerMode::Exec => {
+                    // Docker exec into container
+                    let container = docker.container.clone().unwrap_or_default();
+                    let shell_cmd = docker
+                        .shell
+                        .clone()
+                        .unwrap_or_else(|| "/bin/sh".to_string());
+                    (
+                        Some("docker".to_string()),
+                        vec!["exec".to_string(), "-it".to_string(), container, shell_cmd],
+                    )
+                }
+                cterm_app::config::DockerMode::Run
+                | cterm_app::config::DockerMode::DevContainer => {
+                    // Docker run image
+                    let image = docker.image.clone().unwrap_or_else(|| "ubuntu".to_string());
+                    let mut run_args = vec!["run".to_string(), "-it".to_string()];
+                    if docker.auto_remove {
+                        run_args.push("--rm".to_string());
+                    }
+                    run_args.push(image);
+                    (Some("docker".to_string()), run_args)
+                }
+            }
+        } else if let Some(ref cmd) = template.command {
             // Use template command
             (Some(cmd.clone()), template.args.clone())
-        } else if let Some(ref container) = template.docker_container {
-            // Docker exec into container
-            (
-                Some("docker".to_string()),
-                vec![
-                    "exec".to_string(),
-                    "-it".to_string(),
-                    container.clone(),
-                    template
-                        .docker_shell
-                        .clone()
-                        .unwrap_or_else(|| "/bin/sh".to_string()),
-                ],
-            )
-        } else if let Some(ref image) = template.docker_image {
-            // Docker run image
-            (
-                Some("docker".to_string()),
-                vec![
-                    "run".to_string(),
-                    "-it".to_string(),
-                    "--rm".to_string(),
-                    image.clone(),
-                ],
-            )
         } else {
             // Use default shell
             (self.config.general.default_shell.clone(), Vec::new())
@@ -245,7 +247,7 @@ impl WindowState {
             shell,
             args,
             cwd: template
-                .cwd
+                .working_directory
                 .clone()
                 .or_else(|| self.config.general.working_directory.clone()),
             env: template
@@ -712,7 +714,7 @@ impl WindowState {
                 }
                 MenuAction::QuickOpen => {
                     // Show Quick Open dialog
-                    let templates = cterm_app::get_templates();
+                    let templates = cterm_app::load_sticky_tabs().unwrap_or_default();
                     if let Some(template) = crate::quick_open::show_quick_open(self.hwnd, templates)
                     {
                         // Create a new tab with the selected template

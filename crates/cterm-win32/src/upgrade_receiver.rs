@@ -5,7 +5,7 @@
 //! terminal state and PTY handles, then reconstructs the windows and tabs.
 
 use std::os::windows::io::RawHandle;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -152,7 +152,6 @@ fn create_restored_window(
     handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
 ) -> Result<HWND, Box<dyn std::error::Error>> {
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     let class_name: Vec<u16> = crate::window::WINDOW_CLASS
@@ -191,7 +190,7 @@ fn create_restored_window(
             tab_state.id,
             tab_state.title,
             tab_state.pty_fd_index,
-            tab_state.child_pid
+            tab_state.process_id
         );
 
         match create_restored_tab(config, tab_state, handles, &mut state, hwnd) {
