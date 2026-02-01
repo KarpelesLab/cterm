@@ -49,7 +49,7 @@ pub struct TabEntry {
     /// Whether title was explicitly set (locks out OSC updates)
     pub title_locked: bool,
     #[allow(dead_code)]
-    reader_handle: Option<thread::JoinHandle<()>>,
+    pub reader_handle: Option<thread::JoinHandle<()>>,
 }
 
 /// Window state

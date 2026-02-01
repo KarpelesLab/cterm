@@ -36,7 +36,7 @@ unsafe extern "system" fn quick_open_dialog_proc(
     hwnd: HWND,
     msg: UINT,
     wparam: WPARAM,
-    lparam: LPARAM,
+    _lparam: LPARAM,
 ) -> INT_PTR {
     match msg {
         WM_INITDIALOG => {
