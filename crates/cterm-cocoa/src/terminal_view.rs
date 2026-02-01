@@ -1006,6 +1006,31 @@ define_class!(
                 log::debug!("Copied URL to clipboard: {}", url);
             }
         }
+
+        /// Older insertText: method (some input methods use this instead of insertText:replacementRange:)
+        /// This is an NSResponder method, not part of NSTextInputClient protocol
+        #[unsafe(method(insertText:))]
+        fn insert_text(&self, string: &AnyObject) {
+            log::debug!("insertText: called (NSResponder method)");
+            // Clear marked text and send the text
+            self.ivars().marked_text.borrow_mut().clear();
+
+            // Get the string content (could be NSString or NSAttributedString)
+            let text: String = unsafe {
+                if msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)] {
+                    let attr_str: &NSAttributedString = &*(string as *const _ as *const _);
+                    attr_str.string().to_string()
+                } else {
+                    let ns_str: &NSString = &*(string as *const _ as *const _);
+                    ns_str.to_string()
+                }
+            };
+
+            if !text.is_empty() {
+                log::debug!("IME insert text (old method): {:?}", text);
+                self.write_to_pty(text.as_bytes());
+            }
+        }
     }
 
     // NSTextInputClient protocol for IME support (Japanese, Chinese, Korean, etc.)
@@ -1049,30 +1074,6 @@ define_class!(
             // We don't handle any commands - let the responder chain handle them
             // This is important: we need to call super or the input system won't work
             let _: () = unsafe { msg_send![super(self), doCommandBySelector: selector] };
-        }
-
-        /// Older insertText: method (some input methods use this instead of insertText:replacementRange:)
-        #[unsafe(method(insertText:))]
-        fn insert_text(&self, string: &AnyObject) {
-            log::debug!("NSTextInputClient: insertText: called (old method)");
-            // Clear marked text and send the text
-            self.ivars().marked_text.borrow_mut().clear();
-
-            // Get the string content (could be NSString or NSAttributedString)
-            let text: String = unsafe {
-                if msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)] {
-                    let attr_str: &NSAttributedString = &*(string as *const _ as *const _);
-                    attr_str.string().to_string()
-                } else {
-                    let ns_str: &NSString = &*(string as *const _ as *const _);
-                    ns_str.to_string()
-                }
-            };
-
-            if !text.is_empty() {
-                log::debug!("IME insert text (old method): {:?}", text);
-                self.write_to_pty(text.as_bytes());
-            }
         }
 
         #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
