@@ -41,6 +41,8 @@ struct ViewState {
     title: std::sync::RwLock<String>,
     /// Flag indicating title has changed and needs UI update
     title_changed: AtomicBool,
+    /// Whether title was explicitly set by user or template (locks out OSC updates)
+    title_locked: AtomicBool,
 }
 
 /// Terminal view state
@@ -791,6 +793,8 @@ define_class!(
                 if let Some(window) = self.window() {
                     window.setTitle(&new_title);
                 }
+                // Lock the title so OSC sequences won't override it
+                self.ivars().state.title_locked.store(true, Ordering::Relaxed);
             }
         }
 
@@ -1209,6 +1213,7 @@ impl TerminalView {
             view_invalid: AtomicBool::new(false),
             title: std::sync::RwLock::new(String::new()),
             title_changed: AtomicBool::new(false),
+            title_locked: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -1286,6 +1291,7 @@ impl TerminalView {
             view_invalid: AtomicBool::new(false),
             title: std::sync::RwLock::new(String::new()),
             title_changed: AtomicBool::new(false),
+            title_locked: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -1361,6 +1367,7 @@ impl TerminalView {
             view_invalid: AtomicBool::new(false),
             title: std::sync::RwLock::new(String::new()),
             title_changed: AtomicBool::new(false),
+            title_locked: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -1445,6 +1452,7 @@ impl TerminalView {
             view_invalid: AtomicBool::new(false),
             title: std::sync::RwLock::new(String::new()),
             title_changed: AtomicBool::new(false),
+            title_locked: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -1555,6 +1563,7 @@ impl TerminalView {
             view_invalid: AtomicBool::new(false),
             title: std::sync::RwLock::new(String::new()),
             title_changed: AtomicBool::new(false),
+            title_locked: AtomicBool::new(false),
         });
 
         // Initial frame
@@ -1660,10 +1669,12 @@ impl TerminalView {
                     break;
                 }
 
-                // Check for title change
+                // Check for title change (only if title is not locked by user/template)
                 if state.title_changed.swap(false, Ordering::Relaxed) {
-                    // Only dispatch if view is still valid
-                    if !state.view_invalid.load(Ordering::SeqCst) {
+                    // Only update if title is not locked and view is still valid
+                    if !state.title_locked.load(Ordering::Relaxed)
+                        && !state.view_invalid.load(Ordering::SeqCst)
+                    {
                         // Get the new title
                         let new_title = state.title.read().map(|t| t.clone()).unwrap_or_default();
                         #[allow(deprecated)]
@@ -1822,10 +1833,11 @@ impl TerminalView {
                     term.screen_mut().title = initial_title.clone();
                 }
 
-                // Update window title
+                // Update window title and lock it (template name is preferred)
                 if let Some(window) = self.window() {
                     window.setTitle(&NSString::from_str(&initial_title));
                 }
+                state.title_locked.store(true, Ordering::Relaxed);
 
                 // Start reading from PTY in background
                 let pty_fd = pty.raw_fd();
