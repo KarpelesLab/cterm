@@ -1218,20 +1218,26 @@ impl TerminalView {
         });
 
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        log::debug!("TerminalView: NSView initialized");
 
         // Create notification bar
         this.setup_notification_bar(mtm);
+        log::debug!("TerminalView: notification bar set up");
 
         // Store view pointer as usize for thread-safe passing
         // Safety: We only use this pointer on the main thread via dispatch
         let view_ptr = &*this as *const _ as usize;
 
         // Spawn shell and register with watchdog
+        log::debug!("TerminalView: spawning shell...");
         this.spawn_shell(config, state.clone(), None);
+        log::debug!("TerminalView: shell spawned");
         this.register_pty_with_watchdog();
+        log::debug!("TerminalView: registered with watchdog");
 
         // Start the redraw check loop
         this.schedule_redraw_check(view_ptr, state);
+        log::debug!("TerminalView: redraw check scheduled");
 
         this
     }

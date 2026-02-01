@@ -313,17 +313,22 @@ define_class!(
             }
 
             // Normal startup - create the main window
+            log::debug!("Creating main window...");
             let window = CtermWindow::new(mtm, &self.ivars().config, &self.ivars().theme);
+            log::debug!("Main window created");
 
             // Store window reference
             self.ivars().windows.borrow_mut().push(window.clone());
+            log::debug!("Window stored in windows list");
 
             // Show the window
             window.makeKeyAndOrderFront(None);
+            log::info!("Window shown (makeKeyAndOrderFront)");
 
             // Activate the app to bring window to front
             #[allow(deprecated)]
             NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+            log::debug!("App activated");
 
             // Start periodic state saving (only if running under watchdog)
             #[cfg(unix)]
