@@ -54,6 +54,10 @@ pub struct Args {
     /// Receive upgrade state from parent process via inherited FD (internal use)
     #[arg(long, hide = true)]
     pub upgrade_receiver: Option<i32>,
+
+    /// Disable watchdog supervision (run directly without crash recovery)
+    #[arg(long)]
+    pub no_watchdog: bool,
 }
 
 /// Global application arguments (accessible from window creation)

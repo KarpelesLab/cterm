@@ -70,9 +70,24 @@ impl NotificationBar {
         this.setWantsLayer(true);
         if let Some(layer) = this.layer() {
             unsafe {
-                let color = NSColor::colorWithSRGBRed_green_blue_alpha(0.2, 0.2, 0.2, 0.95);
-                let cg_color: *mut std::ffi::c_void = msg_send![&*color, CGColor];
-                let _: () = msg_send![&*layer, setBackgroundColor: cg_color];
+                // Use CGColorCreateGenericRGB to create CGColor directly
+                // This avoids NSColor CGColor conversion issues on some macOS versions
+                #[link(name = "CoreGraphics", kind = "framework")]
+                extern "C" {
+                    fn CGColorCreateGenericRGB(
+                        red: f64,
+                        green: f64,
+                        blue: f64,
+                        alpha: f64,
+                    ) -> *mut std::ffi::c_void;
+                    fn CGColorRelease(color: *mut std::ffi::c_void);
+                }
+
+                let cg_color = CGColorCreateGenericRGB(0.2, 0.2, 0.2, 0.95);
+                if !cg_color.is_null() {
+                    let _: () = msg_send![&*layer, setBackgroundColor: cg_color];
+                    CGColorRelease(cg_color);
+                }
             }
         }
 

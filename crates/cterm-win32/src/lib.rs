@@ -57,6 +57,10 @@ pub struct Args {
     /// Set the window title
     #[arg(short = 't', long = "title")]
     pub title: Option<String>,
+
+    /// Disable watchdog supervision (run directly without crash recovery)
+    #[arg(long)]
+    pub no_watchdog: bool,
 }
 
 /// Global application arguments (accessible from window creation)
