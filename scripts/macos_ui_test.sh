@@ -104,9 +104,9 @@ fi
 export RUST_LOG=debug
 export CTERM_LOG_FILE="$OUTPUT_DIR/cterm.log"
 
-# Start cterm in background
+# Start cterm in background (disable watchdog for CI testing)
 log "Starting cterm..."
-"$CTERM_PATH" &
+"$CTERM_PATH" --no-watchdog &
 CTERM_PID=$!
 log "Process started with PID: $CTERM_PID"
 
