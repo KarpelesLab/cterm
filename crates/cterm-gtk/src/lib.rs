@@ -100,6 +100,8 @@ pub fn run() {
     });
 
     // Run the application
-    let exit_code = app.run();
+    // Use run_with_args with empty args to prevent GTK from parsing
+    // the command line (which contains --no-watchdog that GTK doesn't know)
+    let exit_code = app.run_with_args(&[] as &[&str]);
     std::process::exit(exit_code.value());
 }
