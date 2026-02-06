@@ -79,6 +79,9 @@ impl ShortcutManager {
         self.bind(Shortcut::ctrl(KeyCode::Key8), Action::Tab(8));
         self.bind(Shortcut::ctrl(KeyCode::Key9), Action::Tab(9));
 
+        // Next alerted tab
+        self.bind(Shortcut::ctrl_shift(KeyCode::B), Action::NextAlertedTab);
+
         // Window shortcuts
         self.bind(Shortcut::ctrl_shift(KeyCode::N), Action::NewWindow);
         self.bind(Shortcut::ctrl_shift(KeyCode::Q), Action::CloseWindow);

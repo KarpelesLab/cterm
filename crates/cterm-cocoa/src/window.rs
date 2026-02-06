@@ -456,6 +456,11 @@ impl CtermWindow {
         }
     }
 
+    /// Check if this window has an active bell notification
+    pub fn has_bell(&self) -> bool {
+        self.ivars().has_active_bell.get()
+    }
+
     /// Show the Quick Open overlay for template selection
     pub fn show_quick_open(&self) {
         let mtm = MainThreadMarker::from(self);

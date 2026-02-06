@@ -1126,6 +1126,25 @@ impl CtermWindow {
                             }
                             return glib::Propagation::Stop;
                         }
+                        Action::NextAlertedTab => {
+                            let n = notebook.n_pages();
+                            if n > 0 {
+                                let current = notebook.current_page().unwrap_or(0) as usize;
+                                let tabs_ref = tabs.borrow();
+                                for offset in 1..tabs_ref.len() {
+                                    let idx = (current + offset) % tabs_ref.len();
+                                    if let Some(entry) = tabs_ref.get(idx) {
+                                        if tab_bar.has_bell(entry.id) {
+                                            drop(tabs_ref);
+                                            notebook.set_current_page(Some(idx as u32));
+                                            sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            return glib::Propagation::Stop;
+                        }
                         Action::Tab(n) => {
                             let idx = (*n as u32).saturating_sub(1);
                             if idx < notebook.n_pages() {

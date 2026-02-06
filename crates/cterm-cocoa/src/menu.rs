@@ -607,6 +607,16 @@ fn create_window_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
+    menu.addItem(&create_menu_item_with_key(
+        mtm,
+        "Next Alerted Tab",
+        Some(sel!(selectNextAlertedTab:)),
+        "b",
+        NSEventModifierFlags::Command.union(NSEventModifierFlags::Shift),
+    ));
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
     // Select Tab by number (Cmd+1 through Cmd+9)
     for i in 1..=9 {
         let title = if i == 9 {

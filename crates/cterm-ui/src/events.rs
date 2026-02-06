@@ -333,6 +333,7 @@ pub enum Action {
     CloseTab,
     NextTab,
     PrevTab,
+    NextAlertedTab,
     Tab(u8), // Tab 1-9
 
     // Window actions

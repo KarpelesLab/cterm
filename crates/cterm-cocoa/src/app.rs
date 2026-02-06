@@ -526,6 +526,50 @@ define_class!(
             }
         }
 
+        /// Select the next tab that has an active bell indicator
+        #[unsafe(method(selectNextAlertedTab:))]
+        fn action_select_next_alerted_tab(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            let app = NSApplication::sharedApplication(mtm);
+
+            if let Some(key_window) = app.keyWindow() {
+                let tabbed_windows: Option<
+                    objc2::rc::Retained<objc2_foundation::NSArray<NSWindow>>,
+                > = unsafe { msg_send![&key_window, tabbedWindows] };
+
+                if let Some(windows) = tabbed_windows {
+                    let count = windows.len();
+                    if count == 0 {
+                        return;
+                    }
+
+                    // Find current window's index
+                    let current_ptr = objc2::rc::Retained::as_ptr(&key_window);
+                    let current_index = windows
+                        .iter()
+                        .position(|w| objc2::rc::Retained::as_ptr(&w) == current_ptr)
+                        .unwrap_or(0);
+
+                    // Search from current_index + 1, wrapping around
+                    for offset in 1..count {
+                        let idx = (current_index + offset) % count;
+                        if let Some(window) = windows.iter().nth(idx) {
+                            let window_ptr =
+                                objc2::rc::Retained::as_ptr(&window) as *const CtermWindow;
+                            let cterm_window: &CtermWindow = unsafe { &*window_ptr };
+                            if cterm_window.has_bell() {
+                                window.makeKeyAndOrderFront(None);
+                                log::debug!("Switched to alerted tab at index {}", idx);
+                                return;
+                            }
+                        }
+                    }
+
+                    log::debug!("No alerted tabs found");
+                }
+            }
+        }
+
         /// Select a tab by number (1-8 for specific tabs, 9 for last tab)
         #[unsafe(method(selectTabByNumber:))]
         fn action_select_tab_by_number(&self, sender: Option<&objc2::runtime::AnyObject>) {
