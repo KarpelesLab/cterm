@@ -1110,12 +1110,29 @@ impl TerminalWidget {
                                                 }
                                             }
                                             ClipboardOperation::Query { selection } => {
-                                                // Query clipboard and send response
-                                                // Note: GTK clipboard read is async, but we'll handle it synchronously for simplicity
-                                                log::debug!("Clipboard query via OSC 52 (async not implemented)");
-                                                // For now, send empty response
-                                                let _ =
-                                                    term.send_clipboard_response(selection, b"");
+                                                // Query clipboard and send response asynchronously
+                                                log::debug!("Clipboard query via OSC 52");
+                                                let terminal_clip = Arc::clone(&terminal_main);
+                                                let sel = selection;
+                                                clipboard.read_text_async(
+                                                    None::<&gio::Cancellable>,
+                                                    move |result| {
+                                                        let text = result
+                                                            .ok()
+                                                            .flatten()
+                                                            .map(|s| s.to_string())
+                                                            .unwrap_or_default();
+                                                        let mut term = terminal_clip.lock();
+                                                        let _ = term.send_clipboard_response(
+                                                            sel,
+                                                            text.as_bytes(),
+                                                        );
+                                                        log::debug!(
+                                                            "Sent clipboard response: {} bytes",
+                                                            text.len()
+                                                        );
+                                                    },
+                                                );
                                             }
                                         }
                                     }
