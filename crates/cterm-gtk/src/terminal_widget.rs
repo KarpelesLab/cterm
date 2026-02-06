@@ -674,6 +674,47 @@ impl TerminalWidget {
         }
     }
 
+    /// Get the selected text as HTML (if any)
+    pub fn get_selected_html(&self) -> Option<String> {
+        let term = self.terminal.lock();
+        term.screen().get_selected_html(&self.theme.colors)
+    }
+
+    /// Copy the current selection to clipboard as HTML
+    pub fn copy_selection_html(&self) {
+        let term = self.terminal.lock();
+        let html = term.screen().get_selected_html(&self.theme.colors);
+        let text = term.screen().get_selected_text();
+        drop(term);
+
+        if let (Some(html), Some(_text)) = (html, text) {
+            if let Some(display) = gdk::Display::default() {
+                let clipboard = display.clipboard();
+                // GTK4 clipboard can hold multiple formats via ContentProvider
+                // For simplicity, we set HTML as text - most apps will interpret it
+                // A full implementation would use ContentProvider with multiple MIME types
+                clipboard.set_text(&html);
+                log::debug!("Copied {} chars as HTML to clipboard", html.len());
+            }
+        }
+    }
+
+    /// Select all text in the terminal
+    pub fn select_all(&self) {
+        let mut term = self.terminal.lock();
+        let total_lines = term.screen().total_lines();
+        let width = term.screen().width();
+
+        // Select from the first line to the last line
+        term.screen_mut()
+            .start_selection(0, 0, cterm_core::screen::SelectionMode::Char);
+        term.screen_mut()
+            .extend_selection(total_lines.saturating_sub(1), width.saturating_sub(1));
+        drop(term);
+
+        self.drawing_area.queue_draw();
+    }
+
     /// Copy the current selection to primary selection (Unix only)
     #[cfg(unix)]
     #[allow(dead_code)]

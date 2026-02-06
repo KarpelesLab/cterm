@@ -671,26 +671,19 @@ impl WindowState {
             }
             Action::Copy => self.copy_selection(),
             Action::Paste => self.paste(),
-            Action::ZoomIn => {
-                // TODO: Implement zoom
-            }
-            Action::ZoomOut => {
-                // TODO: Implement zoom
-            }
-            Action::ZoomReset => {
-                // TODO: Implement zoom reset
-            }
+            Action::ZoomIn => self.zoom_in(),
+            Action::ZoomOut => self.zoom_out(),
+            Action::ZoomReset => self.zoom_reset(),
             Action::CloseWindow => {
                 unsafe {
                     let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 };
             }
             Action::NewWindow => {
-                // TODO: Implement new window
+                // New window requires app-level handling, not implemented for shortcuts
+                log::debug!("NewWindow action from shortcut not implemented");
             }
-            Action::FindText => {
-                // TODO: Show find dialog
-            }
+            Action::FindText => self.show_find_dialog(),
             Action::ResetTerminal => {
                 if let Some(terminal) = self.active_terminal() {
                     let mut term = terminal.lock().unwrap();
@@ -902,20 +895,25 @@ impl WindowState {
         if let Some(options) = crate::dialogs::show_find_dialog(self.hwnd.0 as *mut _) {
             // Perform search in terminal
             if let Some(terminal) = self.active_terminal() {
-                let term = terminal.lock().unwrap();
+                let mut term = terminal.lock().unwrap();
                 let results =
                     term.screen()
                         .find(&options.text, options.case_sensitive, options.regex);
                 if !results.is_empty() {
                     log::info!("Found {} matches for: {}", results.len(), options.text);
-                    // TODO: Highlight first result and allow navigation
+                    // Scroll to first result
+                    if let Some(first) = results.first() {
+                        term.scroll_to_line(first.line);
+                    }
                 } else {
+                    drop(term);
                     crate::dialogs::show_message(
                         self.hwnd.0 as *mut _,
                         "Find",
                         &format!("'{}' not found", options.text),
                         winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION,
                     );
+                    return;
                 }
                 drop(term);
             }
@@ -940,14 +938,14 @@ impl WindowState {
         self.invalidate();
     }
 
-    /// Copy selection as HTML (for now, just copy as plain text with formatting note)
+    /// Copy selection as HTML
     fn copy_selection_as_html(&mut self) {
         if let Some(terminal) = self.active_terminal() {
             let term = terminal.lock().unwrap();
-            if let Some(text) = term.screen().get_selected_text() {
-                // For now, copy as plain text
-                // TODO: Implement HTML conversion with ANSI colors
-                clipboard::copy_to_clipboard(&text).ok();
+            if let Some(html) = term.screen().get_selected_html(&self.theme.colors) {
+                // Copy HTML to clipboard
+                clipboard::copy_to_clipboard(&html).ok();
+                log::debug!("Copied {} chars as HTML to clipboard", html.len());
             }
         }
     }

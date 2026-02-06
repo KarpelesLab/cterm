@@ -360,10 +360,17 @@ impl CtermWindow {
         }
 
         {
-            // Copy as HTML - placeholder
+            // Copy as HTML
+            let notebook_copy_html = notebook.clone();
+            let tabs_copy_html = Rc::clone(&tabs);
             let action = gio::SimpleAction::new("copy-html", None);
-            action.connect_activate(|_, _| {
-                log::info!("Copy as HTML action triggered - not yet implemented");
+            action.connect_activate(move |_, _| {
+                if let Some(page_idx) = notebook_copy_html.current_page() {
+                    let tabs = tabs_copy_html.borrow();
+                    if let Some(tab) = tabs.get(page_idx as usize) {
+                        tab.terminal.copy_selection_html();
+                    }
+                }
             });
             window.add_action(&action);
         }
@@ -393,10 +400,17 @@ impl CtermWindow {
         }
 
         {
-            // Select All - placeholder
+            // Select All
+            let notebook_select = notebook.clone();
+            let tabs_select = Rc::clone(&tabs);
             let action = gio::SimpleAction::new("select-all", None);
-            action.connect_activate(|_, _| {
-                log::info!("Select All action triggered - selection not yet implemented");
+            action.connect_activate(move |_, _| {
+                if let Some(page_idx) = notebook_select.current_page() {
+                    let tabs = tabs_select.borrow();
+                    if let Some(tab) = tabs.get(page_idx as usize) {
+                        tab.terminal.select_all();
+                    }
+                }
             });
             window.add_action(&action);
         }
