@@ -253,6 +253,22 @@ impl Terminal {
         self.pty.as_ref().and_then(|p| p.dup_fd().ok())
     }
 
+    /// Get upgrade handles for the PTY (Windows only)
+    ///
+    /// Returns (hpc, read_pipe, write_pipe, process_handle, process_id)
+    #[cfg(windows)]
+    pub fn get_upgrade_handles(
+        &self,
+    ) -> Option<(
+        std::os::windows::io::RawHandle,
+        std::os::windows::io::RawHandle,
+        std::os::windows::io::RawHandle,
+        std::os::windows::io::RawHandle,
+        u32,
+    )> {
+        self.pty.as_ref().map(|p| p.get_upgrade_handles())
+    }
+
     /// Check if there's a foreground process running (other than the shell)
     #[cfg(unix)]
     pub fn has_foreground_process(&self) -> bool {

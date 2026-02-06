@@ -14,7 +14,6 @@ mod tab_bar;
 mod tab_templates_dialog;
 mod terminal_widget;
 mod update_dialog;
-#[cfg(unix)]
 mod upgrade_receiver;
 mod window;
 
@@ -51,9 +50,10 @@ pub struct Args {
     #[arg(short = 't', long = "title")]
     pub title: Option<String>,
 
-    /// Receive upgrade state from parent process via inherited FD (internal use)
+    /// Receive upgrade state from parent process via inherited FD/handle (internal use)
+    /// On Unix: file descriptor (i32), On Windows: handle value (usize)
     #[arg(long, hide = true)]
-    pub upgrade_receiver: Option<i32>,
+    pub upgrade_receiver: Option<u64>,
 
     /// Disable watchdog supervision (run directly without crash recovery)
     #[arg(long)]
@@ -79,10 +79,9 @@ pub fn run() {
     log::info!("Starting cterm");
 
     // Check if we're in upgrade receiver mode
-    #[cfg(unix)]
-    if let Some(fd) = args.upgrade_receiver {
-        log::info!("Running in upgrade receiver mode with FD {}", fd);
-        let exit_code = upgrade_receiver::run_receiver(fd);
+    if let Some(handle) = args.upgrade_receiver {
+        log::info!("Running in upgrade receiver mode with handle {}", handle);
+        let exit_code = upgrade_receiver::run_receiver(handle);
         std::process::exit(exit_code.value());
     }
 

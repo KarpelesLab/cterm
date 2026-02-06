@@ -793,15 +793,144 @@ impl CtermWindow {
             window.add_action(&action);
         }
 
-        // Non-Unix fallback for execute-upgrade
-        #[cfg(not(unix))]
+        // Windows implementation of execute-upgrade
+        #[cfg(windows)]
         {
+            let tabs = Rc::clone(&tabs);
+            let window_clone = window.clone();
             let action = gio::SimpleAction::new(
                 "execute-upgrade",
                 Some(&glib::VariantType::new("s").unwrap()),
             );
-            action.connect_activate(|_, _| {
-                log::warn!("Seamless upgrade not supported on this platform");
+            action.connect_activate(move |_, param| {
+                if let Some(binary_path) = param.and_then(|p| p.get::<String>()) {
+                    log::info!("Executing seamless upgrade with binary: {}", binary_path);
+
+                    // Collect upgrade state from current window
+                    let tabs_borrowed = tabs.borrow();
+
+                    // Build upgrade state
+                    let mut upgrade_state =
+                        cterm_app::upgrade::UpgradeState::new(env!("CARGO_PKG_VERSION"));
+
+                    // Collect window state
+                    let mut window_state = cterm_app::upgrade::WindowUpgradeState::new();
+                    window_state.width = window_clone.default_width();
+                    window_state.height = window_clone.default_height();
+                    window_state.maximized = window_clone.is_maximized();
+                    window_state.fullscreen = window_clone.is_fullscreen();
+
+                    // Collect handles for terminals
+                    let mut handles: Vec<(
+                        std::os::windows::io::RawHandle,
+                        std::os::windows::io::RawHandle,
+                        std::os::windows::io::RawHandle,
+                        std::os::windows::io::RawHandle,
+                        u32,
+                    )> = Vec::new();
+
+                    for tab in tabs_borrowed.iter() {
+                        let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id, 0, 0);
+                        tab_state.title = tab.title.clone();
+
+                        // Export terminal state
+                        tab_state.terminal = tab.terminal.export_state();
+
+                        // Try to get PTY handles
+                        let term = tab.terminal.terminal().lock();
+                        if let Some(handle_info) = term.get_upgrade_handles() {
+                            tab_state.pty_fd_index = handles.len();
+                            tab_state.child_pid = term.child_pid().unwrap_or(0);
+                            tab_state.process_id = handle_info.4;
+                            handles.push(handle_info);
+                            log::info!(
+                                "Tab {}: Got PTY handles (index {}), child_pid={}, process_id={}",
+                                tab.id,
+                                tab_state.pty_fd_index,
+                                tab_state.child_pid,
+                                tab_state.process_id
+                            );
+                        } else {
+                            log::warn!("Tab {}: Failed to get PTY handles", tab.id);
+                        }
+                        drop(term);
+
+                        window_state.tabs.push(tab_state);
+                    }
+
+                    // Set active tab
+                    window_state.active_tab = 0;
+
+                    upgrade_state.windows.push(window_state);
+
+                    drop(tabs_borrowed);
+
+                    log::info!(
+                        "Collected upgrade state: {} windows, {} handle sets",
+                        upgrade_state.windows.len(),
+                        handles.len()
+                    );
+
+                    // Check if we have any handles to pass
+                    if handles.is_empty() {
+                        log::warn!(
+                            "No PTY handles available for seamless upgrade. \
+                             Terminal sessions will not be preserved."
+                        );
+
+                        // Show warning dialog
+                        let dialog = gtk4::MessageDialog::new(
+                            Some(&window_clone),
+                            gtk4::DialogFlags::MODAL,
+                            gtk4::MessageType::Warning,
+                            gtk4::ButtonsType::OkCancel,
+                            "Seamless upgrade is not fully available.\n\n\
+                             Could not get handles for the terminal sessions. \
+                             Terminal sessions will be lost during upgrade.\n\n\
+                             Continue anyway?",
+                        );
+
+                        let binary = binary_path.clone();
+                        dialog.connect_response(move |d, response| {
+                            d.close();
+                            if response == gtk4::ResponseType::Ok {
+                                // Proceed without handle passing - spawn new process
+                                log::info!("User chose to proceed without seamless upgrade");
+                                if let Err(e) = std::process::Command::new(&binary).spawn() {
+                                    log::error!("Failed to spawn new process: {}", e);
+                                } else {
+                                    // Exit current process
+                                    std::process::exit(0);
+                                }
+                            }
+                        });
+                        dialog.present();
+                        return;
+                    }
+
+                    // Execute the upgrade
+                    let binary = std::path::Path::new(&binary_path);
+                    match cterm_app::upgrade::execute_upgrade(binary, &upgrade_state, &handles) {
+                        Ok(()) => {
+                            log::info!("Upgrade successful, exiting");
+                            std::process::exit(0);
+                        }
+                        Err(e) => {
+                            log::error!("Upgrade failed: {}", e);
+
+                            // Show error dialog
+                            let dialog = gtk4::MessageDialog::new(
+                                Some(&window_clone),
+                                gtk4::DialogFlags::MODAL,
+                                gtk4::MessageType::Error,
+                                gtk4::ButtonsType::Ok,
+                                format!("Upgrade failed: {}", e),
+                            );
+                            dialog.connect_response(|d, _| d.close());
+                            dialog.present();
+                        }
+                    }
+                }
             });
             window.add_action(&action);
         }

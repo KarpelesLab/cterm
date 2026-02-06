@@ -1,8 +1,8 @@
 //! Upgrade receiver - handles receiving state from the old process during seamless upgrade
 //!
 //! This module is used when cterm is started with --upgrade-receiver flag.
-//! It receives state from the parent process via an inherited FD, receives the terminal state
-//! and PTY file descriptors, then reconstructs the windows and tabs.
+//! It receives state from the parent process via an inherited FD/handle, receives the terminal state
+//! and PTY file descriptors/handles, then reconstructs the windows and tabs.
 
 use cterm_app::config::{load_config, Config};
 use cterm_app::upgrade::{receive_upgrade, TabUpgradeState, UpgradeState, WindowUpgradeState};
@@ -15,8 +15,13 @@ use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 use std::cell::RefCell;
-use std::os::unix::io::RawFd;
 use std::rc::Rc;
+
+#[cfg(unix)]
+use std::os::unix::io::RawFd;
+
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 
 use crate::dialogs;
 use crate::menu;
@@ -26,12 +31,12 @@ use crate::terminal_widget::TerminalWidget;
 /// Run the upgrade receiver
 ///
 /// This function:
-/// 1. Reads from the inherited FD passed by the parent
-/// 2. Receives the upgrade state and PTY file descriptors
+/// 1. Reads from the inherited FD/handle passed by the parent
+/// 2. Receives the upgrade state and PTY file descriptors/handles
 /// 3. Sends acknowledgment
 /// 4. Reconstructs the GTK application with the received state
-pub fn run_receiver(fd: i32) -> glib::ExitCode {
-    match receive_and_reconstruct(fd) {
+pub fn run_receiver(handle: u64) -> glib::ExitCode {
+    match receive_and_reconstruct(handle) {
         Ok(()) => glib::ExitCode::SUCCESS,
         Err(e) => {
             log::error!("Upgrade receiver failed: {}", e);
@@ -40,9 +45,10 @@ pub fn run_receiver(fd: i32) -> glib::ExitCode {
     }
 }
 
-fn receive_and_reconstruct(fd: i32) -> Result<(), Box<dyn std::error::Error>> {
+#[cfg(unix)]
+fn receive_and_reconstruct(handle: u64) -> Result<(), Box<dyn std::error::Error>> {
     // Use the upgrade module to receive the state
-    let (state, fds) = receive_upgrade(fd as RawFd)?;
+    let (state, fds) = receive_upgrade(handle as RawFd)?;
 
     log::info!(
         "Upgrade state: format_version={}, cterm_version={}, windows={}",
@@ -54,13 +60,34 @@ fn receive_and_reconstruct(fd: i32) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Starting GTK with restored state...");
 
     // Now start GTK and reconstruct the windows
-    run_gtk_with_state(state, fds)?;
+    run_gtk_with_state_unix(state, fds)?;
 
     Ok(())
 }
 
-/// Start GTK application with the restored state
-fn run_gtk_with_state(
+#[cfg(windows)]
+fn receive_and_reconstruct(handle: u64) -> Result<(), Box<dyn std::error::Error>> {
+    // Use the upgrade module to receive the state
+    let (state, handles) = receive_upgrade(handle as usize)?;
+
+    log::info!(
+        "Upgrade state: format_version={}, cterm_version={}, windows={}",
+        state.format_version,
+        state.cterm_version,
+        state.windows.len()
+    );
+
+    log::info!("Starting GTK with restored state...");
+
+    // Now start GTK and reconstruct the windows
+    run_gtk_with_state_windows(state, handles)?;
+
+    Ok(())
+}
+
+/// Start GTK application with the restored state (Unix)
+#[cfg(unix)]
+fn run_gtk_with_state_unix(
     state: UpgradeState,
     fds: Vec<RawFd>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -69,7 +96,7 @@ fn run_gtk_with_state(
 
     // Store state and FDs for use during window construction
     // We use thread-local storage since GTK callbacks don't easily pass data
-    UPGRADE_STATE.with(|s| {
+    UPGRADE_STATE_UNIX.with(|s| {
         *s.borrow_mut() = Some((state, fds));
     });
 
@@ -82,9 +109,9 @@ fn run_gtk_with_state(
 
     app.connect_activate(|app| {
         // Retrieve the stored state
-        UPGRADE_STATE.with(|s| {
+        UPGRADE_STATE_UNIX.with(|s| {
             if let Some((state, fds)) = s.borrow_mut().take() {
-                reconstruct_windows(app, state, fds);
+                reconstruct_windows_unix(app, state, fds);
             }
         });
     });
@@ -95,14 +122,56 @@ fn run_gtk_with_state(
     Ok(())
 }
 
-// Thread-local storage for upgrade state (used to pass data to GTK callback)
+/// Start GTK application with the restored state (Windows)
+#[cfg(windows)]
+fn run_gtk_with_state_windows(
+    state: UpgradeState,
+    handles: Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk4::gio;
+    use gtk4::Application;
+
+    // Store state and handles for use during window construction
+    UPGRADE_STATE_WINDOWS.with(|s| {
+        *s.borrow_mut() = Some((state, handles));
+    });
+
+    // Use NON_UNIQUE flag to prevent conflicts with the old instance
+    let app = Application::builder()
+        .application_id("com.cterm.terminal")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+
+    app.connect_activate(|app| {
+        // Retrieve the stored state
+        UPGRADE_STATE_WINDOWS.with(|s| {
+            if let Some((state, handles)) = s.borrow_mut().take() {
+                reconstruct_windows_windows(app, state, handles);
+            }
+        });
+    });
+
+    app.run_with_args(&[] as &[&str]);
+    Ok(())
+}
+
+// Thread-local storage for upgrade state (Unix)
+#[cfg(unix)]
 thread_local! {
-    static UPGRADE_STATE: std::cell::RefCell<Option<(UpgradeState, Vec<RawFd>)>> =
+    static UPGRADE_STATE_UNIX: std::cell::RefCell<Option<(UpgradeState, Vec<RawFd>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Reconstruct windows from the upgrade state
-fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState, fds: Vec<RawFd>) {
+// Thread-local storage for upgrade state (Windows)
+#[cfg(windows)]
+thread_local! {
+    static UPGRADE_STATE_WINDOWS: std::cell::RefCell<Option<(UpgradeState, Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Reconstruct windows from the upgrade state (Unix)
+#[cfg(unix)]
+fn reconstruct_windows_unix(app: &gtk4::Application, state: UpgradeState, fds: Vec<RawFd>) {
     log::info!("Reconstructing {} windows", state.windows.len());
 
     // Load config and theme
@@ -121,7 +190,7 @@ fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState, fds: Vec<Ra
             window_state.active_tab
         );
 
-        match create_restored_window(app, &config, &theme, window_state, &fds) {
+        match create_restored_window_unix(app, &config, &theme, window_state, &fds) {
             Ok(window) => {
                 window.present();
                 log::info!("Window {} restored successfully", window_idx);
@@ -131,20 +200,84 @@ fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState, fds: Vec<Ra
             }
         }
     }
-
-    // Close received FDs that weren't used (shouldn't happen normally)
-    // Note: FDs that were used are now owned by the NativePty instances
-    // and will be closed when those are dropped
 }
 
-/// Create a restored window with its tabs
-fn create_restored_window(
+/// Reconstruct windows from the upgrade state (Windows)
+#[cfg(windows)]
+fn reconstruct_windows_windows(
+    app: &gtk4::Application,
+    state: UpgradeState,
+    handles: Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>,
+) {
+    log::info!("Reconstructing {} windows", state.windows.len());
+
+    // Load config and theme
+    let config = load_config().unwrap_or_default();
+    let theme = Theme::default();
+
+    for (window_idx, window_state) in state.windows.into_iter().enumerate() {
+        log::info!(
+            "Window {}: {}x{} at ({}, {}), {} tabs, active={}",
+            window_idx,
+            window_state.width,
+            window_state.height,
+            window_state.x,
+            window_state.y,
+            window_state.tabs.len(),
+            window_state.active_tab
+        );
+
+        match create_restored_window_windows(app, &config, &theme, window_state, &handles) {
+            Ok(window) => {
+                window.present();
+                log::info!("Window {} restored successfully", window_idx);
+            }
+            Err(e) => {
+                log::error!("Failed to restore window {}: {}", window_idx, e);
+            }
+        }
+    }
+}
+
+/// Create a restored window with its tabs (Unix)
+#[cfg(unix)]
+fn create_restored_window_unix(
     app: &gtk4::Application,
     config: &Config,
     theme: &Theme,
     window_state: WindowUpgradeState,
     fds: &[RawFd],
 ) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>> {
+    create_restored_window_common(app, config, theme, window_state, |tab_state| {
+        create_restored_tab_unix(config, theme, tab_state, fds)
+    })
+}
+
+/// Create a restored window with its tabs (Windows)
+#[cfg(windows)]
+fn create_restored_window_windows(
+    app: &gtk4::Application,
+    config: &Config,
+    theme: &Theme,
+    window_state: WindowUpgradeState,
+    handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
+) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>> {
+    create_restored_window_common(app, config, theme, window_state, |tab_state| {
+        create_restored_tab_windows(config, theme, tab_state, handles)
+    })
+}
+
+/// Common window restoration logic (shared between Unix and Windows)
+fn create_restored_window_common<F>(
+    app: &gtk4::Application,
+    config: &Config,
+    theme: &Theme,
+    window_state: WindowUpgradeState,
+    create_tab: F,
+) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>>
+where
+    F: Fn(TabUpgradeState) -> Result<(u64, String, TerminalWidget), Box<dyn std::error::Error>>,
+{
     use gtk4::{ApplicationWindow, Box as GtkBox, Notebook, Orientation, PopoverMenuBar};
 
     // Create the main window
@@ -154,9 +287,6 @@ fn create_restored_window(
         .default_width(window_state.width)
         .default_height(window_state.height)
         .build();
-
-    // Set position if available (may not work on all window managers)
-    // Note: GTK4 doesn't have a direct way to set window position
 
     // Create the main container
     let main_box = GtkBox::new(Orientation::Vertical, 0);
@@ -203,7 +333,7 @@ fn create_restored_window(
             tab_state.child_pid
         );
 
-        match create_restored_tab(config, theme, tab_state, fds) {
+        match create_tab(tab_state) {
             Ok((tab_id, title, terminal_widget)) => {
                 // Add to notebook
                 notebook.append_page(terminal_widget.widget(), None::<&gtk4::Widget>);
@@ -455,8 +585,9 @@ fn create_restored_window(
     Ok(window)
 }
 
-/// Create a restored terminal tab
-fn create_restored_tab(
+/// Create a restored terminal tab (Unix)
+#[cfg(unix)]
+fn create_restored_tab_unix(
     config: &Config,
     theme: &Theme,
     tab_state: TabUpgradeState,
@@ -476,6 +607,61 @@ fn create_restored_tab(
 
     // Reconstruct Pty from the FD and child PID
     let pty = unsafe { Pty::from_raw_fd(pty_fd, tab_state.child_pid) };
+
+    // Reconstruct Screen from the terminal state
+    let term_state = &tab_state.terminal;
+    let screen_config = ScreenConfig {
+        scrollback_lines: config.general.scrollback_lines,
+    };
+
+    let screen = Screen::from_upgrade_state(
+        term_state.grid.clone(),
+        term_state.scrollback.clone(),
+        term_state.alternate_grid.clone(),
+        term_state.cursor.clone(),
+        term_state.saved_cursor.clone(),
+        term_state.alt_saved_cursor.clone(),
+        term_state.scroll_region,
+        term_state.style.clone(),
+        term_state.modes.clone(),
+        term_state.title.clone(),
+        term_state.scroll_offset,
+        term_state.tab_stops.clone(),
+        screen_config,
+    );
+
+    // Create Terminal with the restored screen and PTY
+    let terminal = Terminal::from_restored(screen, pty);
+
+    // Create TerminalWidget with the restored terminal
+    let terminal_widget = TerminalWidget::from_restored(terminal, config, theme);
+
+    Ok((tab_state.id, tab_state.title, terminal_widget))
+}
+
+/// Create a restored terminal tab (Windows)
+#[cfg(windows)]
+fn create_restored_tab_windows(
+    config: &Config,
+    theme: &Theme,
+    tab_state: TabUpgradeState,
+    handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
+) -> Result<(u64, String, TerminalWidget), Box<dyn std::error::Error>> {
+    // Get the PTY handles for this tab
+    if tab_state.pty_fd_index >= handles.len() {
+        return Err(format!(
+            "PTY handle index {} out of range (max {})",
+            tab_state.pty_fd_index,
+            handles.len()
+        )
+        .into());
+    }
+
+    let (hpc, read_pipe, write_pipe, process_handle, process_id) = handles[tab_state.pty_fd_index];
+
+    // Reconstruct Pty from the handles
+    let pty =
+        unsafe { Pty::from_raw_handles(hpc, read_pipe, write_pipe, process_handle, process_id) };
 
     // Reconstruct Screen from the terminal state
     let term_state = &tab_state.terminal;
