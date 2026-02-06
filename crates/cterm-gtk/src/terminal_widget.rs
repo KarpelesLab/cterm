@@ -674,12 +674,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Get the selected text as HTML (if any)
-    pub fn get_selected_html(&self) -> Option<String> {
-        let term = self.terminal.lock();
-        term.screen().get_selected_html(&self.theme.colors)
-    }
-
     /// Copy the current selection to clipboard as HTML
     pub fn copy_selection_html(&self) {
         let term = self.terminal.lock();

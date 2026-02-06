@@ -1703,43 +1703,43 @@ impl TerminalView {
                 }
 
                 // Check for bell
-                if state.bell_changed.swap(false, Ordering::Relaxed) {
-                    if !state.view_invalid.load(Ordering::SeqCst) {
-                        #[allow(deprecated)]
-                        dispatch2::Queue::main().exec_async(move || {
-                            if view_ptr != 0 {
-                                unsafe {
-                                    let view = &*(view_ptr as *const TerminalView);
-                                    if let Some(window) = view.window() {
-                                        // Only show bell indicator if window is not key (not focused)
-                                        if !window.isKeyWindow() {
-                                            // Get current title and prepend bell emoji if not already present
-                                            let current_title: Retained<NSString> =
-                                                msg_send![&window, title];
-                                            let title_str = current_title.to_string();
-                                            if !title_str.starts_with("🔔 ") {
-                                                let new_title = format!("🔔 {}", title_str);
-                                                window.setTitle(&NSString::from_str(&new_title));
-                                            }
-                                            // Update bell count via our window type
-                                            let window_ptr = Retained::as_ptr(&window)
-                                                as *const crate::window::CtermWindow;
-                                            let cterm_window: &crate::window::CtermWindow =
-                                                &*window_ptr;
-                                            cterm_window.set_bell(true);
+                if state.bell_changed.swap(false, Ordering::Relaxed)
+                    && !state.view_invalid.load(Ordering::SeqCst)
+                {
+                    #[allow(deprecated)]
+                    dispatch2::Queue::main().exec_async(move || {
+                        if view_ptr != 0 {
+                            unsafe {
+                                let view = &*(view_ptr as *const TerminalView);
+                                if let Some(window) = view.window() {
+                                    // Only show bell indicator if window is not key (not focused)
+                                    if !window.isKeyWindow() {
+                                        // Get current title and prepend bell emoji if not already present
+                                        let current_title: Retained<NSString> =
+                                            msg_send![&window, title];
+                                        let title_str = current_title.to_string();
+                                        if !title_str.starts_with("🔔 ") {
+                                            let new_title = format!("🔔 {}", title_str);
+                                            window.setTitle(&NSString::from_str(&new_title));
                                         }
-                                        // Request attention in the dock
-                                        let app = NSApplication::sharedApplication(
-                                            MainThreadMarker::new().unwrap(),
-                                        );
-                                        app.requestUserAttention(
-                                            NSRequestUserAttentionType::InformationalRequest,
-                                        );
+                                        // Update bell count via our window type
+                                        let window_ptr = Retained::as_ptr(&window)
+                                            as *const crate::window::CtermWindow;
+                                        let cterm_window: &crate::window::CtermWindow =
+                                            &*window_ptr;
+                                        cterm_window.set_bell(true);
                                     }
+                                    // Request attention in the dock
+                                    let app = NSApplication::sharedApplication(
+                                        MainThreadMarker::new().unwrap(),
+                                    );
+                                    app.requestUserAttention(
+                                        NSRequestUserAttentionType::InformationalRequest,
+                                    );
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 }
 
                 // Check for redraw

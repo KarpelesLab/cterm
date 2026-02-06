@@ -362,9 +362,10 @@ impl WindowState {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            term: self.config.general.term.clone(),
         };
 
-        let terminal = Terminal::new(screen_config, Some(pty_config))?;
+        let terminal = Terminal::with_shell(cols, rows, screen_config, &pty_config)?;
         let terminal = Arc::new(Mutex::new(terminal));
 
         let reader_handle = self.start_pty_reader(tab_id, Arc::clone(&terminal));
@@ -1197,7 +1198,11 @@ impl WindowState {
     /// Handle bell
     pub fn on_bell(&mut self, tab_id: u64) {
         // Only show bell indicator if this tab is not the current tab
-        let is_current_tab = self.current_tab == Some(tab_id);
+        let is_current_tab = self
+            .tabs
+            .get(self.active_tab_index)
+            .map(|t| t.id == tab_id)
+            .unwrap_or(false);
 
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             if !is_current_tab {
