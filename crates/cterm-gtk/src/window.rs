@@ -644,6 +644,32 @@ impl CtermWindow {
             let notebook = notebook.clone();
             let tabs = Rc::clone(&tabs);
             let tab_bar = tab_bar.clone();
+            let action = gio::SimpleAction::new("next-alerted-tab", None);
+            action.connect_activate(move |_, _| {
+                let n = notebook.n_pages();
+                if n > 0 {
+                    let current = notebook.current_page().unwrap_or(0) as usize;
+                    let tabs_ref = tabs.borrow();
+                    for offset in 1..tabs_ref.len() {
+                        let idx = (current + offset) % tabs_ref.len();
+                        if let Some(entry) = tabs_ref.get(idx) {
+                            if tab_bar.has_bell(entry.id) {
+                                drop(tabs_ref);
+                                notebook.set_current_page(Some(idx as u32));
+                                sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
+        {
+            let notebook = notebook.clone();
+            let tabs = Rc::clone(&tabs);
+            let tab_bar = tab_bar.clone();
             let action =
                 gio::SimpleAction::new("switch-tab", Some(&glib::VariantType::new("s").unwrap()));
             action.connect_activate(move |_, param| {
@@ -1880,6 +1906,7 @@ fn setup_tab_callbacks(
 }
 
 /// Finalize a new tab: store entry, update visibility, switch to it, and focus
+#[allow(clippy::too_many_arguments)]
 fn finalize_new_tab(
     notebook: &Notebook,
     tabs: &Rc<RefCell<Vec<TabEntry>>>,

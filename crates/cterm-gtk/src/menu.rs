@@ -71,6 +71,7 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     let tabs_menu = gio::Menu::new();
     tabs_menu.append(Some("Previous Tab"), Some("win.prev-tab"));
     tabs_menu.append(Some("Next Tab"), Some("win.next-tab"));
+    tabs_menu.append(Some("Next Alerted Tab"), Some("win.next-alerted-tab"));
     // Tab list section will be added dynamically
     menu.append_submenu(Some("Tabs"), &tabs_menu);
 
@@ -101,6 +102,7 @@ pub fn create_tabs_submenu(tab_names: &[(u64, String)]) -> gio::Menu {
 
     menu.append(Some("Previous Tab"), Some("win.prev-tab"));
     menu.append(Some("Next Tab"), Some("win.next-tab"));
+    menu.append(Some("Next Alerted Tab"), Some("win.next-alerted-tab"));
 
     if !tab_names.is_empty() {
         let tabs_section = gio::Menu::new();
