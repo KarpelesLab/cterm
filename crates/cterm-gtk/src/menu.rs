@@ -113,6 +113,7 @@ fn create_tools_submenu() -> gio::Menu {
 
 /// Rebuild the Tools menu in the menu bar (called after preferences save).
 /// Rebuilds the entire menu model and replaces it on the PopoverMenuBar.
+#[allow(dead_code)]
 pub fn rebuild_menu_bar(menu_bar: &gtk4::PopoverMenuBar, show_debug: bool) {
     let menu_model = create_menu_model_with_options(show_debug);
     menu_bar.set_menu_model(Some(&menu_model));
