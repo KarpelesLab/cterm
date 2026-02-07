@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cterm_app::config::{
     config_dir, save_config, Config, CursorStyleConfig, NewTabPosition, TabBarPosition,
-    TabBarVisibility,
+    TabBarVisibility, ToolShortcutEntry,
 };
 use cterm_app::{git_sync, PullResult};
 
@@ -70,6 +70,15 @@ pub struct PreferencesWindowIvars {
     tab_position_popup: RefCell<Option<Retained<NSPopUpButton>>>,
     new_tab_popup: RefCell<Option<Retained<NSPopUpButton>>>,
     show_close_checkbox: RefCell<Option<Retained<NSButton>>>,
+    // Tools tab controls
+    tool_entries_stack: RefCell<Option<Retained<NSStackView>>>,
+    tool_entries: RefCell<
+        Vec<(
+            Retained<NSTextField>,
+            Retained<NSTextField>,
+            Retained<NSTextField>,
+        )>,
+    >,
     // Git Sync tab controls
     git_remote_field: RefCell<Option<Retained<NSTextField>>>,
     git_status_label: RefCell<Option<Retained<NSTextField>>>,
@@ -112,6 +121,33 @@ define_class!(
             self.collect_and_save();
         }
 
+        #[unsafe(method(addToolEntry:))]
+        fn action_add_tool_entry(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            self.add_tool_entry_row(mtm, "", "", "");
+        }
+
+        #[unsafe(method(resetToolDefaults:))]
+        fn action_reset_tool_defaults(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            // Clear existing entries
+            self.ivars().tool_entries.borrow_mut().clear();
+            if let Some(ref stack) = *self.ivars().tool_entries_stack.borrow() {
+                // Remove all arranged subviews (entry rows)
+                let subviews = stack.arrangedSubviews();
+                for view in subviews.iter() {
+                    stack.removeArrangedSubview(&view);
+                    unsafe {
+                        view.removeFromSuperview();
+                    }
+                }
+            }
+            // Add defaults
+            for entry in cterm_app::config::default_tool_shortcuts() {
+                self.add_tool_entry_row(mtm, &entry.name, &entry.command, &entry.args.join(" "));
+            }
+        }
+
         #[unsafe(method(syncNow:))]
         fn action_sync_now(&self, _sender: Option<&objc2::runtime::AnyObject>) {
             self.perform_sync_now();
@@ -150,6 +186,8 @@ impl PreferencesWindow {
             tab_position_popup: RefCell::new(None),
             new_tab_popup: RefCell::new(None),
             show_close_checkbox: RefCell::new(None),
+            tool_entries_stack: RefCell::new(None),
+            tool_entries: RefCell::new(Vec::new()),
             git_remote_field: RefCell::new(None),
             git_status_label: RefCell::new(None),
             git_branch_label: RefCell::new(None),
@@ -201,6 +239,9 @@ impl PreferencesWindow {
 
         let tabs_tab = self.create_tabs_tab(mtm, config);
         tab_view.addTabViewItem(&tabs_tab);
+
+        let tools_tab = self.create_tools_tab(mtm);
+        tab_view.addTabViewItem(&tools_tab);
 
         let git_sync_tab = self.create_git_sync_tab(mtm);
         tab_view.addTabViewItem(&git_sync_tab);
@@ -550,6 +591,167 @@ impl PreferencesWindow {
 
         tab.setView(Some(&stack));
         tab
+    }
+
+    fn create_tools_tab(&self, mtm: MainThreadMarker) -> Retained<NSTabViewItem> {
+        let tab = NSTabViewItem::new();
+        tab.setLabel(&NSString::from_str("Tools"));
+
+        let outer_stack = unsafe {
+            let stack = NSStackView::new(mtm);
+            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Vertical);
+            stack.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
+            stack.setSpacing(12.0);
+            stack.setEdgeInsets(objc2_foundation::NSEdgeInsets {
+                top: 16.0,
+                left: 16.0,
+                bottom: 16.0,
+                right: 16.0,
+            });
+            stack
+        };
+
+        // Header label
+        let header =
+            NSTextField::labelWithString(&NSString::from_str("External Tool Shortcuts"), mtm);
+        unsafe {
+            outer_stack.addArrangedSubview(&header);
+        }
+
+        // Column headers
+        let headers_row = unsafe {
+            let stack = NSStackView::new(mtm);
+            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Horizontal);
+            stack.setSpacing(8.0);
+            stack
+        };
+        let name_header = NSTextField::labelWithString(&NSString::from_str("Name"), mtm);
+        let cmd_header = NSTextField::labelWithString(&NSString::from_str("Command"), mtm);
+        let args_header = NSTextField::labelWithString(&NSString::from_str("Args"), mtm);
+        unsafe {
+            let size = objc2_foundation::NSSize::new(120.0, 17.0);
+            let _: () = msg_send![&name_header, setFrameSize: size];
+            let _: () = msg_send![&cmd_header, setFrameSize: size];
+            let _: () = msg_send![&args_header, setFrameSize: size];
+            headers_row.addArrangedSubview(&name_header);
+            headers_row.addArrangedSubview(&cmd_header);
+            headers_row.addArrangedSubview(&args_header);
+        }
+        unsafe {
+            outer_stack.addArrangedSubview(&headers_row);
+        }
+
+        // Entries stack
+        let entries_stack = unsafe {
+            let stack = NSStackView::new(mtm);
+            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Vertical);
+            stack.setSpacing(4.0);
+            stack
+        };
+        *self.ivars().tool_entries_stack.borrow_mut() = Some(entries_stack.clone());
+        unsafe {
+            outer_stack.addArrangedSubview(&entries_stack);
+        }
+
+        // Load existing entries
+        let shortcuts = cterm_app::config::load_tool_shortcuts().unwrap_or_default();
+        for entry in &shortcuts {
+            self.add_tool_entry_row(mtm, &entry.name, &entry.command, &entry.args.join(" "));
+        }
+
+        // Button row
+        let button_row = unsafe {
+            let stack = NSStackView::new(mtm);
+            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Horizontal);
+            stack.setSpacing(8.0);
+            stack
+        };
+
+        let add_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Add"),
+                Some(&*self),
+                Some(sel!(addToolEntry:)),
+                mtm,
+            )
+        };
+        let reset_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Reset to Defaults"),
+                Some(&*self),
+                Some(sel!(resetToolDefaults:)),
+                mtm,
+            )
+        };
+        unsafe {
+            button_row.addArrangedSubview(&add_btn);
+            button_row.addArrangedSubview(&reset_btn);
+        }
+        unsafe {
+            outer_stack.addArrangedSubview(&button_row);
+        }
+
+        tab.setView(Some(&outer_stack));
+        tab
+    }
+
+    fn add_tool_entry_row(&self, mtm: MainThreadMarker, name: &str, command: &str, args: &str) {
+        let row = unsafe {
+            let stack = NSStackView::new(mtm);
+            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Horizontal);
+            stack.setSpacing(8.0);
+            stack
+        };
+
+        let name_field = NSTextField::new(mtm);
+        name_field.setStringValue(&NSString::from_str(name));
+        name_field.setEditable(true);
+        name_field.setBordered(true);
+        name_field.setDrawsBackground(true);
+        name_field.setPlaceholderString(Some(&NSString::from_str("Name")));
+        unsafe {
+            let size = objc2_foundation::NSSize::new(120.0, 22.0);
+            let _: () = msg_send![&name_field, setFrameSize: size];
+        }
+
+        let cmd_field = NSTextField::new(mtm);
+        cmd_field.setStringValue(&NSString::from_str(command));
+        cmd_field.setEditable(true);
+        cmd_field.setBordered(true);
+        cmd_field.setDrawsBackground(true);
+        cmd_field.setPlaceholderString(Some(&NSString::from_str("Command")));
+        unsafe {
+            let size = objc2_foundation::NSSize::new(120.0, 22.0);
+            let _: () = msg_send![&cmd_field, setFrameSize: size];
+        }
+
+        let args_field = NSTextField::new(mtm);
+        args_field.setStringValue(&NSString::from_str(args));
+        args_field.setEditable(true);
+        args_field.setBordered(true);
+        args_field.setDrawsBackground(true);
+        args_field.setPlaceholderString(Some(&NSString::from_str("Arguments")));
+        unsafe {
+            let size = objc2_foundation::NSSize::new(120.0, 22.0);
+            let _: () = msg_send![&args_field, setFrameSize: size];
+        }
+
+        unsafe {
+            row.addArrangedSubview(&name_field);
+            row.addArrangedSubview(&cmd_field);
+            row.addArrangedSubview(&args_field);
+        }
+
+        if let Some(ref stack) = *self.ivars().tool_entries_stack.borrow() {
+            unsafe {
+                stack.addArrangedSubview(&row);
+            }
+        }
+
+        self.ivars()
+            .tool_entries
+            .borrow_mut()
+            .push((name_field, cmd_field, args_field));
     }
 
     fn create_git_sync_tab(&self, mtm: MainThreadMarker) -> Retained<NSTabViewItem> {
@@ -1053,6 +1255,41 @@ impl PreferencesWindow {
         // Save config to file
         if let Err(e) = save_config(&config) {
             log::error!("Failed to save config: {}", e);
+        }
+
+        // Save tool shortcuts
+        {
+            let entries = self.ivars().tool_entries.borrow();
+            let tools: Vec<ToolShortcutEntry> = entries
+                .iter()
+                .filter_map(|(name_f, cmd_f, args_f)| {
+                    let name = name_f.stringValue().to_string();
+                    let command = cmd_f.stringValue().to_string();
+                    if name.is_empty() || command.is_empty() {
+                        return None;
+                    }
+                    let args_str = args_f.stringValue().to_string();
+                    let args: Vec<String> = if args_str.is_empty() {
+                        Vec::new()
+                    } else {
+                        args_str.split_whitespace().map(|s| s.to_string()).collect()
+                    };
+                    Some(ToolShortcutEntry {
+                        name,
+                        command,
+                        args,
+                    })
+                })
+                .collect();
+            if let Err(e) = cterm_app::config::save_tool_shortcuts(&tools) {
+                log::error!("Failed to save tool shortcuts: {}", e);
+            }
+        }
+
+        // Refresh the Tools menu
+        {
+            let mtm = MainThreadMarker::from(self);
+            crate::menu::rebuild_tools_menu(mtm);
         }
 
         // If git sync is configured, commit and push

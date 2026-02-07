@@ -61,6 +61,9 @@ pub fn create_menu_bar(mtm: MainThreadMarker) -> Retained<NSMenu> {
     // Terminal menu
     menu_bar.addItem(&create_terminal_menu(mtm));
 
+    // Tools menu
+    menu_bar.addItem(&create_tools_menu(mtm));
+
     // Window menu
     menu_bar.addItem(&create_window_menu(mtm));
 
@@ -482,6 +485,53 @@ fn create_terminal_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
     let menu_item = NSMenuItem::new(mtm);
     menu_item.setSubmenu(Some(&menu));
     menu_item
+}
+
+fn create_tools_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+    let menu = NSMenu::new(mtm);
+    menu.setTitle(&NSString::from_str("Tools"));
+
+    populate_tools_menu(&menu, mtm);
+
+    let menu_item = NSMenuItem::new(mtm);
+    menu_item.setSubmenu(Some(&menu));
+    menu_item
+}
+
+/// Populate (or repopulate) the Tools menu with shortcut entries
+fn populate_tools_menu(menu: &NSMenu, mtm: MainThreadMarker) {
+    if let Ok(shortcuts) = cterm_app::config::load_tool_shortcuts() {
+        for (i, shortcut) in shortcuts.iter().enumerate() {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(&shortcut.name));
+            unsafe { item.setAction(Some(sel!(runToolShortcut:))) };
+            item.setTag(i as isize);
+            menu.addItem(&item);
+        }
+    }
+}
+
+/// Rebuild the Tools menu items (called after preferences save)
+pub fn rebuild_tools_menu(mtm: MainThreadMarker) {
+    use objc2_app_kit::NSApplication;
+
+    let app = NSApplication::sharedApplication(mtm);
+    if let Some(main_menu) = app.mainMenu() {
+        // Find the "Tools" menu
+        let tools_title = NSString::from_str("Tools");
+        let count = main_menu.numberOfItems();
+        for i in 0..count {
+            if let Some(item) = main_menu.itemAtIndex(i) {
+                if let Some(submenu) = item.submenu() {
+                    if submenu.title().to_string() == tools_title.to_string() {
+                        submenu.removeAllItems();
+                        populate_tools_menu(&submenu, mtm);
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn create_window_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {

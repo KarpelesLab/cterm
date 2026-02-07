@@ -479,6 +479,71 @@ define_class!(
             }
         }
 
+        #[unsafe(method(runToolShortcut:))]
+        fn action_run_tool_shortcut(&self, sender: Option<&objc2::runtime::AnyObject>) {
+            use objc2_app_kit::NSMenuItem;
+
+            if let Some(sender) = sender {
+                let item: &NSMenuItem = unsafe { &*(sender as *const _ as *const NSMenuItem) };
+                let index = item.tag() as usize;
+
+                if let Ok(shortcuts) = cterm_app::config::load_tool_shortcuts() {
+                    if let Some(shortcut) = shortcuts.get(index) {
+                        // Get CWD from active terminal in the key window
+                        let mtm = MainThreadMarker::from(self);
+                        let app = NSApplication::sharedApplication(mtm);
+                        let cwd = app.keyWindow().and_then(|key_window| {
+                            let is_cterm: bool = unsafe {
+                                msg_send![&key_window, isKindOfClass: objc2::class!(CtermWindow)]
+                            };
+                            if is_cterm {
+                                let cterm_window: &CtermWindow = unsafe {
+                                    &*(&*key_window as *const NSWindow as *const CtermWindow)
+                                };
+                                #[cfg(unix)]
+                                {
+                                    cterm_window
+                                        .active_terminal()
+                                        .and_then(|t| t.foreground_cwd())
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    let _ = cterm_window;
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+
+                        let cwd = cwd.unwrap_or_else(|| {
+                            std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+                        });
+
+                        if let Err(e) =
+                            shortcut.execute(std::path::Path::new(&cwd))
+                        {
+                            // Show error alert
+                            let alert = objc2_app_kit::NSAlert::new(mtm);
+                            alert.setMessageText(&NSString::from_str(&format!(
+                                "Failed to launch \"{}\"",
+                                shortcut.name
+                            )));
+                            alert.setInformativeText(&NSString::from_str(&format!(
+                                "Command '{}' failed: {}",
+                                shortcut.command, e
+                            )));
+                            alert.setAlertStyle(
+                                objc2_app_kit::NSAlertStyle::Warning,
+                            );
+                            alert.addButtonWithTitle(&NSString::from_str("OK"));
+                            alert.runModal();
+                        }
+                    }
+                }
+            }
+        }
+
         #[unsafe(method(newWindow:))]
         fn action_new_window(&self, _sender: Option<&objc2::runtime::AnyObject>) {
             use objc2_app_kit::NSWindowTabbingMode;

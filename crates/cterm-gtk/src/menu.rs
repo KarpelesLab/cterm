@@ -67,6 +67,10 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     terminal_menu.append(Some("Clear Scrollback && Reset"), Some("win.clear-reset"));
     menu.append_submenu(Some("Terminal"), &terminal_menu);
 
+    // Tools menu
+    let tools_menu = create_tools_submenu();
+    menu.append_submenu(Some("Tools"), &tools_menu);
+
     // Tabs menu - will be populated dynamically
     let tabs_menu = gio::Menu::new();
     tabs_menu.append(Some("Previous Tab"), Some("win.prev-tab"));
@@ -93,6 +97,25 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     menu.append_submenu(Some("Help"), &help_menu);
 
     menu
+}
+
+/// Create the tools submenu from loaded tool shortcuts
+fn create_tools_submenu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    if let Ok(shortcuts) = cterm_app::config::load_tool_shortcuts() {
+        for (i, shortcut) in shortcuts.iter().enumerate() {
+            let action = format!("win.run-tool-shortcut::{}", i);
+            menu.append(Some(&shortcut.name), Some(&action));
+        }
+    }
+    menu
+}
+
+/// Rebuild the Tools menu in the menu bar (called after preferences save).
+/// Rebuilds the entire menu model and replaces it on the PopoverMenuBar.
+pub fn rebuild_menu_bar(menu_bar: &gtk4::PopoverMenuBar, show_debug: bool) {
+    let menu_model = create_menu_model_with_options(show_debug);
+    menu_bar.set_menu_model(Some(&menu_model));
 }
 
 /// Create the tabs submenu (called when tabs change)

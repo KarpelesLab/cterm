@@ -3,7 +3,7 @@
 //! Handles loading, saving, and managing configuration files.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -903,6 +903,150 @@ pub fn save_config_with_sync(config: &Config, sync: bool) -> Result<(), ConfigEr
     Ok(())
 }
 
+/// An external tool shortcut entry for the Tools menu
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolShortcutEntry {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl ToolShortcutEntry {
+    /// Execute this shortcut in the given working directory.
+    /// Spawns the process detached (stdin/stdout/stderr null).
+    pub fn execute(&self, cwd: &Path) -> Result<(), std::io::Error> {
+        std::process::Command::new(&self.command)
+            .args(&self.args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        Ok(())
+    }
+}
+
+/// Get the platform-specific tool shortcuts file path
+pub fn tool_shortcuts_path() -> Option<PathBuf> {
+    let filename = if cfg!(target_os = "macos") {
+        "shortcuts_macos.toml"
+    } else if cfg!(target_os = "windows") {
+        "shortcuts_windows.toml"
+    } else {
+        "shortcuts_linux.toml"
+    };
+    config_dir().map(|p| p.join(filename))
+}
+
+/// Return default tool shortcuts for the current platform
+pub fn default_tool_shortcuts() -> Vec<ToolShortcutEntry> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            ToolShortcutEntry {
+                name: "Open in Finder".into(),
+                command: "open".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in Xcode".into(),
+                command: "xed".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in VS Code".into(),
+                command: "code".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in Terminal".into(),
+                command: "open".into(),
+                args: vec!["-a".into(), "Terminal".into(), ".".into()],
+            },
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            ToolShortcutEntry {
+                name: "Open in Explorer".into(),
+                command: "explorer".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in VS Code".into(),
+                command: "code".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in PowerShell".into(),
+                command: "powershell".into(),
+                args: vec!["-NoExit".into(), "-Command".into(), "cd .".into()],
+            },
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        vec![
+            ToolShortcutEntry {
+                name: "Open File Manager".into(),
+                command: "xdg-open".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in VS Code".into(),
+                command: "code".into(),
+                args: vec![".".into()],
+            },
+            ToolShortcutEntry {
+                name: "Open in Terminal".into(),
+                command: "x-terminal-emulator".into(),
+                args: vec![".".into()],
+            },
+        ]
+    }
+}
+
+/// Load tool shortcuts from the platform-specific config file.
+/// Returns defaults if the file doesn't exist.
+pub fn load_tool_shortcuts() -> Result<Vec<ToolShortcutEntry>, ConfigError> {
+    let path = tool_shortcuts_path().ok_or(ConfigError::NoConfigDir)?;
+
+    if !path.exists() {
+        return Ok(default_tool_shortcuts());
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+
+    #[derive(Deserialize)]
+    struct ToolShortcutsFile {
+        tools: Vec<ToolShortcutEntry>,
+    }
+
+    let file: ToolShortcutsFile = toml::from_str(&content)?;
+    Ok(file.tools)
+}
+
+/// Save tool shortcuts to the platform-specific config file
+pub fn save_tool_shortcuts(tools: &[ToolShortcutEntry]) -> Result<(), ConfigError> {
+    let dir = config_dir().ok_or(ConfigError::NoConfigDir)?;
+    std::fs::create_dir_all(&dir)?;
+
+    let path = tool_shortcuts_path().ok_or(ConfigError::NoConfigDir)?;
+
+    #[derive(Serialize)]
+    struct ToolShortcutsFile<'a> {
+        tools: &'a [ToolShortcutEntry],
+    }
+
+    let file = ToolShortcutsFile { tools };
+    let content = toml::to_string_pretty(&file)?;
+    std::fs::write(&path, content)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,5 +1403,60 @@ mod tests {
     fn test_tab_bar_visibility_default() {
         let visibility = TabBarVisibility::default();
         assert!(matches!(visibility, TabBarVisibility::Always));
+    }
+
+    #[test]
+    fn test_default_tool_shortcuts_not_empty() {
+        let shortcuts = default_tool_shortcuts();
+        assert!(!shortcuts.is_empty());
+        // First entry should always have a name and command
+        assert!(!shortcuts[0].name.is_empty());
+        assert!(!shortcuts[0].command.is_empty());
+    }
+
+    #[test]
+    fn test_tool_shortcut_serialize() {
+        let shortcut = ToolShortcutEntry {
+            name: "Test".into(),
+            command: "echo".into(),
+            args: vec!["hello".into()],
+        };
+        let serialized = toml::to_string(&shortcut).unwrap();
+        assert!(serialized.contains("name = \"Test\""));
+        assert!(serialized.contains("command = \"echo\""));
+    }
+
+    #[test]
+    fn test_tool_shortcut_deserialize() {
+        let toml_str = r#"
+            [[tools]]
+            name = "Open Finder"
+            command = "open"
+            args = ["."]
+        "#;
+
+        #[derive(Deserialize)]
+        struct File {
+            tools: Vec<ToolShortcutEntry>,
+        }
+
+        let file: File = toml::from_str(toml_str).unwrap();
+        assert_eq!(file.tools.len(), 1);
+        assert_eq!(file.tools[0].name, "Open Finder");
+        assert_eq!(file.tools[0].command, "open");
+        assert_eq!(file.tools[0].args, vec!["."]);
+    }
+
+    #[test]
+    fn test_tool_shortcut_deserialize_no_args() {
+        let toml_str = r#"
+            name = "Test"
+            command = "ls"
+        "#;
+
+        let entry: ToolShortcutEntry = toml::from_str(toml_str).unwrap();
+        assert_eq!(entry.name, "Test");
+        assert_eq!(entry.command, "ls");
+        assert!(entry.args.is_empty());
     }
 }
