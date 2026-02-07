@@ -6,15 +6,29 @@
     </linearGradient>
   </defs>
 
-  <!-- Background fills entire canvas - macOS applies rounded rect mask -->
+  <!-- Background fills entire canvas, macOS applies rounded rect mask -->
   <rect width="1024" height="1024" fill="url(#bgGrad)"/>
 
-  <!-- "cterm" in orange -->
-  <text x="80" y="580" font-family="Monaco, Menlo, monospace" font-size="172" font-weight="bold" fill="#F59E0B">cterm</text>
+  <!-- Prompt line 1 -->
+  <text x="80" y="240" font-family="Monaco, Menlo, monospace" font-size="72" font-weight="bold" fill="#10B981">$</text>
+  <text x="148" y="240" font-family="Monaco, Menlo, monospace" font-size="68" fill="#CDD6F4">echo "Hello, World!"</text>
 
-  <!-- "$" in green -->
-  <text x="700" y="580" font-family="Monaco, Menlo, monospace" font-size="172" font-weight="bold" fill="#10B981">$</text>
+  <!-- Output line -->
+  <text x="80" y="340" font-family="Monaco, Menlo, monospace" font-size="72" fill="#A6ADC8">Hello, World!</text>
 
-  <!-- Cursor block -->
-  <rect x="820" y="460" width="22" height="130" rx="4" fill="#CDD6F4" opacity="0.9"/>
+  <!-- Prompt line 2 -->
+  <text x="80" y="470" font-family="Monaco, Menlo, monospace" font-size="72" font-weight="bold" fill="#10B981">$</text>
+  <text x="148" y="470" font-family="Monaco, Menlo, monospace" font-size="72" fill="#CDD6F4">cterm &#x2d;&#x2d;version</text>
+
+  <!-- Output line 2 (version in orange) -->
+  <text x="80" y="570" font-family="Monaco, Menlo, monospace" font-size="72" fill="#F59E0B">cterm {{VERSION}}</text>
+
+  <!-- Current prompt with cursor -->
+  <text x="80" y="700" font-family="Monaco, Menlo, monospace" font-size="72" font-weight="bold" fill="#10B981">$</text>
+  <rect x="148" y="645" width="42" height="72" rx="3" fill="#CDD6F4" opacity="0.9"/>
+
+  <!-- Decorative accent line at bottom -->
+  <rect x="80" y="840" width="240" height="6" rx="3" fill="#10B981" opacity="0.6"/>
+  <rect x="340" y="840" width="140" height="6" rx="3" fill="#CDD6F4" opacity="0.3"/>
+  <rect x="500" y="840" width="100" height="6" rx="3" fill="#CDD6F4" opacity="0.2"/>
 </svg>
