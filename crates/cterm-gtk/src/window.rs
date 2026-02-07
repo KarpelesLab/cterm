@@ -687,6 +687,61 @@ impl CtermWindow {
             window.add_action(&action);
         }
 
+        // Tools menu actions
+        {
+            let notebook = notebook.clone();
+            let tabs = Rc::clone(&tabs);
+            let window_clone = window.clone();
+            let action = gio::SimpleAction::new(
+                "run-tool-shortcut",
+                Some(&glib::VariantType::new("s").unwrap()),
+            );
+            action.connect_activate(move |_, param| {
+                if let Some(idx_str) = param.and_then(|p| p.get::<String>()) {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if let Ok(shortcuts) = cterm_app::config::load_tool_shortcuts() {
+                            if let Some(shortcut) = shortcuts.get(idx) {
+                                // Get CWD from active terminal
+                                #[cfg(unix)]
+                                let cwd = {
+                                    let tabs_borrow = tabs.borrow();
+                                    if let Some(page_idx) = notebook.current_page() {
+                                        tabs_borrow
+                                            .get(page_idx as usize)
+                                            .and_then(|entry| entry.terminal.foreground_cwd())
+                                    } else {
+                                        None
+                                    }
+                                };
+                                #[cfg(not(unix))]
+                                let cwd: Option<String> = None;
+
+                                let cwd = cwd.unwrap_or_else(|| {
+                                    std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+                                });
+
+                                if let Err(e) = shortcut.execute(std::path::Path::new(&cwd)) {
+                                    let dialog = gtk4::MessageDialog::new(
+                                        Some(&window_clone),
+                                        gtk4::DialogFlags::MODAL,
+                                        gtk4::MessageType::Error,
+                                        gtk4::ButtonsType::Ok,
+                                        format!(
+                                            "Failed to launch \"{}\"\n\nCommand '{}' failed: {}",
+                                            shortcut.name, shortcut.command, e
+                                        ),
+                                    );
+                                    dialog.connect_response(|d, _| d.close());
+                                    dialog.present();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
         // Help menu actions
         {
             let window_clone = window.clone();
@@ -1634,6 +1689,49 @@ impl CtermWindow {
                 cwd,
             );
         });
+
+        // Rename tab (right-click context menu)
+        {
+            let tabs = Rc::clone(&self.tabs);
+            let tab_bar = self.tab_bar.clone();
+            let window = self.window.clone();
+            self.tab_bar.set_on_rename(move |tab_id| {
+                let current_title = {
+                    let tabs = tabs.borrow();
+                    tabs.iter()
+                        .find(|t| t.id == tab_id)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default()
+                };
+                let tabs_clone = Rc::clone(&tabs);
+                let tab_bar_clone = tab_bar.clone();
+                dialogs::show_set_title_dialog(&window, &current_title, move |new_title| {
+                    let mut tabs = tabs_clone.borrow_mut();
+                    if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.title = new_title.clone();
+                        tab.title_locked = true;
+                        tab_bar_clone.set_title(tab_id, &new_title);
+                    }
+                });
+            });
+        }
+
+        // Set tab color (right-click context menu)
+        {
+            let tabs = Rc::clone(&self.tabs);
+            let tab_bar = self.tab_bar.clone();
+            let window = self.window.clone();
+            self.tab_bar.set_on_set_color(move |tab_id| {
+                let tab_bar_clone = tab_bar.clone();
+                let tabs_clone = Rc::clone(&tabs);
+                dialogs::show_set_color_dialog(&window, move |color| {
+                    let tabs = tabs_clone.borrow();
+                    if tabs.iter().any(|t| t.id == tab_id) {
+                        tab_bar_clone.set_color(tab_id, color.as_deref());
+                    }
+                });
+            });
+        }
     }
 
     /// Set up close request handler to confirm when closing with running processes
