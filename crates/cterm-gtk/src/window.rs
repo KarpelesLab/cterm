@@ -30,6 +30,8 @@ struct TabEntry {
     terminal: TerminalWidget,
     /// Whether title was explicitly set (locks out OSC updates)
     title_locked: bool,
+    /// Tab color override
+    color: Option<String>,
 }
 
 /// Main window container
@@ -504,9 +506,10 @@ impl CtermWindow {
                 let tab_bar_clone = tab_bar.clone();
                 dialogs::show_set_color_dialog(&window_clone, move |color| {
                     if let Some(page_idx) = notebook_clone.current_page() {
-                        let tabs = tabs_clone.borrow();
-                        if let Some(tab) = tabs.get(page_idx as usize) {
+                        let mut tabs = tabs_clone.borrow_mut();
+                        if let Some(tab) = tabs.get_mut(page_idx as usize) {
                             tab_bar_clone.set_color(tab.id, color.as_deref());
+                            tab.color = color;
                         }
                     }
                 });
@@ -808,12 +811,20 @@ impl CtermWindow {
                     for tab in tabs_borrowed.iter() {
                         let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id, 0, 0);
                         tab_state.title = tab.title.clone();
+                        if tab.title_locked {
+                            tab_state.custom_title = Some(tab.title.clone());
+                        }
 
                         // Export terminal state
                         tab_state.terminal = tab.terminal.export_state();
 
+                        tab_state.color = tab.color.clone();
+
                         // Try to get PTY file descriptor
                         let term = tab.terminal.terminal().lock();
+                        tab_state.cwd = term
+                            .foreground_cwd()
+                            .map(|p| p.to_string_lossy().into_owned());
                         if let Some(fd) = term.dup_pty_fd() {
                             tab_state.pty_fd_index = fds.len();
                             tab_state.child_pid = term.child_pid().unwrap_or(0);
@@ -919,12 +930,20 @@ impl CtermWindow {
                     for tab in tabs_borrowed.iter() {
                         let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id, 0, 0);
                         tab_state.title = tab.title.clone();
+                        if tab.title_locked {
+                            tab_state.custom_title = Some(tab.title.clone());
+                        }
 
                         // Export terminal state
                         tab_state.terminal = tab.terminal.export_state();
 
+                        tab_state.color = tab.color.clone();
+
                         // Try to get PTY handles
                         let term = tab.terminal.terminal().lock();
+                        tab_state.cwd = term
+                            .foreground_cwd()
+                            .map(|p| p.to_string_lossy().into_owned());
                         if let Some(handle_info) = term.get_upgrade_handles() {
                             tab_state.pty_fd_index = handles.len();
                             tab_state.child_pid = term.child_pid().unwrap_or(0);
@@ -1725,9 +1744,10 @@ impl CtermWindow {
                 let tab_bar_clone = tab_bar.clone();
                 let tabs_clone = Rc::clone(&tabs);
                 dialogs::show_set_color_dialog(&window, move |color| {
-                    let tabs = tabs_clone.borrow();
-                    if tabs.iter().any(|t| t.id == tab_id) {
+                    let mut tabs = tabs_clone.borrow_mut();
+                    if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab_bar_clone.set_color(tab_id, color.as_deref());
+                        tab.color = color;
                     }
                 });
             });
@@ -2020,6 +2040,7 @@ fn finalize_new_tab(
         title,
         terminal,
         title_locked,
+        color: None,
     });
 
     tab_bar.update_visibility();
@@ -2131,6 +2152,8 @@ fn create_docker_tab(
     let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
     tab_bar.add_tab(tab_id, title);
     tab_bar.set_color(tab_id, Some("#0db7ed"));
+    // Store the color in the tab entry after it's created below
+    let docker_color = Some("#0db7ed".to_string());
 
     setup_tab_callbacks(
         notebook,
@@ -2156,6 +2179,11 @@ fn create_docker_tab(
         terminal,
         false,
     );
+
+    // Store the docker color in the tab entry
+    if let Some(tab) = tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+        tab.color = docker_color;
+    }
 }
 
 /// Create a new terminal tab from a template
@@ -2195,7 +2223,8 @@ fn create_tab_from_template(
     let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
     tab_bar.add_tab(tab_id, &template.name);
 
-    if let Some(ref color) = template.color {
+    let tab_color = template.color.clone();
+    if let Some(ref color) = tab_color {
         tab_bar.set_color(tab_id, Some(color));
     }
 
@@ -2223,6 +2252,13 @@ fn create_tab_from_template(
         terminal,
         true,
     );
+
+    // Store the template color in the tab entry
+    if tab_color.is_some() {
+        if let Some(tab) = tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+            tab.color = tab_color;
+        }
+    }
 
     log::info!("Created tab from template: {}", template.name);
 }

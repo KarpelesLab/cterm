@@ -257,7 +257,12 @@ define_class!(
                     if let Some(tab_state) = state_map.get(&recovered.id) {
                         if let Some(terminal_view) = window.active_terminal() {
                             terminal_view.restore_display_state(&tab_state.terminal);
-                            // Restore template name if present
+                            // Restore template name and title lock if present
+                            if tab_state.custom_title.is_some()
+                                || tab_state.template_name.is_some()
+                            {
+                                terminal_view.set_title_locked(true);
+                            }
                             if tab_state.template_name.is_some() {
                                 terminal_view.set_template_name(tab_state.template_name.clone());
                             }
@@ -268,6 +273,10 @@ define_class!(
                         }
                         // Restore window title
                         window.setTitle(&NSString::from_str(&tab_state.title));
+                        // Restore tab color
+                        if let Some(ref color) = tab_state.color {
+                            window.set_tab_color(Some(color));
+                        }
                     }
 
                     // Disable tabbing to prevent auto-merging into existing windows
@@ -955,6 +964,7 @@ impl AppDelegate {
                     &self.ivars().config,
                     &self.ivars().theme,
                     terminal,
+                    tab_state.color.clone(),
                 );
 
                 // Restore window title
@@ -962,9 +972,12 @@ impl AppDelegate {
                     window.setTitle(&NSString::from_str(&tab_state.title));
                 }
 
-                // Restore template_name if present
-                if tab_state.template_name.is_some() {
-                    if let Some(terminal_view) = window.active_terminal() {
+                // Restore custom title lock and template_name if present
+                if let Some(terminal_view) = window.active_terminal() {
+                    if tab_state.custom_title.is_some() || tab_state.template_name.is_some() {
+                        terminal_view.set_title_locked(true);
+                    }
+                    if tab_state.template_name.is_some() {
                         terminal_view.set_template_name(tab_state.template_name.clone());
                     }
                 }
@@ -1047,8 +1060,18 @@ impl AppDelegate {
                         watchdog_fd_id,
                     );
                     tab_state.terminal = terminal_state;
-                    tab_state.title = window.title().to_string();
+                    let title = window.title().to_string();
+                    if terminal_view.is_title_locked() {
+                        tab_state.custom_title = Some(title.clone());
+                    }
+                    tab_state.title = title;
                     tab_state.template_name = terminal_view.template_name();
+                    tab_state.color = window.tab_color();
+                    tab_state.cwd = terminal_view
+                        .terminal()
+                        .lock()
+                        .foreground_cwd()
+                        .map(|p| p.to_string_lossy().into_owned());
 
                     window_state.tabs.push(tab_state);
                 }
@@ -1204,8 +1227,18 @@ impl AppDelegate {
                         fd_index, child_pid,
                     );
                     tab_state.terminal = terminal_state;
-                    tab_state.title = window.title().to_string();
+                    let title = window.title().to_string();
+                    if terminal_view.is_title_locked() {
+                        tab_state.custom_title = Some(title.clone());
+                    }
+                    tab_state.title = title;
                     tab_state.template_name = terminal_view.template_name();
+                    tab_state.color = window.tab_color();
+                    tab_state.cwd = terminal_view
+                        .terminal()
+                        .lock()
+                        .foreground_cwd()
+                        .map(|p| p.to_string_lossy().into_owned());
 
                     window_state.tabs.push(tab_state);
                 } else {

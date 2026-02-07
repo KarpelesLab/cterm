@@ -307,9 +307,9 @@ fn create_restored_tab(
         id: tab_state.id,
         title: tab_state.title.clone(),
         terminal,
-        color: None, // TODO: restore color from state if needed
+        color: tab_state.color.clone(),
         has_bell: false,
-        title_locked: false,
+        title_locked: tab_state.custom_title.is_some(),
         reader_handle: Some(reader_handle),
     };
 

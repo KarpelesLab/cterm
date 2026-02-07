@@ -333,6 +333,9 @@ where
             tab_state.child_pid
         );
 
+        // Extract customization state before tab_state is consumed
+        let tab_color = tab_state.color.clone();
+
         match create_tab(tab_state) {
             Ok((tab_id, title, terminal_widget)) => {
                 // Add to notebook
@@ -340,6 +343,11 @@ where
 
                 // Add to tab bar
                 tab_bar.add_tab(tab_id, &title);
+
+                // Restore tab color if present
+                if let Some(ref color) = tab_color {
+                    tab_bar.set_color(tab_id, Some(color));
+                }
 
                 // Set up close callback
                 let notebook_close = notebook.clone();

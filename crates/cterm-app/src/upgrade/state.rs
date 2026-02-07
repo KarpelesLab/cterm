@@ -87,6 +87,9 @@ pub struct TabUpgradeState {
     pub id: u64,
     /// Tab title
     pub title: String,
+    /// Custom title set by user (locks out OSC title updates when Some)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
     /// Tab color (if sticky tab)
     pub color: Option<String>,
     /// Template name (for sticky/unique tabs)
@@ -116,6 +119,7 @@ impl TabUpgradeState {
         Self {
             id,
             title: String::new(),
+            custom_title: None,
             color: None,
             template_name: None,
             terminal: TerminalUpgradeState::default(),
@@ -132,6 +136,7 @@ impl TabUpgradeState {
         Self {
             id,
             title: String::new(),
+            custom_title: None,
             color: None,
             template_name: None,
             terminal: TerminalUpgradeState::default(),
@@ -152,6 +157,7 @@ impl TabUpgradeState {
         Self {
             id,
             title: String::new(),
+            custom_title: None,
             color: None,
             template_name: None,
             terminal: TerminalUpgradeState::default(),

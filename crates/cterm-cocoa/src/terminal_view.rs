@@ -1716,6 +1716,22 @@ impl TerminalView {
         *self.ivars().template_name.borrow_mut() = name;
     }
 
+    /// Check if the title is locked (user-set or template-set)
+    pub fn is_title_locked(&self) -> bool {
+        self.ivars()
+            .state
+            .title_locked
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set the title locked state
+    pub fn set_title_locked(&self, locked: bool) {
+        self.ivars()
+            .state
+            .title_locked
+            .store(locked, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Background thread to read from PTY
     fn read_pty_loop(pty_fd: i32, terminal: Arc<Mutex<Terminal>>, state: Arc<ViewState>) {
         use std::io::Read;

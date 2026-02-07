@@ -348,6 +348,7 @@ impl CtermWindow {
         config: &Config,
         theme: &Theme,
         terminal: Terminal,
+        tab_color: Option<String>,
     ) -> Retained<Self> {
         let title = {
             let term = terminal.screen();
@@ -357,7 +358,7 @@ impl CtermWindow {
                 term.title.clone()
             }
         };
-        let this = Self::init_window(mtm, config, theme, &title, None);
+        let this = Self::init_window(mtm, config, theme, &title, tab_color);
         let terminal_view = TerminalView::from_restored(mtm, config, theme, terminal);
         this.attach_terminal_view(terminal_view);
         this
@@ -560,6 +561,11 @@ impl CtermWindow {
         let terminal_view = TerminalView::from_template(mtm, config, theme, template);
         this.attach_terminal_view(terminal_view);
         this
+    }
+
+    /// Get the current tab color
+    pub fn tab_color(&self) -> Option<String> {
+        self.ivars().pending_tab_color.borrow().clone()
     }
 
     /// Set the tab color indicator for native macOS tabs
