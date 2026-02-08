@@ -34,8 +34,6 @@ pub struct CtermWindowIvars {
     quick_open: RefCell<Option<Retained<QuickOpenOverlay>>>,
     /// Whether this window has an active bell notification
     has_active_bell: std::cell::Cell<bool>,
-    /// Whether the tab context menu has been set up
-    tab_menu_set: std::cell::Cell<bool>,
 }
 
 define_class!(
@@ -73,9 +71,6 @@ define_class!(
             if !self.apply_pending_tab_color() {
                 self.schedule_tab_color_retry();
             }
-
-            // Set up the right-click context menu on the native tab
-            self.setup_tab_context_menu();
         }
 
         #[unsafe(method(windowDidResignKey:))]
@@ -193,8 +188,6 @@ define_class!(
                 // Still not ready, try again
                 self.schedule_tab_color_retry();
             }
-            // Also set up context menu if tab is now available
-            self.setup_tab_context_menu();
         }
 
         /// Set tab color via color picker dialog
@@ -303,7 +296,6 @@ impl CtermWindow {
             pending_tab_color: RefCell::new(pending_tab_color),
             quick_open: RefCell::new(None),
             has_active_bell: std::cell::Cell::new(false),
-            tab_menu_set: std::cell::Cell::new(false),
         });
 
         let this: Retained<Self> = unsafe {
@@ -569,44 +561,6 @@ impl CtermWindow {
         let terminal_view = TerminalView::from_template(mtm, config, theme, template);
         this.attach_terminal_view(terminal_view);
         this
-    }
-
-    /// Set up the context menu on the native macOS tab (right-click menu)
-    fn setup_tab_context_menu(&self) {
-        if self.ivars().tab_menu_set.get() {
-            return;
-        }
-
-        unsafe {
-            let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
-            if tab.is_null() {
-                return;
-            }
-
-            let mtm = MainThreadMarker::from(self);
-            let menu = NSMenu::new(mtm);
-
-            // Set Title...
-            let title_item = NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc(),
-                &NSString::from_str("Set Title..."),
-                Some(objc2::sel!(setTerminalTitle:)),
-                &NSString::from_str(""),
-            );
-            menu.addItem(&title_item);
-
-            // Set Tab Color...
-            let color_item = NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc(),
-                &NSString::from_str("Set Tab Color..."),
-                Some(objc2::sel!(setTabColor:)),
-                &NSString::from_str(""),
-            );
-            menu.addItem(&color_item);
-
-            let _: () = msg_send![tab, setContextMenu: &*menu];
-            self.ivars().tab_menu_set.set(true);
-        }
     }
 
     /// Get the current tab color
