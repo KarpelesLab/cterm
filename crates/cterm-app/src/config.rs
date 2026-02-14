@@ -778,6 +778,88 @@ impl StickyTabConfig {
     }
 }
 
+/// Expand shell variables and tilde in a path string.
+///
+/// Supports:
+/// - `~` or `~/...` → home directory
+/// - `$VAR` or `${VAR}` → environment variable
+fn expand_path(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+
+    // Expand ~ at the start
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let s = if s == "~" {
+        home()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| s.into_owned())
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        home()
+            .map(|h| format!("{}/{}", h.to_string_lossy(), rest))
+            .unwrap_or_else(|| s.into_owned())
+    } else {
+        s.into_owned()
+    };
+
+    // Expand $VAR and ${VAR}
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            let braced = chars.peek() == Some(&'{');
+            if braced {
+                chars.next(); // consume '{'
+            }
+            let mut var_name = String::new();
+            while let Some(&ch) = chars.peek() {
+                if braced {
+                    if ch == '}' {
+                        chars.next();
+                        break;
+                    }
+                } else if !ch.is_ascii_alphanumeric() && ch != '_' {
+                    break;
+                }
+                var_name.push(ch);
+                chars.next();
+            }
+            if let Ok(val) = std::env::var(&var_name) {
+                result.push_str(&val);
+            } else {
+                // Keep original if variable not found
+                result.push('$');
+                if braced {
+                    result.push('{');
+                }
+                result.push_str(&var_name);
+                if braced {
+                    result.push('}');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    PathBuf::from(result)
+}
+
+/// Expand path fields in a sticky tab config (working_directory, docker.project_dir, ssh.identity_file)
+fn expand_sticky_tab_paths(tab: &mut StickyTabConfig) {
+    if let Some(ref wd) = tab.working_directory {
+        tab.working_directory = Some(expand_path(wd));
+    }
+    if let Some(ref mut docker) = tab.docker {
+        if let Some(ref pd) = docker.project_dir {
+            docker.project_dir = Some(expand_path(pd));
+        }
+    }
+    if let Some(ref mut ssh) = tab.ssh {
+        if let Some(ref id) = ssh.identity_file {
+            ssh.identity_file = Some(expand_path(id));
+        }
+    }
+}
+
 /// Get the config directory path
 pub fn config_dir() -> Option<PathBuf> {
     ProjectDirs::from("com", "cterm", "cterm").map(|p| p.config_dir().to_path_buf())
@@ -802,7 +884,12 @@ pub fn load_config() -> Result<Config, ConfigError> {
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let config: Config = toml::from_str(&content)?;
+    let mut config: Config = toml::from_str(&content)?;
+
+    // Expand ~ and $VAR in path fields
+    if let Some(ref wd) = config.general.working_directory {
+        config.general.working_directory = Some(expand_path(wd));
+    }
 
     Ok(config)
 }
@@ -835,7 +922,11 @@ pub fn load_sticky_tabs() -> Result<Vec<StickyTabConfig>, ConfigError> {
     }
 
     let file: StickyTabsFile = toml::from_str(&content)?;
-    Ok(file.tabs)
+    let mut tabs = file.tabs;
+    for tab in &mut tabs {
+        expand_sticky_tab_paths(tab);
+    }
+    Ok(tabs)
 }
 
 /// Save sticky tabs configuration
