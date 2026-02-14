@@ -370,6 +370,11 @@ impl TabTemplatesWindow {
 
         *self.ivars().template_selector.borrow_mut() = Some(popup);
 
+        // Make selector row fill width
+        unsafe {
+            let _: () =
+                msg_send![&*selector_row, setTranslatesAutoresizingMaskIntoConstraints: false];
+        }
         main_stack.addView_inGravity(&selector_row, NSStackViewGravity::Top);
 
         // Create tab view
@@ -386,6 +391,19 @@ impl TabTemplatesWindow {
         tab_view.addTabViewItem(&remote_tab);
 
         main_stack.addView_inGravity(&tab_view, NSStackViewGravity::Top);
+
+        // Make tab view fill the available width
+        unsafe {
+            let _: () = msg_send![&*tab_view, setTranslatesAutoresizingMaskIntoConstraints: false];
+            let tab_width: *mut AnyObject = msg_send![&*tab_view, widthAnchor];
+            let stack_width: *mut AnyObject = msg_send![&*main_stack, widthAnchor];
+            let constraint: *mut AnyObject = msg_send![
+                tab_width,
+                constraintEqualToAnchor: stack_width,
+                constant: -30.0f64 // Account for left+right edge insets (15+15)
+            ];
+            let _: () = msg_send![constraint, setActive: true];
+        }
 
         // Bottom buttons
         let bottom_stack = unsafe { NSStackView::new(mtm) };
@@ -692,7 +710,7 @@ impl TabTemplatesWindow {
         &self,
         mtm: MainThreadMarker,
         label: &str,
-        field_width: f64,
+        _field_width: f64,
     ) -> (Retained<NSStackView>, Retained<NSTextField>) {
         let stack = unsafe { NSStackView::new(mtm) };
         stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -700,11 +718,21 @@ impl TabTemplatesWindow {
 
         let label_view = unsafe { NSTextField::labelWithString(&NSString::from_str(label), mtm) };
         unsafe { label_view.setFrameSize(NSSize::new(100.0, 22.0)) };
+        // Keep label at fixed width
+        unsafe {
+            let _: () =
+                msg_send![&*label_view, setContentHuggingPriority: 750.0f32, forOrientation: 0i64]; // Horizontal
+            let _: () = msg_send![&*label_view, setContentCompressionResistancePriority: 750.0f32, forOrientation: 0i64];
+        }
 
         let field = unsafe { NSTextField::new(mtm) };
-        unsafe { field.setFrameSize(NSSize::new(field_width, 22.0)) };
         field.setEditable(true);
         field.setBezeled(true);
+        // Let field stretch to fill available width
+        unsafe {
+            let _: () = msg_send![&*field, setContentHuggingPriority: 1.0f32, forOrientation: 0i64];
+            // Very low = eager to stretch
+        }
 
         // Set self as delegate for text change notifications
         unsafe {
@@ -715,6 +743,11 @@ impl TabTemplatesWindow {
 
         stack.addView_inGravity(&label_view, NSStackViewGravity::Leading);
         stack.addView_inGravity(&field, NSStackViewGravity::Leading);
+
+        // Make the row fill the parent width
+        unsafe {
+            let _: () = msg_send![&*stack, setTranslatesAutoresizingMaskIntoConstraints: false];
+        }
 
         (stack, field)
     }
