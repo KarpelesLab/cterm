@@ -275,10 +275,27 @@ impl Selection {
 
     /// Get the start and end points in reading order (start <= end)
     pub fn ordered(&self) -> (SelectionPoint, SelectionPoint) {
-        if self.anchor.is_before(&self.end) {
-            (self.anchor, self.end)
-        } else {
-            (self.end, self.anchor)
+        match self.anchor_end {
+            Some(anchor_end) => {
+                // Word/line mode: anchor..anchor_end defines the original region
+                if self.end.is_before(&self.anchor) {
+                    // Dragging before anchor region: end..anchor_end
+                    (self.end, anchor_end)
+                } else if anchor_end.is_before(&self.end) {
+                    // Dragging after anchor region: anchor..end
+                    (self.anchor, self.end)
+                } else {
+                    // Within anchor region: anchor..anchor_end
+                    (self.anchor, anchor_end)
+                }
+            }
+            None => {
+                if self.anchor.is_before(&self.end) {
+                    (self.anchor, self.end)
+                } else {
+                    (self.end, self.anchor)
+                }
+            }
         }
     }
 
@@ -1684,18 +1701,15 @@ impl Screen {
 
                 if let Some(ref mut selection) = self.selection {
                     if current.is_before(&anchor_start) {
-                        // Extending before the original word - select from new word start to original word end
-                        selection.anchor = anchor_end;
+                        // Extending before the original word
                         selection.end = SelectionPoint::new(line, word_start);
                     } else if anchor_end.is_before(&current)
                         || (line == anchor_end.line && col > anchor_end.col)
                     {
-                        // Extending after the original word - select from original word start to new word end
-                        selection.anchor = anchor_start;
+                        // Extending after the original word
                         selection.end = SelectionPoint::new(line, word_end);
                     } else {
                         // Within the original word - keep original selection
-                        selection.anchor = anchor_start;
                         selection.end = anchor_end;
                     }
                 }
@@ -1703,16 +1717,13 @@ impl Screen {
             SelectionMode::Line => {
                 if let Some(ref mut selection) = self.selection {
                     if line < anchor_start.line {
-                        // Extending upward - from new line start to original line end
-                        selection.anchor = anchor_end;
+                        // Extending upward
                         selection.end = SelectionPoint::new(line, 0);
                     } else if line > anchor_end.line {
-                        // Extending downward - from original line start to new line end
-                        selection.anchor = anchor_start;
+                        // Extending downward
                         selection.end = SelectionPoint::new(line, COL_END_OF_ROW);
                     } else {
                         // Within the original line - keep original selection
-                        selection.anchor = anchor_start;
                         selection.end = anchor_end;
                     }
                 }
@@ -2229,9 +2240,13 @@ mod tests {
         // Extend backward to "foo" (col 1)
         screen.extend_selection(0, 1);
         let sel = screen.selection.as_ref().unwrap();
-        // anchor should flip to end of original word, end should be start of "foo"
-        assert_eq!(sel.anchor, SelectionPoint::new(0, 6));
+        // anchor stays at original word start, end moves to start of "foo"
+        assert_eq!(sel.anchor, SelectionPoint::new(0, 4));
         assert_eq!(sel.end, SelectionPoint::new(0, 0));
+        // ordered() should give (0,0)..(0,6) covering "foo bar"
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 0));
+        assert_eq!(end, SelectionPoint::new(0, 6));
     }
 
     #[test]
@@ -2245,6 +2260,9 @@ mod tests {
         let sel = screen.selection.as_ref().unwrap();
         assert_eq!(sel.anchor, SelectionPoint::new(0, 0));
         assert_eq!(sel.end, SelectionPoint::new(0, 10));
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 0));
+        assert_eq!(end, SelectionPoint::new(0, 10));
 
         // Return back to within original word
         screen.extend_selection(0, 3);
@@ -2252,6 +2270,97 @@ mod tests {
         // Should restore original word selection
         assert_eq!(sel.anchor, SelectionPoint::new(0, 0));
         assert_eq!(sel.end, SelectionPoint::new(0, 4));
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 0));
+        assert_eq!(end, SelectionPoint::new(0, 4));
+    }
+
+    #[test]
+    fn test_word_selection_direction_changes() {
+        // "foo bar baz" - double-click on "bar", drag backward, then forward, then backward
+        let mut screen = screen_with_text("foo bar baz");
+        screen.start_selection(0, 5, SelectionMode::Word);
+
+        // Initial: "bar" selected (cols 4-6)
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 4));
+        assert_eq!(end, SelectionPoint::new(0, 6));
+
+        // Step 1: drag backward to "foo"
+        screen.extend_selection(0, 1);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 0)); // start of "foo"
+        assert_eq!(end, SelectionPoint::new(0, 6)); // end of "bar" (anchor_end)
+
+        // Step 2: drag forward to "baz" - this was the buggy case
+        screen.extend_selection(0, 9);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 4)); // start of "bar" (anchor)
+        assert_eq!(end, SelectionPoint::new(0, 10)); // end of "baz"
+
+        // Step 3: drag backward again to "foo"
+        screen.extend_selection(0, 1);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 0)); // start of "foo"
+        assert_eq!(end, SelectionPoint::new(0, 6)); // end of "bar" (anchor_end)
+
+        // Step 4: drag forward once more to "baz"
+        screen.extend_selection(0, 9);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start, SelectionPoint::new(0, 4)); // start of "bar"
+        assert_eq!(end, SelectionPoint::new(0, 10)); // end of "baz"
+    }
+
+    #[test]
+    fn test_line_selection_direction_changes() {
+        // Three lines, triple-click on middle line, drag up then down then up
+        let mut screen = Screen::new(80, 3, ScreenConfig::default());
+        for c in "first line".chars() {
+            screen.put_char(c);
+        }
+        screen.line_feed();
+        screen.carriage_return();
+        for c in "second line".chars() {
+            screen.put_char(c);
+        }
+        screen.line_feed();
+        screen.carriage_return();
+        for c in "third line".chars() {
+            screen.put_char(c);
+        }
+
+        // Triple-click on line 1 (second line)
+        screen.start_selection(1, 3, SelectionMode::Line);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start.line, 1);
+        assert_eq!(end.line, 1);
+
+        // Drag up to line 0
+        screen.extend_selection(0, 5);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start.line, 0);
+        assert_eq!(end.line, 1);
+
+        // Drag down to line 2
+        screen.extend_selection(2, 5);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start.line, 1);
+        assert_eq!(end.line, 2);
+
+        // Drag up again to line 0
+        screen.extend_selection(0, 5);
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        assert_eq!(start.line, 0);
+        assert_eq!(end.line, 1);
     }
 
     #[test]
