@@ -1085,9 +1085,9 @@ impl PreferencesWindow {
                     item.setRepresentedObject(Some(&NSString::from_str(id)));
                 }
             }
-            // Select the matching item
-            for (i, (id, _)) in options.iter().enumerate() {
-                if *id == selected {
+            // Select the matching item (match on ID or display name)
+            for (i, (id, title)) in options.iter().enumerate() {
+                if *id == selected || *title == selected {
                     popup.selectItemAtIndex(i as isize);
                     break;
                 }

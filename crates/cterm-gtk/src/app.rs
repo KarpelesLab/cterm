@@ -33,16 +33,7 @@ pub fn build_ui(app: &Application) {
 
 /// Get the theme based on configuration
 fn get_theme(config: &Config) -> Theme {
-    if let Some(ref custom) = config.appearance.custom_theme {
-        return custom.clone();
-    }
-
-    // Find built-in theme by name
-    let themes = Theme::builtin_themes();
-    themes
-        .into_iter()
-        .find(|t| t.name == config.appearance.theme)
-        .unwrap_or_else(Theme::dark)
+    cterm_app::resolve_theme(config)
 }
 
 /// Apply CSS styling to the application

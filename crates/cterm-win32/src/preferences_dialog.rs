@@ -1136,12 +1136,12 @@ fn collect_config() -> Config {
             // Appearance tab
             if let Some(&combo) = state.appearance_controls.get(1) {
                 config.appearance.theme = match get_combobox_selection(combo) {
-                    Some(0) => "Default Dark".to_string(),
-                    Some(1) => "Default Light".to_string(),
-                    Some(2) => "Tokyo Night".to_string(),
-                    Some(3) => "Dracula".to_string(),
-                    Some(4) => "Nord".to_string(),
-                    _ => "Default Dark".to_string(),
+                    Some(0) => "dark".to_string(),
+                    Some(1) => "light".to_string(),
+                    Some(2) => "tokyo_night".to_string(),
+                    Some(3) => "dracula".to_string(),
+                    Some(4) => "nord".to_string(),
+                    _ => "dark".to_string(),
                 };
             }
             if let Some(&edit) = state.appearance_controls.get(3) {

@@ -894,6 +894,36 @@ pub fn load_config() -> Result<Config, ConfigError> {
     Ok(config)
 }
 
+/// Resolve the theme from configuration.
+///
+/// Handles both short IDs (`"dark"`) and display names (`"Default Dark"`)
+/// for backwards compatibility with different config formats.
+pub fn resolve_theme(config: &Config) -> Theme {
+    use cterm_ui::theme::Theme;
+
+    if let Some(ref custom) = config.appearance.custom_theme {
+        return custom.clone();
+    }
+
+    let theme_id = &config.appearance.theme;
+    let themes = Theme::builtin_themes();
+    themes
+        .into_iter()
+        .find(|t| {
+            t.name == *theme_id
+                || matches!(
+                    (t.name.as_str(), theme_id.as_str()),
+                    ("Default Dark", "dark")
+                        | ("Default Light", "light")
+                        | ("Tokyo Night", "tokyo_night")
+                        | ("Tokyo Night", "tokyo-night")
+                        | ("Dracula", "dracula")
+                        | ("Nord", "nord")
+                )
+        })
+        .unwrap_or_else(Theme::dark)
+}
+
 /// Save configuration to file
 pub fn save_config(config: &Config) -> Result<(), ConfigError> {
     let dir = config_dir().ok_or(ConfigError::NoConfigDir)?;

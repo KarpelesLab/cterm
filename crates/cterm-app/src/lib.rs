@@ -41,4 +41,5 @@ pub use upgrade::{execute_upgrade, receive_upgrade, HandleInfo, UpgradeError, Wi
 pub use upgrade::{execute_upgrade, receive_upgrade, UpgradeError};
 pub use upgrade::{UpdateError, UpdateInfo, Updater, UpgradeState};
 
+pub use config::resolve_theme;
 pub use quick_open::{template_type_indicator, QuickOpenMatcher, TemplateMatch};

@@ -127,25 +127,7 @@ pub fn run() {
 
 /// Load the theme based on config
 fn load_theme(config: &cterm_app::Config) -> cterm_ui::theme::Theme {
-    use cterm_ui::theme::Theme;
-
-    match config.appearance.theme.as_str() {
-        "Default Dark" | "dark" => Theme::dark(),
-        "Default Light" | "light" => Theme::light(),
-        "Tokyo Night" | "tokyo-night" => Theme::tokyo_night(),
-        "Dracula" | "dracula" => Theme::dracula(),
-        "Nord" | "nord" => Theme::nord(),
-        "custom" => config
-            .appearance
-            .custom_theme
-            .clone()
-            .unwrap_or_else(Theme::dark),
-        name => {
-            // Try to load from themes directory
-            log::info!("Looking for theme: {}", name);
-            Theme::dark()
-        }
-    }
+    cterm_app::resolve_theme(config)
 }
 
 /// Run the main message loop
