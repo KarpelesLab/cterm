@@ -1297,17 +1297,22 @@ pub fn run() {
     // Initialize logging with capture buffer for in-app log viewing
     crate::log_capture::init();
 
-    // Install signal handler for better crash debugging
+    // Install signal handler for crash debugging
+    // Uses only async-signal-safe operations (raw write + abort)
     #[cfg(unix)]
     unsafe {
-        use std::io::Write;
         extern "C" fn crash_handler(sig: libc::c_int) {
-            let _ = writeln!(std::io::stderr(), "\n=== CRASH: Signal {} ===", sig);
-            let bt = std::backtrace::Backtrace::force_capture();
-            let _ = writeln!(std::io::stderr(), "{}", bt);
-            std::process::abort();
+            // Only use async-signal-safe functions in signal handlers
+            let msg: &[u8] = match sig {
+                libc::SIGSEGV => b"\n=== CRASH: SIGSEGV ===\n",
+                libc::SIGBUS => b"\n=== CRASH: SIGBUS ===\n",
+                _ => b"\n=== CRASH: Unknown signal ===\n",
+            };
+            unsafe {
+                let _ = libc::write(2, msg.as_ptr() as *const _, msg.len());
+                libc::abort();
+            }
         }
-        // Cast to function pointer type first, then to sighandler_t
         let handler: extern "C" fn(libc::c_int) = crash_handler;
         libc::signal(libc::SIGSEGV, handler as libc::sighandler_t);
         libc::signal(libc::SIGBUS, handler as libc::sighandler_t);

@@ -69,6 +69,14 @@ pub fn write_crash_state(state: &CrashState) -> io::Result<()> {
     // Write atomically using temp file + rename
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, &bytes)?;
+
+    // Set restrictive permissions since crash state may contain terminal scrollback
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
+    }
+
     fs::rename(&temp_path, &path)?;
 
     log::trace!("Wrote crash state: {} bytes", bytes.len());

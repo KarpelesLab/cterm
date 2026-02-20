@@ -162,6 +162,12 @@ impl Parser {
                     return true;
                 }
 
+                // Cap buffer to prevent unbounded growth from malicious input
+                if content.len() > 1024 {
+                    self.osc_1337_state = Osc1337State::None;
+                    return false;
+                }
+
                 // Check if this starts "File="
                 const FILE_PREFIX: &[u8] = b"File=";
                 if content.len() < FILE_PREFIX.len()
@@ -186,6 +192,12 @@ impl Parser {
                     // Terminator without data - will be handled by check_osc_1337_finish
                     self.osc_1337_terminated = true;
                     return true;
+                }
+
+                // Cap params to prevent unbounded growth from malicious input
+                if params.len() > 65536 {
+                    self.osc_1337_state = Osc1337State::None;
+                    return false;
                 }
 
                 if byte == b':' {

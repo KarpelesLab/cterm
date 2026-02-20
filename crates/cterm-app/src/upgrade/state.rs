@@ -239,16 +239,29 @@ impl Default for TerminalUpgradeState {
 impl TerminalUpgradeState {
     /// Spill scrollback to a temp file using bincode serialization.
     /// Called before serialization to keep the state compact for socket transfer.
-    pub fn save_scrollback_to_file(&mut self, index: usize) -> io::Result<()> {
+    pub fn save_scrollback_to_file(&mut self, _index: usize) -> io::Result<()> {
         if self.scrollback.is_empty() {
             return Ok(());
         }
-        let path = std::env::temp_dir().join(format!(
-            "cterm_scrollback_{}_{}.bin",
-            std::process::id(),
-            index
-        ));
+        // Use random suffix to avoid predictable temp file names
+        let random: u64 = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::time::SystemTime::now().hash(&mut hasher);
+            std::process::id().hash(&mut hasher);
+            std::thread::current().id().hash(&mut hasher);
+            hasher.finish()
+        };
+        let path = std::env::temp_dir().join(format!("cterm_scrollback_{:016x}.bin", random));
         let file = std::fs::File::create(&path)?;
+
+        // Set restrictive permissions since scrollback may contain secrets
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
         bincode::serialize_into(std::io::BufWriter::new(file), &self.scrollback)
             .map_err(io::Error::other)?;
         self.scrollback_file = Some(path.to_string_lossy().into_owned());

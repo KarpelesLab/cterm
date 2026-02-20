@@ -27,6 +27,11 @@ enum ParseState {
     ColorDef,
 }
 
+/// Maximum sixel image dimension (width or height) in pixels.
+/// Prevents excessive memory allocation from malicious input.
+/// 4096 x 4096 x 4 bytes = 64MB which is a reasonable upper bound.
+const MAX_SIXEL_DIMENSION: usize = 4096;
+
 /// Sixel decoder
 pub struct SixelDecoder {
     /// Color palette (RGBA)
@@ -382,8 +387,13 @@ impl SixelDecoder {
         let current_height = self.pixels.len() / (current_width * 4);
 
         if width > current_width || height > current_height {
-            let new_width = width.max(current_width);
-            let new_height = height.max(current_height);
+            let new_width = width.max(current_width).min(MAX_SIXEL_DIMENSION);
+            let new_height = height.max(current_height).min(MAX_SIXEL_DIMENSION);
+
+            // Reject if dimensions exceed limit
+            if width > MAX_SIXEL_DIMENSION || height > MAX_SIXEL_DIMENSION {
+                return;
+            }
 
             // Create new buffer
             let mut new_pixels = if self.transparent_bg {

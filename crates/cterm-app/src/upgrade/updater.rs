@@ -379,7 +379,13 @@ impl Updater {
             // Move to trash or backup instead of deleting
             let backup_path = target_app.with_extension("app.backup");
             if backup_path.exists() {
-                std::fs::remove_dir_all(&backup_path)?;
+                // Check that backup path is not a symlink to prevent symlink attacks
+                let meta = std::fs::symlink_metadata(&backup_path)?;
+                if meta.is_symlink() {
+                    std::fs::remove_file(&backup_path)?;
+                } else {
+                    std::fs::remove_dir_all(&backup_path)?;
+                }
             }
             std::fs::rename(&target_app, &backup_path)?;
         }
