@@ -403,10 +403,7 @@ impl CGRenderer {
     }
 
     fn draw_cell_background_sized(&self, x: f64, y: f64, width: f64, rgb: &Rgb) {
-        let rect = NSRect::new(
-            NSPoint::new(x, y),
-            NSSize::new(width, self.cell_height),
-        );
+        let rect = NSRect::new(NSPoint::new(x, y), NSSize::new(width, self.cell_height));
         unsafe {
             let ns_color = Self::ns_color(rgb.r, rgb.g, rgb.b);
             let _: () = msg_send![&*ns_color, setFill];
@@ -507,18 +504,17 @@ impl CGRenderer {
                 let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
                 let _: () = msg_send![&*path, setLineWidth: thickness];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
-                let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::DOUBLE_UNDERLINE) {
                 // Double underline: two lines
                 let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
                 let _: () = msg_send![&*path, setLineWidth: thickness];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
-                let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y - 2.0)];
-                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y - 2.0)];
+                let _: () =
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y - 2.0)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::CURLY_UNDERLINE) {
                 // Curly underline: approximate with small waves
@@ -550,8 +546,7 @@ impl CGRenderer {
                 let _: () =
                     msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
-                let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::DASHED_UNDERLINE) {
                 // Dashed underline
@@ -561,8 +556,7 @@ impl CGRenderer {
                 let _: () =
                     msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
-                let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             }
         }
@@ -591,8 +585,7 @@ impl CGRenderer {
             let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
             let _: () = msg_send![&*path, setLineWidth: 1.0f64];
             let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, overline_y)];
-            let _: () =
-                msg_send![&*path, lineToPoint: NSPoint::new(x + width, overline_y)];
+            let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, overline_y)];
             let _: () = msg_send![&*path, stroke];
         }
     }
