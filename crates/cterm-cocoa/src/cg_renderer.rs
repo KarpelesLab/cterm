@@ -143,7 +143,7 @@ impl CGRenderer {
                     };
 
                     // Use double width for wide characters
-                    let bg_width = if cell.is_wide() {
+                    let char_width = if cell.is_wide() {
                         self.cell_width * 2.0
                     } else {
                         self.cell_width
@@ -151,7 +151,7 @@ impl CGRenderer {
 
                     // Draw cell background if not default or if selected/inverted
                     if !cell.bg.is_default() || is_inverted || is_selected {
-                        self.draw_cell_background_sized(x, y, bg_width, &bg_color);
+                        self.draw_cell_background_sized(x, y, char_width, &bg_color);
                     }
 
                     // Draw character
@@ -180,17 +180,24 @@ impl CGRenderer {
                             fg_color
                         };
 
-                        self.draw_underline(x, y, &underline_color, &cell.attrs, has_hyperlink);
+                        self.draw_underline(
+                            x,
+                            y,
+                            char_width,
+                            &underline_color,
+                            &cell.attrs,
+                            has_hyperlink,
+                        );
                     }
 
                     // Draw strikethrough
                     if cell.attrs.contains(CellAttrs::STRIKETHROUGH) {
-                        self.draw_strikethrough(x, y, &fg_color);
+                        self.draw_strikethrough(x, y, char_width, &fg_color);
                     }
 
                     // Draw overline
                     if cell.attrs.contains(CellAttrs::OVERLINE) {
-                        self.draw_overline(x, y, &fg_color);
+                        self.draw_overline(x, y, char_width, &fg_color);
                     }
                 }
             }
@@ -479,7 +486,15 @@ impl CGRenderer {
     }
 
     /// Draw underline for a cell
-    fn draw_underline(&self, x: f64, y: f64, rgb: &Rgb, attrs: &CellAttrs, is_hyperlink: bool) {
+    fn draw_underline(
+        &self,
+        x: f64,
+        y: f64,
+        width: f64,
+        rgb: &Rgb,
+        attrs: &CellAttrs,
+        is_hyperlink: bool,
+    ) {
         let underline_y = y + self.cell_height - 2.0;
         let thickness = 1.0;
 
@@ -493,7 +508,7 @@ impl CGRenderer {
                 let _: () = msg_send![&*path, setLineWidth: thickness];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
                 let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::DOUBLE_UNDERLINE) {
                 // Double underline: two lines
@@ -501,15 +516,15 @@ impl CGRenderer {
                 let _: () = msg_send![&*path, setLineWidth: thickness];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
                 let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y - 2.0)];
-                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y - 2.0)];
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y - 2.0)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::CURLY_UNDERLINE) {
                 // Curly underline: approximate with small waves
                 let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
                 let _: () = msg_send![&*path, setLineWidth: thickness];
-                let wave_width = self.cell_width / 4.0;
+                let wave_width = width / 4.0;
                 let wave_height = 1.5;
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
                 for i in 0..4 {
@@ -536,7 +551,7 @@ impl CGRenderer {
                     msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
                 let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             } else if attrs.contains(CellAttrs::DASHED_UNDERLINE) {
                 // Dashed underline
@@ -547,14 +562,14 @@ impl CGRenderer {
                     msg_send![&*path, setLineDash: pattern.as_ptr(), count: 2usize, phase: 0.0f64];
                 let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, underline_y)];
                 let _: () =
-                    msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, underline_y)];
+                    msg_send![&*path, lineToPoint: NSPoint::new(x + width, underline_y)];
                 let _: () = msg_send![&*path, stroke];
             }
         }
     }
 
     /// Draw strikethrough for a cell
-    fn draw_strikethrough(&self, x: f64, y: f64, rgb: &Rgb) {
+    fn draw_strikethrough(&self, x: f64, y: f64, width: f64, rgb: &Rgb) {
         let strike_y = y + self.cell_height * 0.5;
         unsafe {
             let color = Self::ns_color(rgb.r, rgb.g, rgb.b);
@@ -562,13 +577,13 @@ impl CGRenderer {
             let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
             let _: () = msg_send![&*path, setLineWidth: 1.0f64];
             let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, strike_y)];
-            let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, strike_y)];
+            let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + width, strike_y)];
             let _: () = msg_send![&*path, stroke];
         }
     }
 
     /// Draw overline for a cell
-    fn draw_overline(&self, x: f64, y: f64, rgb: &Rgb) {
+    fn draw_overline(&self, x: f64, y: f64, width: f64, rgb: &Rgb) {
         let overline_y = y + 1.0;
         unsafe {
             let color = Self::ns_color(rgb.r, rgb.g, rgb.b);
@@ -577,7 +592,7 @@ impl CGRenderer {
             let _: () = msg_send![&*path, setLineWidth: 1.0f64];
             let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, overline_y)];
             let _: () =
-                msg_send![&*path, lineToPoint: NSPoint::new(x + self.cell_width, overline_y)];
+                msg_send![&*path, lineToPoint: NSPoint::new(x + width, overline_y)];
             let _: () = msg_send![&*path, stroke];
         }
     }
