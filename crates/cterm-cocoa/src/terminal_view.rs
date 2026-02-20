@@ -74,6 +74,12 @@ pub struct TerminalViewIvars {
     state: Arc<ViewState>,
     /// Whether we're currently in a selection drag
     is_selecting: Cell<bool>,
+    /// Auto-scroll direction during selection drag (-1 = up, 0 = none, 1 = down)
+    auto_scroll_direction: Cell<i32>,
+    /// Last mouse column during auto-scroll drag
+    auto_scroll_col: Cell<usize>,
+    /// Timer for auto-scroll during selection drag
+    auto_scroll_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
     /// Template name (if this view was created from a template)
     template_name: RefCell<Option<String>>,
     /// Watchdog FD ID (for crash recovery unregistration)
@@ -419,6 +425,7 @@ define_class!(
             }
 
             self.ivars().is_selecting.set(false);
+            self.stop_auto_scroll();
 
             // Check if mouse reporting is active
             let terminal = self.ivars().terminal.lock();
@@ -518,12 +525,59 @@ define_class!(
                 return;
             }
 
+            // Check if mouse is above or below the view for auto-scroll
+            let view_frame: NSRect = unsafe { msg_send![self, frame] };
+            let view_height = view_frame.size.height;
+            if location.y < 0.0 {
+                // Mouse is above the view (flipped coords) - scroll up
+                self.ivars().auto_scroll_col.set(col);
+                self.start_auto_scroll(-1);
+            } else if location.y > view_height {
+                // Mouse is below the view - scroll down
+                self.ivars().auto_scroll_col.set(col);
+                self.start_auto_scroll(1);
+            } else {
+                // Mouse is within view bounds - stop auto-scroll
+                self.stop_auto_scroll();
+            }
+
             // Normal selection mode - extend selection
             let mut terminal = self.ivars().terminal.lock();
             let line = terminal.screen().visible_row_to_absolute_line(row);
             terminal.screen_mut().extend_selection(line, col);
             drop(terminal);
 
+            self.set_needs_display();
+        }
+
+        /// Timer callback for auto-scrolling during selection drag
+        #[unsafe(method(autoScrollFire:))]
+        fn auto_scroll_fire(&self, _timer: &objc2_foundation::NSTimer) {
+            let direction = self.ivars().auto_scroll_direction.get();
+            if direction == 0 {
+                return;
+            }
+
+            let col = self.ivars().auto_scroll_col.get();
+            let mut terminal = self.ivars().terminal.lock();
+
+            if direction < 0 {
+                // Scroll up (into scrollback)
+                terminal.scroll_viewport_up(1);
+                let line = terminal.screen().visible_row_to_absolute_line(0);
+                terminal.screen_mut().extend_selection(line, col);
+            } else {
+                // Scroll down (towards bottom)
+                terminal.scroll_viewport_down(1);
+                let rows = terminal.screen().height();
+                let line = terminal.screen().visible_row_to_absolute_line(rows.saturating_sub(1));
+                let width = terminal.screen().width();
+                terminal
+                    .screen_mut()
+                    .extend_selection(line, width.saturating_sub(1));
+            }
+
+            drop(terminal);
             self.set_needs_display();
         }
 
@@ -1248,6 +1302,9 @@ impl TerminalView {
             cell_height,
             state: state.clone(),
             is_selecting: Cell::new(false),
+            auto_scroll_direction: Cell::new(0),
+            auto_scroll_col: Cell::new(0),
+            auto_scroll_timer: RefCell::new(None),
             template_name: RefCell::new(options.template_name),
             #[cfg(unix)]
             watchdog_fd_id: Cell::new(options.watchdog_fd_id),
@@ -2017,6 +2074,45 @@ impl TerminalView {
         unsafe {
             let _: () = msg_send![self, setNeedsDisplay: true];
         }
+    }
+
+    /// Start auto-scrolling in the given direction (-1 = up, 1 = down)
+    fn start_auto_scroll(&self, direction: i32) {
+        let current = self.ivars().auto_scroll_direction.get();
+        if current == direction {
+            return; // Already scrolling in this direction
+        }
+        self.ivars().auto_scroll_direction.set(direction);
+
+        // Cancel existing timer
+        if let Some(ref timer) = *self.ivars().auto_scroll_timer.borrow() {
+            timer.invalidate();
+        }
+
+        // Create a repeating timer (every 50ms = ~20 lines/sec)
+        let timer: Retained<objc2_foundation::NSTimer> = unsafe {
+            msg_send![
+                class!(NSTimer),
+                scheduledTimerWithTimeInterval: 0.05f64,
+                target: self,
+                selector: sel!(autoScrollFire:),
+                userInfo: std::ptr::null::<AnyObject>(),
+                repeats: true
+            ]
+        };
+        *self.ivars().auto_scroll_timer.borrow_mut() = Some(timer);
+    }
+
+    /// Stop auto-scrolling
+    fn stop_auto_scroll(&self) {
+        if self.ivars().auto_scroll_direction.get() == 0 {
+            return;
+        }
+        self.ivars().auto_scroll_direction.set(0);
+        if let Some(ref timer) = *self.ivars().auto_scroll_timer.borrow() {
+            timer.invalidate();
+        }
+        *self.ivars().auto_scroll_timer.borrow_mut() = None;
     }
 
     /// Get frame rectangle
