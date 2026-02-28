@@ -6,7 +6,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
-use objc2_app_kit::{NSFont, NSGraphicsContext};
+use objc2_app_kit::{NSFont, NSFontManager, NSFontTraitMask, NSGraphicsContext};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use cterm_core::cell::CellAttrs;
@@ -19,6 +19,9 @@ use cterm_ui::theme::Theme;
 /// CoreGraphics renderer for terminal display
 pub struct CGRenderer {
     font: Retained<NSFont>,
+    bold_font: Retained<NSFont>,
+    italic_font: Retained<NSFont>,
+    bold_italic_font: Retained<NSFont>,
     theme: Theme,
     cell_width: f64,
     cell_height: f64,
@@ -28,11 +31,18 @@ pub struct CGRenderer {
 
 impl CGRenderer {
     /// Create a new CoreGraphics renderer
-    pub fn new(_mtm: MainThreadMarker, font_name: &str, font_size: f64, theme: &Theme) -> Self {
+    pub fn new(mtm: MainThreadMarker, font_name: &str, font_size: f64, theme: &Theme) -> Self {
         // Try to get the specified font, fall back to Menlo
         let font = NSFont::fontWithName_size(&NSString::from_str(font_name), font_size)
             .or_else(|| NSFont::fontWithName_size(&NSString::from_str("Menlo"), font_size))
             .unwrap_or_else(|| NSFont::monospacedSystemFontOfSize_weight(font_size, 0.0));
+
+        // Create bold/italic/bold-italic variants via NSFontManager
+        let fm = NSFontManager::sharedFontManager(mtm);
+        let bold_font = fm.convertFont_toHaveTrait(&font, NSFontTraitMask::BoldFontMask);
+        let italic_font = fm.convertFont_toHaveTrait(&font, NSFontTraitMask::ItalicFontMask);
+        let bold_italic_font =
+            fm.convertFont_toHaveTrait(&bold_font, NSFontTraitMask::ItalicFontMask);
 
         // Calculate cell dimensions using font metrics
         let cell_width = Self::get_advance_for_glyph(&font);
@@ -47,6 +57,9 @@ impl CGRenderer {
 
         Self {
             font,
+            bold_font,
+            italic_font,
+            bold_italic_font,
             theme: theme.clone(),
             cell_width,
             cell_height,
@@ -160,7 +173,7 @@ impl CGRenderer {
                         if let Some(glyph) = screen.get_drcs_for_char(cell.c) {
                             self.draw_drcs_glyph(glyph, x, y, &fg_color);
                         } else {
-                            self.draw_char_rgb(cell.c, x, y, &fg_color);
+                            self.draw_char_rgb(cell.c, x, y, &fg_color, cell.attrs);
                         }
                     }
 
@@ -411,13 +424,18 @@ impl CGRenderer {
         }
     }
 
-    fn draw_char(&self, ch: char, x: f64, y: f64, color: &Color) {
-        let rgb = self.color_to_rgb(color);
-        self.draw_char_rgb(ch, x, y, &rgb);
-    }
-
-    fn draw_char_rgb(&self, ch: char, x: f64, y: f64, rgb: &Rgb) {
+    fn draw_char_rgb(&self, ch: char, x: f64, y: f64, rgb: &Rgb, attrs: CellAttrs) {
         let text = NSString::from_str(&ch.to_string());
+
+        let font = match (
+            attrs.contains(CellAttrs::BOLD),
+            attrs.contains(CellAttrs::ITALIC),
+        ) {
+            (true, true) => &self.bold_italic_font,
+            (true, false) => &self.bold_font,
+            (false, true) => &self.italic_font,
+            (false, false) => &self.font,
+        };
 
         unsafe {
             let ns_color = Self::ns_color(rgb.r, rgb.g, rgb.b);
@@ -430,7 +448,7 @@ impl CGRenderer {
                 std::mem::transmute::<&NSString, &AnyObject>(&font_key),
                 std::mem::transmute::<&NSString, &AnyObject>(&color_key),
             ];
-            let values: [&AnyObject; 2] = [&*self.font, &*ns_color];
+            let values: [&AnyObject; 2] = [&**font, &*ns_color];
 
             let dict: Retained<AnyObject> = msg_send![
                 class!(NSDictionary),

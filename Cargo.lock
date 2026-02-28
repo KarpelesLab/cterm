@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "cterm"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "cterm-cocoa",
  "cterm-gtk",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-app"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "base64",
  "bincode",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-cocoa"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "block2",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-core"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "base64",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-gtk"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "bincode",
  "cairo-rs",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-headless"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-ui"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "bitflags 2.10.0",
  "cterm-core",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "cterm-win32"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "bincode",
  "bitflags 2.10.0",
