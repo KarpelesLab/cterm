@@ -155,6 +155,17 @@ impl CGRenderer {
                         (self.color_to_rgb(&cell.fg), self.color_to_rgb(&cell.bg))
                     };
 
+                    // Apply dim (SGR 2) — halve foreground brightness
+                    let fg_color = if cell.attrs.contains(CellAttrs::DIM) {
+                        Rgb::new(
+                            (fg_color.r as f64 * 0.5) as u8,
+                            (fg_color.g as f64 * 0.5) as u8,
+                            (fg_color.b as f64 * 0.5) as u8,
+                        )
+                    } else {
+                        fg_color
+                    };
+
                     // Use double width for wide characters
                     let char_width = if cell.is_wide() {
                         self.cell_width * 2.0
