@@ -25,13 +25,21 @@ pub struct CGRenderer {
     theme: Theme,
     cell_width: f64,
     cell_height: f64,
+    /// Whether bold text uses bright ANSI colors
+    bold_is_bright: bool,
     /// Optional background color override (from template)
     background_override: Option<Rgb>,
 }
 
 impl CGRenderer {
     /// Create a new CoreGraphics renderer
-    pub fn new(mtm: MainThreadMarker, font_name: &str, font_size: f64, theme: &Theme) -> Self {
+    pub fn new(
+        mtm: MainThreadMarker,
+        font_name: &str,
+        font_size: f64,
+        theme: &Theme,
+        bold_is_bright: bool,
+    ) -> Self {
         // Try to get the specified font, fall back to Menlo
         let font = NSFont::fontWithName_size(&NSString::from_str(font_name), font_size)
             .or_else(|| NSFont::fontWithName_size(&NSString::from_str("Menlo"), font_size))
@@ -63,6 +71,7 @@ impl CGRenderer {
             theme: theme.clone(),
             cell_width,
             cell_height,
+            bold_is_bright,
             background_override: None,
         }
     }
@@ -137,22 +146,33 @@ impl CGRenderer {
                     // XOR selection with INVERSE attribute to determine if colors should be inverted
                     let is_inverted = cell.attrs.contains(CellAttrs::INVERSE) != is_selected;
 
+                    // Apply bold_is_bright: map base ANSI fg colors to bright variants
+                    let fg = if self.bold_is_bright && cell.attrs.contains(CellAttrs::BOLD) {
+                        match cell.fg {
+                            Color::Ansi(ansi) => Color::Ansi(ansi.bright()),
+                            Color::Indexed(idx @ 0..=7) => Color::Indexed(idx + 8),
+                            other => other,
+                        }
+                    } else {
+                        cell.fg
+                    };
+
                     // Determine actual foreground and background colors
                     let (fg_color, bg_color) = if is_inverted {
                         // Inverted: swap foreground and background
-                        let fg = if cell.bg.is_default() {
+                        let fg_rgb = if cell.bg.is_default() {
                             self.theme.colors.background
                         } else {
                             self.color_to_rgb(&cell.bg)
                         };
-                        let bg = if cell.fg.is_default() {
+                        let bg_rgb = if fg.is_default() {
                             self.theme.colors.foreground
                         } else {
-                            self.color_to_rgb(&cell.fg)
+                            self.color_to_rgb(&fg)
                         };
-                        (fg, bg)
+                        (fg_rgb, bg_rgb)
                     } else {
-                        (self.color_to_rgb(&cell.fg), self.color_to_rgb(&cell.bg))
+                        (self.color_to_rgb(&fg), self.color_to_rgb(&cell.bg))
                     };
 
                     // Apply dim (SGR 2) — halve foreground brightness

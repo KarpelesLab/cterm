@@ -1344,6 +1344,7 @@ impl TerminalView {
             &config.appearance.font.family,
             config.appearance.font.size,
             theme,
+            config.appearance.bold_is_bright,
         );
         let (cell_width, cell_height) = renderer.cell_size();
 
@@ -1375,6 +1376,7 @@ impl TerminalView {
             &config.appearance.font.family,
             config.appearance.font.size,
             theme,
+            config.appearance.bold_is_bright,
         );
         if let Some(ref bg_color) = template.background_color {
             renderer.set_background_override(Some(bg_color));
@@ -1417,6 +1419,7 @@ impl TerminalView {
             &config.appearance.font.family,
             config.appearance.font.size,
             theme,
+            config.appearance.bold_is_bright,
         );
         let (cell_width, cell_height) = renderer.cell_size();
 
@@ -1471,6 +1474,7 @@ impl TerminalView {
             &config.appearance.font.family,
             config.appearance.font.size,
             theme,
+            config.appearance.bold_is_bright,
         );
         let (cell_width, cell_height) = renderer.cell_size();
 
