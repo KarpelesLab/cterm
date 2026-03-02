@@ -1605,53 +1605,106 @@ impl Screen {
     }
 
     /// Find word boundaries around a column position in a row
-    fn find_word_bounds(&self, line: usize, col: usize) -> (usize, usize) {
+    fn find_word_bounds(&self, line: usize, col: usize) -> (SelectionPoint, SelectionPoint) {
         let row = match self.get_row_by_absolute_line(line) {
             Some(r) => r,
-            None => return (col, col),
+            None => {
+                return (
+                    SelectionPoint::new(line, col),
+                    SelectionPoint::new(line, col),
+                )
+            }
         };
 
         let row_len = row.len();
         if row_len == 0 || col >= row_len {
-            return (col, col);
+            return (
+                SelectionPoint::new(line, col),
+                SelectionPoint::new(line, col),
+            );
         }
 
         let center_char = row.get(col).map(|c| c.c).unwrap_or(' ');
 
         // If we clicked on a non-word character, just select that character
         if !Self::is_word_char(center_char) {
-            return (col, col);
+            return (
+                SelectionPoint::new(line, col),
+                SelectionPoint::new(line, col),
+            );
         }
 
-        // Find start of word
-        let mut start = col;
-        while start > 0 {
-            if let Some(cell) = row.get(start - 1) {
-                if Self::is_word_char(cell.c) {
-                    start -= 1;
-                } else {
-                    break;
+        // Find start of word — walk backward, crossing wrapped line boundaries
+        let mut start_line = line;
+        let mut start_col = col;
+        loop {
+            if start_col > 0 {
+                let r = self.get_row_by_absolute_line(start_line).unwrap();
+                if let Some(cell) = r.get(start_col - 1) {
+                    if Self::is_word_char(cell.c) {
+                        start_col -= 1;
+                        continue;
+                    }
                 }
-            } else {
                 break;
             }
-        }
-
-        // Find end of word
-        let mut end = col;
-        while end < row_len - 1 {
-            if let Some(cell) = row.get(end + 1) {
-                if Self::is_word_char(cell.c) {
-                    end += 1;
-                } else {
-                    break;
-                }
-            } else {
+            // At column 0 — check if this row is a continuation of the previous line
+            if start_line == 0 {
                 break;
             }
+            let current_row = self.get_row_by_absolute_line(start_line);
+            if current_row.is_some_and(|r| r.wrapped) {
+                // This row is a wrapped continuation; move to end of previous line
+                if let Some(prev_row) = self.get_row_by_absolute_line(start_line - 1) {
+                    let prev_len = prev_row.len();
+                    if prev_len > 0 {
+                        if let Some(cell) = prev_row.get(prev_len - 1) {
+                            if Self::is_word_char(cell.c) {
+                                start_line -= 1;
+                                start_col = prev_len - 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
         }
 
-        (start, end)
+        // Find end of word — walk forward, crossing into wrapped continuation lines
+        let mut end_line = line;
+        let mut end_col = col;
+        loop {
+            let r = self.get_row_by_absolute_line(end_line).unwrap();
+            let r_len = r.len();
+            if end_col < r_len - 1 {
+                if let Some(cell) = r.get(end_col + 1) {
+                    if Self::is_word_char(cell.c) {
+                        end_col += 1;
+                        continue;
+                    }
+                }
+                break;
+            }
+            // At end of row — check if next row is a wrapped continuation
+            if let Some(next_row) = self.get_row_by_absolute_line(end_line + 1) {
+                if next_row.wrapped {
+                    if let Some(cell) = next_row.get(0) {
+                        if Self::is_word_char(cell.c) {
+                            end_line += 1;
+                            end_col = 0;
+                            continue;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        (
+            SelectionPoint::new(start_line, start_col),
+            SelectionPoint::new(end_line, end_col),
+        )
     }
 
     /// Start a new selection at the given absolute line and column
@@ -1662,9 +1715,7 @@ impl Screen {
                 self.selection = Some(Selection::new(point, mode));
             }
             SelectionMode::Word => {
-                let (start_col, end_col) = self.find_word_bounds(line, col);
-                let anchor_start = SelectionPoint::new(line, start_col);
-                let anchor_end = SelectionPoint::new(line, end_col);
+                let (anchor_start, anchor_end) = self.find_word_bounds(line, col);
                 self.selection = Some(Selection::new_with_range(anchor_start, anchor_end, mode));
             }
             SelectionMode::Line => {
@@ -1702,12 +1753,12 @@ impl Screen {
                 if let Some(ref mut selection) = self.selection {
                     if current.is_before(&anchor_start) {
                         // Extending before the original word
-                        selection.end = SelectionPoint::new(line, word_start);
+                        selection.end = word_start;
                     } else if anchor_end.is_before(&current)
                         || (line == anchor_end.line && col > anchor_end.col)
                     {
                         // Extending after the original word
-                        selection.end = SelectionPoint::new(line, word_end);
+                        selection.end = word_end;
                     } else {
                         // Within the original word - keep original selection
                         selection.end = anchor_end;
