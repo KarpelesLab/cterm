@@ -67,6 +67,8 @@ impl ShortcutManager {
             Action::NextTab,
         );
         self.bind(Shortcut::ctrl_shift(KeyCode::Tab), Action::PrevTab);
+        self.bind(Shortcut::ctrl(KeyCode::PageDown), Action::NextTab);
+        self.bind(Shortcut::ctrl(KeyCode::PageUp), Action::PrevTab);
 
         // Tab number shortcuts (Ctrl+1-9)
         self.bind(Shortcut::ctrl(KeyCode::Key1), Action::Tab(1));
