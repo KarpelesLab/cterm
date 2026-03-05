@@ -16,7 +16,7 @@ path = "src/main.rs"
 cterm-cocoa = { path = "crates/cterm-cocoa" }
 
 [target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
-cterm-gtk = { path = "crates/cterm-gtk" }
+cterm-gtk = { path = "crates/cterm-gtk", features = ["adwaita"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cterm-win32 = { path = "crates/cterm-win32" }

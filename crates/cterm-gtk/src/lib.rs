@@ -88,6 +88,10 @@ pub fn run() {
     // Store args for later access
     let _ = APP_ARGS.set(args);
 
+    // Initialize Adwaita theme engine for proper widget styling
+    #[cfg(feature = "adwaita")]
+    let _ = libadwaita::init();
+
     // Create the GTK application
     let app = Application::builder()
         .application_id("com.cterm.terminal")

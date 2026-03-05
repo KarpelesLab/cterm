@@ -1128,6 +1128,17 @@ impl CtermWindow {
             });
             window.add_action(&action);
         }
+
+        // Register accelerators so shortcuts appear in menus
+        if let Some(app) = window.application() {
+            app.set_accels_for_action("win.new-tab", &["<Ctrl><Shift>t"]);
+            app.set_accels_for_action("win.new-window", &["<Ctrl><Shift>n"]);
+            app.set_accels_for_action("win.close-tab", &["<Ctrl><Shift>w"]);
+            app.set_accels_for_action("win.copy", &["<Ctrl><Shift>c"]);
+            app.set_accels_for_action("win.paste", &["<Ctrl><Shift>v"]);
+            app.set_accels_for_action("win.find", &["<Ctrl><Shift>f"]);
+            app.set_accels_for_action("win.quit", &["<Ctrl><Shift>q"]);
+        }
     }
 
     /// Present the window and focus the terminal

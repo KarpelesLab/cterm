@@ -36,6 +36,9 @@ use crate::terminal_widget::TerminalWidget;
 /// 3. Sends acknowledgment
 /// 4. Reconstructs the GTK application with the received state
 pub fn run_receiver(handle: u64) -> glib::ExitCode {
+    #[cfg(feature = "adwaita")]
+    let _ = libadwaita::init();
+
     match receive_and_reconstruct(handle) {
         Ok(()) => glib::ExitCode::SUCCESS,
         Err(e) => {
