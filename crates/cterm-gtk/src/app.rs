@@ -83,6 +83,14 @@ fn apply_css(_theme: &Theme) {
             border-radius: 3px;
             min-height: 0;
         }
+
+        /* Remove popover shadow - alpha compositing is unreliable on X11 */
+        popover {
+            margin: 0;
+        }
+        popover > contents {
+            box-shadow: none;
+        }
         "#;
 
     provider.load_from_data(css);

@@ -1317,6 +1317,14 @@ impl CtermWindow {
                             }
                             return glib::Propagation::Stop;
                         }
+                        Action::NewWindow => {
+                            gtk4::prelude::ActionGroupExt::activate_action(
+                                &window,
+                                "new-window",
+                                None,
+                            );
+                            return glib::Propagation::Stop;
+                        }
                         Action::CloseWindow => {
                             window.close();
                             return glib::Propagation::Stop;
