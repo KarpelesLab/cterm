@@ -1424,118 +1424,119 @@ fn draw_terminal(
     let cell_width = cell_dims.width;
     let cell_height = cell_dims.height;
 
-    // Draw cells
+    // Draw cells - use absolute line indices to render scrollback content
     let grid = screen.grid();
     let scroll_offset = screen.scroll_offset;
-    let scrollback_len = screen.scrollback().len();
+    let rows = grid.height();
+    let cols = grid.width();
 
-    for row_idx in 0..grid.height() {
-        if let Some(row) = grid.row(row_idx) {
-            let y = row_idx as f64 * cell_height;
+    for row_idx in 0..rows {
+        let y = row_idx as f64 * cell_height;
+        let absolute_line = screen.visible_row_to_absolute_line(row_idx);
 
-            // Calculate absolute line for selection checking
-            let absolute_line = scrollback_len.saturating_sub(scroll_offset) + row_idx;
+        for col_idx in 0..cols {
+            let cell = if let Some(c) = screen.get_cell_with_scrollback(absolute_line, col_idx) {
+                c
+            } else {
+                continue;
+            };
+            let x = col_idx as f64 * cell_width;
 
-            for col_idx in 0..grid.width() {
-                let cell = &row[col_idx];
-                let x = col_idx as f64 * cell_width;
+            // Skip wide char spacers
+            if cell.attrs.contains(CellAttrs::WIDE_SPACER) {
+                continue;
+            }
 
-                // Skip wide char spacers
-                if cell.attrs.contains(CellAttrs::WIDE_SPACER) {
-                    continue;
-                }
+            // Check if this cell is selected
+            let is_selected = screen.is_selected(absolute_line, col_idx);
 
-                // Check if this cell is selected
-                let is_selected = screen.is_selected(absolute_line, col_idx);
+            // Determine if cell has INVERSE attribute (XOR with selection)
+            let is_inverted = cell.attrs.contains(CellAttrs::INVERSE) != is_selected;
 
-                // Determine if cell has INVERSE attribute (XOR with selection)
-                let is_inverted = cell.attrs.contains(CellAttrs::INVERSE) != is_selected;
+            // Draw background (always draw for selected cells to show highlight)
+            let needs_bg = cell.bg != Color::Default || is_inverted || is_selected;
 
-                // Draw background (always draw for selected cells to show highlight)
-                let needs_bg = cell.bg != Color::Default || is_inverted || is_selected;
-
-                if needs_bg {
-                    let bg_color = if is_inverted {
-                        // Inverted: use foreground color as background
-                        if cell.fg == Color::Default {
-                            palette.foreground
-                        } else {
-                            cell.fg.to_rgb(palette)
-                        }
-                    } else {
-                        cell.bg.to_rgb(palette)
-                    };
-
-                    let (r, g, b) = bg_color.to_f64();
-                    cr.set_source_rgb(r, g, b);
-
-                    let char_width = if cell.attrs.contains(CellAttrs::WIDE) {
-                        cell_width * 2.0
-                    } else {
-                        cell_width
-                    };
-
-                    cr.rectangle(x, y, char_width, cell_height);
-                    cr.fill().ok();
-                }
-
-                // Draw character
-                if cell.c != ' ' {
-                    let fg_color = if is_inverted {
-                        // Inverted: use background color as foreground
-                        cell.bg.to_rgb(palette)
-                    } else if cell.fg == Color::Default {
+            if needs_bg {
+                let bg_color = if is_inverted {
+                    // Inverted: use foreground color as background
+                    if cell.fg == Color::Default {
                         palette.foreground
                     } else {
                         cell.fg.to_rgb(palette)
-                    };
-
-                    // Apply dim
-                    let fg_color = if cell.attrs.contains(CellAttrs::DIM) {
-                        Rgb::new(
-                            (fg_color.r as f64 * 0.5) as u8,
-                            (fg_color.g as f64 * 0.5) as u8,
-                            (fg_color.b as f64 * 0.5) as u8,
-                        )
-                    } else {
-                        fg_color
-                    };
-
-                    let (r, g, b) = fg_color.to_f64();
-                    cr.set_source_rgb(r, g, b);
-
-                    // Apply text attributes to font
-                    let attrs = pango::AttrList::new();
-
-                    if cell.attrs.contains(CellAttrs::BOLD) {
-                        let attr = pango::AttrInt::new_weight(pango::Weight::Bold);
-                        attrs.insert(attr);
                     }
+                } else {
+                    cell.bg.to_rgb(palette)
+                };
 
-                    if cell.attrs.contains(CellAttrs::ITALIC) {
-                        let attr = pango::AttrInt::new_style(pango::Style::Italic);
-                        attrs.insert(attr);
-                    }
+                let (r, g, b) = bg_color.to_f64();
+                cr.set_source_rgb(r, g, b);
 
-                    if cell.attrs.contains(CellAttrs::UNDERLINE) {
-                        let attr = pango::AttrInt::new_underline(pango::Underline::Single);
-                        attrs.insert(attr);
-                    }
+                let char_width = if cell.attrs.contains(CellAttrs::WIDE) {
+                    cell_width * 2.0
+                } else {
+                    cell_width
+                };
 
-                    if cell.attrs.contains(CellAttrs::STRIKETHROUGH) {
-                        let attr = pango::AttrInt::new_strikethrough(true);
-                        attrs.insert(attr);
-                    }
+                cr.rectangle(x, y, char_width, cell_height);
+                cr.fill().ok();
+            }
 
-                    layout.set_attributes(Some(&attrs));
-                    layout.set_text(&cell.c.to_string());
+            // Draw character
+            if cell.c != ' ' {
+                let fg_color = if is_inverted {
+                    // Inverted: use background color as foreground
+                    cell.bg.to_rgb(palette)
+                } else if cell.fg == Color::Default {
+                    palette.foreground
+                } else {
+                    cell.fg.to_rgb(palette)
+                };
 
-                    cr.move_to(x, y);
-                    pangocairo::functions::show_layout(cr, &layout);
+                // Apply dim
+                let fg_color = if cell.attrs.contains(CellAttrs::DIM) {
+                    Rgb::new(
+                        (fg_color.r as f64 * 0.5) as u8,
+                        (fg_color.g as f64 * 0.5) as u8,
+                        (fg_color.b as f64 * 0.5) as u8,
+                    )
+                } else {
+                    fg_color
+                };
 
-                    // Reset attributes
-                    layout.set_attributes(None::<&pango::AttrList>);
+                let (r, g, b) = fg_color.to_f64();
+                cr.set_source_rgb(r, g, b);
+
+                // Apply text attributes to font
+                let attrs = pango::AttrList::new();
+
+                if cell.attrs.contains(CellAttrs::BOLD) {
+                    let attr = pango::AttrInt::new_weight(pango::Weight::Bold);
+                    attrs.insert(attr);
                 }
+
+                if cell.attrs.contains(CellAttrs::ITALIC) {
+                    let attr = pango::AttrInt::new_style(pango::Style::Italic);
+                    attrs.insert(attr);
+                }
+
+                if cell.attrs.contains(CellAttrs::UNDERLINE) {
+                    let attr = pango::AttrInt::new_underline(pango::Underline::Single);
+                    attrs.insert(attr);
+                }
+
+                if cell.attrs.contains(CellAttrs::STRIKETHROUGH) {
+                    let attr = pango::AttrInt::new_strikethrough(true);
+                    attrs.insert(attr);
+                }
+
+                layout.set_attributes(Some(&attrs));
+                layout.set_text(&cell.c.to_string());
+
+                cr.move_to(x, y);
+                pangocairo::functions::show_layout(cr, &layout);
+
+                // Reset attributes
+                layout.set_attributes(None::<&pango::AttrList>);
             }
         }
     }
