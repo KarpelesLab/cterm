@@ -826,6 +826,7 @@ impl TerminalWidget {
         if let Some(im_ctx) = key_controller.im_context() {
             im_ctx.connect_commit(move |_, text| {
                 let mut term = terminal_commit.lock();
+                term.scroll_viewport_to_bottom();
                 if let Err(e) = term.write(text.as_bytes()) {
                     log::error!("Failed to write IM text to PTY: {}", e);
                 }
@@ -834,6 +835,14 @@ impl TerminalWidget {
         }
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+            // Reset scroll to bottom on any user input
+            {
+                let mut term = terminal_key.lock();
+                if !term.is_at_bottom() {
+                    term.scroll_viewport_to_bottom();
+                }
+            }
+
             let modifiers = gtk_state_to_modifiers(state);
             let has_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             let has_alt = state.contains(gdk::ModifierType::ALT_MASK);
