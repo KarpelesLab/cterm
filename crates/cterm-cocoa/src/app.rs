@@ -1351,6 +1351,13 @@ pub fn run() {
     let recovery_fds = if let Some(fd) = args.crash_recovery {
         log::info!("Running in crash recovery mode (FD {})", fd);
         WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
+        // Set CLOEXEC so child shell processes don't inherit the watchdog socket
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
 
         match cterm_app::receive_recovery_fds(fd) {
             Ok(fds) => {
@@ -1371,6 +1378,13 @@ pub fn run() {
         log::info!("Running under watchdog supervision (FD {})", fd);
         // Store watchdog FD for later use (registering PTYs, shutdown notification)
         WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
+        // Set CLOEXEC so child shell processes don't inherit the watchdog socket
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
     }
 
     // Store recovery FDs for use during window creation

@@ -380,6 +380,13 @@ mod unix {
                 return Err(PtyError::Create(Box::new(io::Error::last_os_error())));
             }
 
+            // Set CLOEXEC on master so it doesn't leak into child processes
+            // from other tabs (slave is intentionally inherited by our own child)
+            let flags = libc::fcntl(master_fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(master_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+
             // Set the initial window size
             let size = libc::winsize {
                 ws_row: config.size.rows,
@@ -444,6 +451,16 @@ mod unix {
             // Close the original slave FD if it's not one of the standard FDs
             if slave_fd > libc::STDERR_FILENO {
                 libc::close(slave_fd);
+            }
+
+            // Close all other inherited file descriptors (PTY masters from other
+            // tabs, watchdog socket, etc.) so the child starts clean
+            let max_fd = libc::sysconf(libc::_SC_OPEN_MAX) as RawFd;
+            let max_fd = if max_fd > 0 { max_fd.min(65536) } else { 1024 };
+            for fd in (libc::STDERR_FILENO + 1)..max_fd {
+                if fd != slave_fd {
+                    libc::close(fd);
+                }
             }
 
             // Change to the working directory if specified
