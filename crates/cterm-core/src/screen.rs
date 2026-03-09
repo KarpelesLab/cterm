@@ -1601,7 +1601,7 @@ impl Screen {
 
     /// Check if a character is a word character (for word selection)
     fn is_word_char(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
+        c.is_alphanumeric() || c == '_' || c == '.'
     }
 
     /// Find word boundaries around a column position in a row
