@@ -28,6 +28,8 @@ pub use grid::Grid;
 pub use image_decode::{decode_image, DecodedImage, ImageDecodeError};
 pub use iterm2::{Iterm2Dimension, Iterm2FileParams};
 pub use parser::Parser;
+#[cfg(unix)]
+pub use pty::save_original_nofile_limit;
 pub use pty::{Pty, PtyConfig, PtyError, PtySize};
 pub use screen::{
     ClipboardOperation, ClipboardSelection, ColorQuery, FileTransferOperation, Screen,

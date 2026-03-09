@@ -91,6 +91,10 @@ pub fn run() {
     // Initialize logging with capture for in-app viewing
     cterm_app::log_capture::init();
 
+    // Save the original FD limit before raising it, so child processes can restore it
+    #[cfg(unix)]
+    cterm_core::save_original_nofile_limit();
+
     // Raise the file descriptor limit so we can handle many tabs + upgrades
     #[cfg(unix)]
     {

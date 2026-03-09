@@ -61,6 +61,22 @@ mod unix {
     use super::*;
     use std::ffi::{CStr, CString};
     use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Original soft RLIMIT_NOFILE before cterm raises it.
+    /// Child processes restore this so shells get the expected default limit.
+    static ORIGINAL_NOFILE_LIMIT: AtomicU64 = AtomicU64::new(0);
+
+    /// Save the current soft RLIMIT_NOFILE. Call this before raising the limit.
+    pub fn save_original_nofile_limit() {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+            ORIGINAL_NOFILE_LIMIT.store(rlim.rlim_cur, Ordering::Relaxed);
+        }
+    }
 
     /// Native PTY with exposed raw file descriptor
     pub struct Pty {
@@ -518,6 +534,19 @@ mod unix {
             let mut args_ptrs: Vec<*const libc::c_char> =
                 args_cstrings.iter().map(|s| s.as_ptr()).collect();
             args_ptrs.push(std::ptr::null());
+
+            // Restore the original RLIMIT_NOFILE so child gets the expected default
+            let orig = ORIGINAL_NOFILE_LIMIT.load(Ordering::Relaxed);
+            if orig > 0 {
+                let mut rlim = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                    rlim.rlim_cur = orig;
+                    libc::setrlimit(libc::RLIMIT_NOFILE, &rlim);
+                }
+            }
 
             // Execute the shell (execvp searches PATH)
             libc::execvp(shell_cstring.as_ptr(), args_ptrs.as_ptr());
@@ -1045,6 +1074,8 @@ mod windows {
 // Re-export the platform-specific Pty
 // ============================================================================
 
+#[cfg(unix)]
+pub use unix::save_original_nofile_limit;
 #[cfg(unix)]
 pub use unix::Pty;
 

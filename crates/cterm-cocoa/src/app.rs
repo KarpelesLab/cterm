@@ -1297,6 +1297,10 @@ pub fn run() {
     // Initialize logging with capture buffer for in-app log viewing
     crate::log_capture::init();
 
+    // Save the original FD limit before raising it, so child processes can restore it
+    #[cfg(unix)]
+    cterm_core::save_original_nofile_limit();
+
     // Raise the file descriptor limit so we can handle many tabs + upgrades.
     // The default macOS soft limit is 256, which is too low for heavy use.
     #[cfg(unix)]
