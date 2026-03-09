@@ -91,6 +91,24 @@ pub fn run() {
     // Initialize logging with capture for in-app viewing
     cterm_app::log_capture::init();
 
+    // Raise the file descriptor limit so we can handle many tabs + upgrades
+    #[cfg(unix)]
+    {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+            let new_cur = rlim.rlim_max.min(10240);
+            if new_cur > rlim.rlim_cur {
+                rlim.rlim_cur = new_cur;
+                unsafe {
+                    libc::setrlimit(libc::RLIMIT_NOFILE, &rlim);
+                }
+            }
+        }
+    }
+
     log::info!("Starting cterm");
 
     // Check if we're in upgrade receiver mode

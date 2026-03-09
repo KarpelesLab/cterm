@@ -1297,6 +1297,25 @@ pub fn run() {
     // Initialize logging with capture buffer for in-app log viewing
     crate::log_capture::init();
 
+    // Raise the file descriptor limit so we can handle many tabs + upgrades.
+    // The default macOS soft limit is 256, which is too low for heavy use.
+    #[cfg(unix)]
+    {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+            let new_cur = rlim.rlim_max.min(10240);
+            if new_cur > rlim.rlim_cur {
+                rlim.rlim_cur = new_cur;
+                unsafe {
+                    libc::setrlimit(libc::RLIMIT_NOFILE, &rlim);
+                }
+            }
+        }
+    }
+
     // Install signal handler for crash debugging
     // Uses only async-signal-safe operations (raw write + abort)
     #[cfg(unix)]
