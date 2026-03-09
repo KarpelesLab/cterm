@@ -1478,7 +1478,6 @@ struct RenderConfig<'a> {
 }
 
 /// Draw the terminal contents
-#[allow(clippy::too_many_arguments)]
 fn draw_terminal(
     cr: &cairo::Context,
     terminal: &Arc<Mutex<Terminal>>,
