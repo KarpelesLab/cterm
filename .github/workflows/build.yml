@@ -704,19 +704,19 @@ jobs:
           fi
           echo "Signing with: $IDENTITY"
 
-          # Sign the binary inside the bundle with hardened runtime
-          codesign --force --options runtime \
-            --entitlements packaging/macos/cterm.entitlements \
-            --sign "$IDENTITY" \
-            --timestamp \
-            "release/cterm.app/Contents/MacOS/cterm"
-
-          # Sign ctermd inside the bundle
+          # Sign ctermd first (must be signed before the main binary)
           codesign --force --options runtime \
             --entitlements packaging/macos/cterm.entitlements \
             --sign "$IDENTITY" \
             --timestamp \
             "release/cterm.app/Contents/MacOS/ctermd"
+
+          # Sign the main binary inside the bundle with hardened runtime
+          codesign --force --options runtime \
+            --entitlements packaging/macos/cterm.entitlements \
+            --sign "$IDENTITY" \
+            --timestamp \
+            "release/cterm.app/Contents/MacOS/cterm"
 
           # Sign the app bundle itself
           codesign --force --options runtime \

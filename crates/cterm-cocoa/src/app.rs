@@ -82,6 +82,8 @@ pub struct AppDelegateIvars {
     config: Config,
     theme: Theme,
     windows: std::cell::RefCell<Vec<Retained<CtermWindow>>>,
+    /// Manages cached SSH connections to remote ctermd instances
+    remote_manager: cterm_client::RemoteManager,
     /// Set to true during relaunch to skip close confirmation
     is_relaunching: std::cell::Cell<bool>,
     /// Count of windows with active bell notifications
@@ -308,7 +310,14 @@ define_class!(
         fn action_show_tab_templates(&self, _sender: Option<&objc2::runtime::AnyObject>) {
             let mtm = MainThreadMarker::from(self);
             let templates = cterm_app::config::load_sticky_tabs().unwrap_or_default();
-            crate::tab_templates::show_tab_templates(mtm, templates);
+            let remote_names: Vec<String> = self
+                .ivars()
+                .config
+                .remotes
+                .iter()
+                .map(|r| r.name.clone())
+                .collect();
+            crate::tab_templates::show_tab_templates(mtm, templates, remote_names);
         }
 
         #[unsafe(method(checkForUpdates:))]
@@ -641,8 +650,68 @@ define_class!(
         /// Show SSH connection dialog
         #[unsafe(method(sshConnect:))]
         fn action_ssh_connect(&self, _sender: Option<&objc2::runtime::AnyObject>) {
-            log::info!("SSH connect requested (not yet implemented for macOS native dialogs)");
-            // TODO: implement native macOS SSH connection dialog
+            let mtm = MainThreadMarker::from(self);
+            let remote_manager = self.ivars().remote_manager.clone();
+            let config = self.ivars().config.clone();
+            let theme = self.ivars().theme.clone();
+
+            // Show a simple input dialog for the SSH host
+            let alert = objc2_app_kit::NSAlert::new(mtm);
+            alert.setMessageText(&NSString::from_str("SSH Remote Terminal"));
+            alert.setInformativeText(&NSString::from_str("Enter host (e.g. user@hostname):"));
+            alert.addButtonWithTitle(&NSString::from_str("Connect"));
+            alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+
+            let input = unsafe {
+                let field = objc2_app_kit::NSTextField::new(mtm);
+                field.setFrame(objc2_foundation::NSRect::new(
+                    objc2_foundation::NSPoint::new(0.0, 0.0),
+                    objc2_foundation::NSSize::new(300.0, 24.0),
+                ));
+                field.setPlaceholderString(Some(&NSString::from_str("user@hostname")));
+                alert.setAccessoryView(Some(&field));
+                field
+            };
+
+            let response = unsafe { alert.runModal() };
+            if response != objc2_app_kit::NSAlertFirstButtonReturn {
+                return;
+            }
+
+            let host = input.stringValue().to_string();
+            if host.is_empty() {
+                return;
+            }
+
+            log::info!("SSH connect to: {}", host);
+
+            // Create a session on the remote daemon
+            let opts = cterm_client::CreateSessionOpts {
+                cols: 80,
+                rows: 24,
+                ..Default::default()
+            };
+
+            let app = NSApplication::sharedApplication(mtm);
+            if let Some(key_window) = app.keyWindow() {
+                let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
+                let cterm_window: &CtermWindow = unsafe { &*window_ptr };
+                cterm_window.spawn_daemon_tab(
+                    opts,
+                    Some(host.clone()),
+                    Some("#22c55e".into()), // Green for remote
+                    None,
+                    Some((remote_manager, host.clone(), host)),
+                );
+            }
+        }
+
+        /// Show remotes management dialog
+        #[unsafe(method(manageRemotes:))]
+        fn action_manage_remotes(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            let config = self.ivars().config.clone();
+            crate::remotes_dialog::show_remotes_dialog(mtm, config);
         }
 
         /// Called by windows when they close to remove from tracking
@@ -781,6 +850,7 @@ impl AppDelegate {
             config,
             theme,
             windows: std::cell::RefCell::new(Vec::new()),
+            remote_manager: cterm_client::RemoteManager::new(),
             is_relaunching: std::cell::Cell::new(false),
             bell_count: std::cell::Cell::new(0),
         });
@@ -878,6 +948,24 @@ impl AppDelegate {
         let template_color = template.color.clone();
         let template_bg_color = template.background_color.clone();
 
+        // Resolve remote connection info if template targets a remote host
+        let remote = template.remote.as_ref().and_then(|remote_name| {
+            if let Some(remote_cfg) = config.find_remote(remote_name) {
+                Some((
+                    self.ivars().remote_manager.clone(),
+                    remote_name.clone(),
+                    remote_cfg.host.clone(),
+                ))
+            } else {
+                log::error!(
+                    "Template '{}' references unknown remote '{}'",
+                    template.name,
+                    remote_name
+                );
+                None
+            }
+        });
+
         // If there's a key window, add as a tab; otherwise create standalone
         let app = NSApplication::sharedApplication(mtm);
         if let Some(key_window) = app.keyWindow() {
@@ -888,6 +976,7 @@ impl AppDelegate {
                 Some(template_name),
                 template_color,
                 template_bg_color,
+                remote,
             );
         } else {
             // No key window — create a new standalone daemon-backed window

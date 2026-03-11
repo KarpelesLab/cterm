@@ -5,10 +5,12 @@
 
 mod connection;
 mod error;
+mod remote_manager;
 mod session;
 mod socket;
 
 pub use connection::{CreateSessionOpts, DaemonConnection};
 pub use error::ClientError;
+pub use remote_manager::RemoteManager;
 pub use session::SessionHandle;
 pub use socket::{default_socket_path, pid_file_path};

@@ -39,8 +39,37 @@ pub struct Config {
     pub tabs: TabsConfig,
     /// Shortcut bindings
     pub shortcuts: ShortcutsConfig,
+    /// Named remote hosts (for daemon-backed remote sessions)
+    #[serde(default)]
+    pub remotes: Vec<RemoteConfig>,
     /// Sticky tabs configuration
     pub sticky_tabs: Vec<StickyTabConfig>,
+}
+
+/// A named remote host for daemon-backed sessions.
+///
+/// Templates can reference a remote by name. When launched, cterm connects
+/// to the remote's ctermd via SSH (auto-installing if needed), and the
+/// session runs on the remote daemon — surviving SSH disconnects.
+///
+/// ```toml
+/// [[remotes]]
+/// name = "dev-server"
+/// host = "user@dev.example.com"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteConfig {
+    /// Display name / identifier (referenced by templates)
+    pub name: String,
+    /// SSH destination (user@hostname or just hostname)
+    pub host: String,
+}
+
+impl Config {
+    /// Look up a remote by name.
+    pub fn find_remote(&self, name: &str) -> Option<&RemoteConfig> {
+        self.remotes.iter().find(|r| r.name == name)
+    }
 }
 
 /// General settings
@@ -520,6 +549,9 @@ pub struct StickyTabConfig {
     pub docker: Option<DockerTabConfig>,
     /// SSH-specific configuration (if present, this is an SSH remote tab)
     pub ssh: Option<SshTabConfig>,
+    /// Remote host name (references a `[[remotes]]` entry).
+    /// When set, the session runs on the remote ctermd daemon instead of locally.
+    pub remote: Option<String>,
 }
 
 impl Default for StickyTabConfig {
@@ -538,6 +570,7 @@ impl Default for StickyTabConfig {
             env: HashMap::new(),
             docker: None,
             ssh: None,
+            remote: None,
         }
     }
 }

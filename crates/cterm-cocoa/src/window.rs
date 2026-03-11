@@ -492,16 +492,21 @@ impl CtermWindow {
             ..Default::default()
         };
 
-        self.spawn_daemon_tab(opts, None, None, None);
+        self.spawn_daemon_tab(opts, None, None, None, None);
     }
 
-    /// Spawn a daemon session in a background thread and create a tab when ready
+    /// Spawn a daemon session in a background thread and create a tab when ready.
+    ///
+    /// If `remote` is `Some((manager, name, host))`, the session is created on
+    /// the remote ctermd (connecting via SSH if needed). Otherwise it uses the
+    /// local daemon.
     pub fn spawn_daemon_tab(
         &self,
         opts: cterm_client::CreateSessionOpts,
         template_name: Option<String>,
         color: Option<String>,
         background_color: Option<String>,
+        remote: Option<(cterm_client::RemoteManager, String, String)>,
     ) {
         let config = self.ivars().config.clone();
         let theme = self.ivars().theme.clone();
@@ -516,7 +521,11 @@ impl CtermWindow {
 
             let result = match rt {
                 Ok(rt) => rt.block_on(async {
-                    let conn = cterm_client::DaemonConnection::connect_local().await?;
+                    let conn = if let Some((mgr, ref name, ref host)) = remote {
+                        mgr.get_or_connect(name, host).await?
+                    } else {
+                        cterm_client::DaemonConnection::connect_local().await?
+                    };
                     let session = conn.create_session(opts).await?;
                     Ok::<_, cterm_client::ClientError>(session)
                 }),
@@ -755,6 +764,7 @@ impl CtermWindow {
             Some(template.name.clone()),
             template.color.clone(),
             template.background_color.clone(),
+            None,
         );
     }
 

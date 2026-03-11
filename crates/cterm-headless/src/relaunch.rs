@@ -45,6 +45,7 @@ pub struct RelaunchState {
 ///
 /// Creates `<dir>/state.json` with metadata and `<dir>/<session_id>.screen`
 /// with binary protobuf screen snapshots. Returns the directory path.
+#[cfg(unix)]
 pub fn collect_and_write_relaunch_state(
     session_manager: &Arc<SessionManager>,
     socket_path: &str,

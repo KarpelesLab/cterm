@@ -36,6 +36,10 @@ pub struct TabTemplatesWindowIvars {
     theme_field: RefCell<Option<Retained<NSTextField>>>,
     unique_checkbox: RefCell<Option<Retained<NSButton>>>,
     keep_open_checkbox: RefCell<Option<Retained<NSButton>>>,
+    // Remote daemon popup ("Local" + configured remotes)
+    remote_popup: RefCell<Option<Retained<NSPopUpButton>>>,
+    /// Remote names from config (index 0 = "Local")
+    remote_names: Vec<String>,
     // Docker fields
     docker_mode_popup: RefCell<Option<Retained<NSPopUpButton>>>,
     docker_container_field: RefCell<Option<Retained<NSTextField>>>,
@@ -224,7 +228,11 @@ define_class!(
 
 impl TabTemplatesWindow {
     /// Create and show the tab templates window
-    pub fn new(mtm: MainThreadMarker, templates: Vec<StickyTabConfig>) -> Retained<Self> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        templates: Vec<StickyTabConfig>,
+        remote_names: Vec<String>,
+    ) -> Retained<Self> {
         let content_rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(500.0, 480.0));
 
         let style_mask =
@@ -245,6 +253,9 @@ impl TabTemplatesWindow {
             theme_field: RefCell::new(None),
             unique_checkbox: RefCell::new(None),
             keep_open_checkbox: RefCell::new(None),
+            // Remote daemon popup
+            remote_popup: RefCell::new(None),
+            remote_names,
             // Docker fields
             docker_mode_popup: RefCell::new(None),
             docker_container_field: RefCell::new(None),
@@ -456,6 +467,35 @@ impl TabTemplatesWindow {
         let name_row = self.create_field_row(mtm, "Name:", 250.0);
         stack.addView_inGravity(&name_row.0, NSStackViewGravity::Top);
         *self.ivars().name_field.borrow_mut() = Some(name_row.1);
+
+        // Remote daemon popup
+        {
+            let row = unsafe { NSStackView::new(mtm) };
+            row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+            row.setSpacing(8.0);
+
+            let label =
+                unsafe { NSTextField::labelWithString(&NSString::from_str("Remote:"), mtm) };
+            unsafe {
+                let _: () = msg_send![&*label, setPreferredMaxLayoutWidth: 90.0f64];
+            }
+            row.addView_inGravity(&label, NSStackViewGravity::Leading);
+
+            let popup = unsafe { NSPopUpButton::new(mtm) };
+            popup.removeAllItems();
+            popup.addItemWithTitle(&NSString::from_str("Local"));
+            for name in &self.ivars().remote_names {
+                popup.addItemWithTitle(&NSString::from_str(name));
+            }
+            unsafe {
+                popup.setTarget(Some(self));
+                popup.setAction(Some(sel!(checkboxChanged:)));
+            }
+            row.addView_inGravity(&popup, NSStackViewGravity::Leading);
+            stack.addView_inGravity(&row, NSStackViewGravity::Top);
+
+            *self.ivars().remote_popup.borrow_mut() = Some(popup);
+        }
 
         // Command field
         let command_row = self.create_field_row(mtm, "Command:", 250.0);
@@ -819,6 +859,22 @@ impl TabTemplatesWindow {
             if let Some(field) = self.ivars().name_field.borrow().as_ref() {
                 field.setStringValue(&NSString::from_str(&template.name));
             }
+            // Remote popup
+            if let Some(popup) = self.ivars().remote_popup.borrow().as_ref() {
+                let index = template
+                    .remote
+                    .as_ref()
+                    .and_then(|name| {
+                        self.ivars()
+                            .remote_names
+                            .iter()
+                            .position(|r| r == name)
+                            .map(|i| i + 1) // +1 because index 0 is "Local"
+                    })
+                    .unwrap_or(0);
+                popup.selectItemAtIndex(index as isize);
+            }
+
             if let Some(field) = self.ivars().command_field.borrow().as_ref() {
                 field.setStringValue(&NSString::from_str(
                     template.command.as_deref().unwrap_or(""),
@@ -1073,6 +1129,9 @@ impl TabTemplatesWindow {
         if let Some(field) = self.ivars().name_field.borrow().as_ref() {
             field.setStringValue(&empty);
         }
+        if let Some(popup) = self.ivars().remote_popup.borrow().as_ref() {
+            popup.selectItemAtIndex(0); // "Local"
+        }
         if let Some(field) = self.ivars().command_field.borrow().as_ref() {
             field.setStringValue(&empty);
         }
@@ -1162,6 +1221,16 @@ impl TabTemplatesWindow {
             if let Some(field) = self.ivars().name_field.borrow().as_ref() {
                 template.name = field.stringValue().to_string();
             }
+            // Remote popup
+            if let Some(popup) = self.ivars().remote_popup.borrow().as_ref() {
+                let idx = popup.indexOfSelectedItem() as usize;
+                template.remote = if idx == 0 {
+                    None
+                } else {
+                    self.ivars().remote_names.get(idx - 1).cloned()
+                };
+            }
+
             if let Some(field) = self.ivars().command_field.borrow().as_ref() {
                 let cmd = field.stringValue().to_string();
                 template.command = if cmd.is_empty() { None } else { Some(cmd) };
@@ -1801,8 +1870,9 @@ impl TabTemplatesWindow {
 pub fn show_tab_templates(
     mtm: MainThreadMarker,
     templates: Vec<StickyTabConfig>,
+    remote_names: Vec<String>,
 ) -> Retained<TabTemplatesWindow> {
-    let window = TabTemplatesWindow::new(mtm, templates);
+    let window = TabTemplatesWindow::new(mtm, templates, remote_names);
     window.makeKeyAndOrderFront(None);
     window
 }

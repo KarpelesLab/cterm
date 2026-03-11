@@ -250,6 +250,13 @@ fn create_file_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
         "",
     ));
 
+    sessions_submenu.addItem(&create_menu_item(
+        mtm,
+        "Manage Remotes...",
+        Some(sel!(manageRemotes:)),
+        "",
+    ));
+
     let sessions_item = NSMenuItem::new(mtm);
     sessions_item.setTitle(&NSString::from_str("Sessions"));
     sessions_item.setSubmenu(Some(&sessions_submenu));

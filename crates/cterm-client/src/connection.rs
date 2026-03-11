@@ -11,6 +11,58 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
+/// GitHub repository for downloading ctermd releases
+#[cfg(unix)]
+const GITHUB_REPO: &str = "KarpelesLab/cterm";
+
+/// Generate a shell script that finds ctermd on the remote host, installs it
+/// if needed, starts the daemon, and prints the socket path on stdout.
+///
+/// The script:
+/// 1. Checks if `ctermd` is in PATH or at `~/.local/bin/ctermd`
+/// 2. If not found, detects the platform and downloads the latest release
+/// 3. Starts the daemon (daemonizes, returns immediately)
+/// 4. Prints the socket path
+#[cfg(unix)]
+fn remote_setup_script() -> String {
+    format!(
+        r#"set -e
+CTERMD=""
+if command -v ctermd >/dev/null 2>&1; then
+  CTERMD=$(command -v ctermd)
+elif [ -x "$HOME/.local/bin/ctermd" ]; then
+  CTERMD="$HOME/.local/bin/ctermd"
+fi
+if [ -z "$CTERMD" ]; then
+  ARCH=$(uname -m)
+  case "$(uname -s)" in
+    Linux) case "$ARCH" in
+      x86_64) ASSET=ctermd-linux-x86_64;;
+      aarch64) ASSET=ctermd-linux-arm64;;
+      *) echo "Unsupported architecture: $ARCH" >&2; exit 1;; esac;;
+    Darwin) ASSET=ctermd-macos-universal;;
+    *) echo "Unsupported OS: $(uname -s)" >&2; exit 1;;
+  esac
+  mkdir -p "$HOME/.local/bin"
+  URL="https://github.com/{repo}/releases/latest/download/$ASSET.tar.gz"
+  echo "Installing ctermd from $URL" >&2
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$URL" | tar xzf - --strip-components=1 -C "$HOME/.local/bin" "$ASSET/ctermd"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "$URL" | tar xzf - --strip-components=1 -C "$HOME/.local/bin" "$ASSET/ctermd"
+  else
+    echo "curl or wget required to install ctermd" >&2; exit 1
+  fi
+  chmod +x "$HOME/.local/bin/ctermd"
+  CTERMD="$HOME/.local/bin/ctermd"
+  echo "Installed ctermd to $CTERMD" >&2
+fi
+"$CTERMD" >/dev/null 2>&1 || true
+"$CTERMD" --print-socket-path"#,
+        repo = GITHUB_REPO
+    )
+}
+
 /// Information about the connected daemon
 #[derive(Debug, Clone)]
 pub struct DaemonInfo {
@@ -88,10 +140,13 @@ impl DaemonConnection {
     /// Connect to a remote ctermd via SSH socket forwarding.
     ///
     /// This:
-    /// 1. Ensures ctermd is running on the remote host (starts it if needed)
-    /// 2. Gets the remote Unix socket path via `ctermd --print-socket-path`
+    /// 1. Finds ctermd on the remote host, auto-installing from GitHub releases if needed
+    /// 2. Starts the daemon if not already running
     /// 3. Sets up SSH local forwarding (`-L`) to tunnel the remote socket locally
     /// 4. Connects the gRPC client to the local forwarded socket
+    ///
+    /// Auto-install detects the remote platform via `uname` and downloads
+    /// the appropriate ctermd binary from the latest GitHub release.
     ///
     /// Because ctermd runs as a daemon on the remote with its own Unix socket,
     /// sessions survive SSH disconnects and can be reattached.
@@ -103,23 +158,39 @@ impl DaemonConnection {
 
         log::info!("Connecting to {} via SSH", host);
 
-        // 1. Get the remote socket path
+        // 1. Single SSH command: find/install ctermd, start daemon, print socket path
+        let script = remote_setup_script();
         let output = TokioCommand::new("ssh")
-            .args([host, "ctermd", "--print-socket-path"])
+            .args([host, &script])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
             .await
             .map_err(|e| ClientError::Connection(format!("Failed to run ssh: {}", e)))?;
 
+        // Log any stderr (install progress, warnings, etc.)
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            for line in stderr.trim().lines() {
+                log::info!("Remote [{}]: {}", host, line);
+            }
+        }
+
         if !output.status.success() {
             return Err(ClientError::Connection(format!(
-                "ctermd not found on remote host {}. Install it first.",
-                host
+                "Failed to set up ctermd on {}: {}",
+                host,
+                stderr.trim()
             )));
         }
 
-        let remote_socket = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let remote_socket = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
         if remote_socket.is_empty() {
             return Err(ClientError::Connection(
                 "Empty socket path from remote ctermd".to_string(),
@@ -127,25 +198,10 @@ impl DaemonConnection {
         }
         log::info!("Remote socket path: {}", remote_socket);
 
-        // 2. Ensure ctermd is running on the remote (it daemonizes by default)
-        let start_result = TokioCommand::new("ssh")
-            .args([host, "ctermd"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .status()
-            .await
-            .map_err(|e| {
-                ClientError::Connection(format!("Failed to start remote ctermd: {}", e))
-            })?;
+        // Give daemon a moment to fully start and create the socket
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        if !start_result.success() {
-            log::warn!("ctermd start returned non-zero (may already be running)");
-        }
-
-        // Give the daemon a moment to start
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // 3. Create a local temp socket for forwarding
+        // 2. Create a local temp socket for forwarding
         let local_socket = Self::ssh_forward_socket_path(host);
 
         // Clean up stale local socket from previous connection
@@ -158,7 +214,7 @@ impl DaemonConnection {
             std::fs::create_dir_all(parent).ok();
         }
 
-        // 4. Start SSH tunnel: forward remote Unix socket to local Unix socket
+        // 3. Start SSH tunnel: forward remote Unix socket to local Unix socket
         let forward_spec = format!("{}:{}", local_socket.display(), remote_socket);
 
         log::info!("Starting SSH tunnel: -L {}", forward_spec);
@@ -196,7 +252,7 @@ impl DaemonConnection {
             )));
         }
 
-        // 5. Connect to the forwarded socket
+        // 4. Connect to the forwarded socket
         let conn = Self::try_connect_unix(&local_socket).await?;
 
         // Keep the tunnel process alive in the background

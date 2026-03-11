@@ -148,7 +148,9 @@ impl QuickOpenMatcher {
 
 /// Get the type indicator emoji for a template
 pub fn template_type_indicator(template: &StickyTabConfig) -> &'static str {
-    if template.docker.is_some() {
+    if template.remote.is_some() {
+        "\u{1F310}" // Globe emoji for remote daemon
+    } else if template.docker.is_some() {
         "\u{1F433}" // Whale emoji for Docker
     } else if template.ssh.is_some() {
         "\u{1F517}" // Link emoji for SSH

@@ -34,6 +34,7 @@ pub mod menu;
 pub mod notification_bar;
 pub mod preferences;
 pub mod quick_open;
+pub mod remotes_dialog;
 pub mod tab_bar;
 pub mod tab_templates;
 pub mod terminal_view;
