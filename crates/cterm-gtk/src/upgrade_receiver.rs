@@ -1,42 +1,24 @@
-//! Upgrade receiver - handles receiving state from the old process during seamless upgrade
+//! Upgrade receiver - handles receiving state during seamless upgrade
 //!
-//! This module is used when cterm is started with --upgrade-receiver flag.
-//! It receives state from the parent process via an inherited FD/handle, receives the terminal state
-//! and PTY file descriptors/handles, then reconstructs the windows and tabs.
+//! When cterm is started with --upgrade-state, it reads the saved state from
+//! a temp file, reconnects to running daemon sessions, and reconstructs windows.
 
-use cterm_app::config::{load_config, Config};
-use cterm_app::upgrade::{receive_upgrade, TabUpgradeState, UpgradeState, WindowUpgradeState};
-use cterm_ui::theme::Theme;
-use gtk4::gdk;
-use gtk4::gio;
+use std::path::Path;
+
+use cterm_app::config::load_config;
+use cterm_app::upgrade::UpgradeState;
 use gtk4::glib;
 use gtk4::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
-
-#[cfg(unix)]
-use std::os::unix::io::RawFd;
-
-#[cfg(windows)]
-use std::os::windows::io::RawHandle;
-
-use crate::dialogs;
-use crate::menu;
-use crate::tab_bar::TabBar;
-use crate::terminal_widget::TerminalWidget;
 
 /// Run the upgrade receiver
 ///
-/// This function:
-/// 1. Reads from the inherited FD/handle passed by the parent
-/// 2. Receives the upgrade state and PTY file descriptors/handles
-/// 3. Sends acknowledgment
-/// 4. Reconstructs the GTK application with the received state
-pub fn run_receiver(handle: u64) -> glib::ExitCode {
+/// Reads upgrade state from the given file path, reconnects to daemon
+/// sessions, and reconstructs the GTK application with restored windows.
+pub fn run_receiver(state_path: &str) -> glib::ExitCode {
     #[cfg(feature = "adwaita")]
     let _ = libadwaita::init();
 
-    match receive_and_reconstruct(handle) {
+    match receive_and_reconstruct(state_path) {
         Ok(()) => glib::ExitCode::SUCCESS,
         Err(e) => {
             log::error!("Upgrade receiver failed: {}", e);
@@ -45,108 +27,30 @@ pub fn run_receiver(handle: u64) -> glib::ExitCode {
     }
 }
 
-#[cfg(unix)]
-fn receive_and_reconstruct(handle: u64) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the upgrade module to receive the state
-    let (state, fds) = receive_upgrade(handle as RawFd)?;
+fn receive_and_reconstruct(state_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let state = cterm_app::upgrade::receive_upgrade(Path::new(state_path))?;
 
     log::info!(
-        "Upgrade state: format_version={}, cterm_version={}, windows={}",
+        "Upgrade state: format_version={}, {} window(s)",
         state.format_version,
-        state.cterm_version,
         state.windows.len()
     );
 
-    log::info!("Starting GTK with restored state...");
-
-    // Now start GTK and reconstruct the windows
-    run_gtk_with_state_unix(state, fds)?;
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn receive_and_reconstruct(handle: u64) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the upgrade module to receive the state
-    let (state, handles) = receive_upgrade(handle as usize)?;
-
-    log::info!(
-        "Upgrade state: format_version={}, cterm_version={}, windows={}",
-        state.format_version,
-        state.cterm_version,
-        state.windows.len()
-    );
-
-    log::info!("Starting GTK with restored state...");
-
-    // Now start GTK and reconstruct the windows
-    run_gtk_with_state_windows(state, handles)?;
-
-    Ok(())
-}
-
-/// Start GTK application with the restored state (Unix)
-#[cfg(unix)]
-fn run_gtk_with_state_unix(
-    state: UpgradeState,
-    fds: Vec<RawFd>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use gtk4::gio;
-    use gtk4::Application;
-
-    // Store state and FDs for use during window construction
-    // We use thread-local storage since GTK callbacks don't easily pass data
-    UPGRADE_STATE_UNIX.with(|s| {
-        *s.borrow_mut() = Some((state, fds));
+    // Store state for use during GTK activate
+    UPGRADE_STATE.with(|s| {
+        *s.borrow_mut() = Some(state);
     });
 
-    // Use NON_UNIQUE flag to prevent DBus conflicts with the old instance
-    // that may still be shutting down
-    let app = Application::builder()
+    // Start GTK and reconstruct windows
+    let app = gtk4::Application::builder()
         .application_id("com.cterm.terminal")
-        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
     app.connect_activate(|app| {
-        // Retrieve the stored state
-        UPGRADE_STATE_UNIX.with(|s| {
-            if let Some((state, fds)) = s.borrow_mut().take() {
-                reconstruct_windows_unix(app, state, fds);
-            }
-        });
-    });
-
-    // Use run_with_args with empty args to prevent GTK from parsing
-    // the command line (which contains --upgrade-receiver that GTK doesn't know)
-    app.run_with_args(&[] as &[&str]);
-    Ok(())
-}
-
-/// Start GTK application with the restored state (Windows)
-#[cfg(windows)]
-fn run_gtk_with_state_windows(
-    state: UpgradeState,
-    handles: Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use gtk4::gio;
-    use gtk4::Application;
-
-    // Store state and handles for use during window construction
-    UPGRADE_STATE_WINDOWS.with(|s| {
-        *s.borrow_mut() = Some((state, handles));
-    });
-
-    // Use NON_UNIQUE flag to prevent conflicts with the old instance
-    let app = Application::builder()
-        .application_id("com.cterm.terminal")
-        .flags(gio::ApplicationFlags::NON_UNIQUE)
-        .build();
-
-    app.connect_activate(|app| {
-        // Retrieve the stored state
-        UPGRADE_STATE_WINDOWS.with(|s| {
-            if let Some((state, handles)) = s.borrow_mut().take() {
-                reconstruct_windows_windows(app, state, handles);
+        UPGRADE_STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().take() {
+                reconstruct_windows(app, state);
             }
         });
     });
@@ -155,679 +59,98 @@ fn run_gtk_with_state_windows(
     Ok(())
 }
 
-// Thread-local storage for upgrade state (Unix)
-#[cfg(unix)]
 thread_local! {
-    static UPGRADE_STATE_UNIX: std::cell::RefCell<Option<(UpgradeState, Vec<RawFd>)>> =
+    static UPGRADE_STATE: std::cell::RefCell<Option<UpgradeState>> =
         const { std::cell::RefCell::new(None) };
 }
 
-// Thread-local storage for upgrade state (Windows)
-#[cfg(windows)]
-thread_local! {
-    static UPGRADE_STATE_WINDOWS: std::cell::RefCell<Option<(UpgradeState, Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Reconstruct windows from the upgrade state (Unix)
-#[cfg(unix)]
-fn reconstruct_windows_unix(app: &gtk4::Application, state: UpgradeState, fds: Vec<RawFd>) {
-    log::info!("Reconstructing {} windows", state.windows.len());
-
-    // Load config and theme
-    let config = load_config().unwrap_or_default();
-    let theme = Theme::default();
-
-    for (window_idx, window_state) in state.windows.into_iter().enumerate() {
-        log::info!(
-            "Window {}: {}x{} at ({}, {}), {} tabs, active={}",
-            window_idx,
-            window_state.width,
-            window_state.height,
-            window_state.x,
-            window_state.y,
-            window_state.tabs.len(),
-            window_state.active_tab
-        );
-
-        match create_restored_window_unix(app, &config, &theme, window_state, &fds) {
-            Ok(window) => {
-                window.present();
-                log::info!("Window {} restored successfully", window_idx);
-            }
-            Err(e) => {
-                log::error!("Failed to restore window {}: {}", window_idx, e);
-            }
-        }
-    }
-}
-
-/// Reconstruct windows from the upgrade state (Windows)
-#[cfg(windows)]
-fn reconstruct_windows_windows(
-    app: &gtk4::Application,
-    state: UpgradeState,
-    handles: Vec<(RawHandle, RawHandle, RawHandle, RawHandle, u32)>,
-) {
-    log::info!("Reconstructing {} windows", state.windows.len());
-
-    // Load config and theme
-    let config = load_config().unwrap_or_default();
-    let theme = Theme::default();
-
-    for (window_idx, window_state) in state.windows.into_iter().enumerate() {
-        log::info!(
-            "Window {}: {}x{} at ({}, {}), {} tabs, active={}",
-            window_idx,
-            window_state.width,
-            window_state.height,
-            window_state.x,
-            window_state.y,
-            window_state.tabs.len(),
-            window_state.active_tab
-        );
-
-        match create_restored_window_windows(app, &config, &theme, window_state, &handles) {
-            Ok(window) => {
-                window.present();
-                log::info!("Window {} restored successfully", window_idx);
-            }
-            Err(e) => {
-                log::error!("Failed to restore window {}: {}", window_idx, e);
-            }
-        }
-    }
-}
-
-/// Create a restored window with its tabs (Unix)
-#[cfg(unix)]
-fn create_restored_window_unix(
-    app: &gtk4::Application,
-    config: &Config,
-    theme: &Theme,
-    window_state: WindowUpgradeState,
-    fds: &[RawFd],
-) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>> {
-    create_restored_window_common(app, config, theme, window_state, |tab_state| {
-        create_restored_tab_unix(config, theme, tab_state, fds)
-    })
-}
-
-/// Create a restored window with its tabs (Windows)
-#[cfg(windows)]
-fn create_restored_window_windows(
-    app: &gtk4::Application,
-    config: &Config,
-    theme: &Theme,
-    window_state: WindowUpgradeState,
-    handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
-) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>> {
-    create_restored_window_common(app, config, theme, window_state, |tab_state| {
-        create_restored_tab_windows(config, theme, tab_state, handles)
-    })
-}
-
-/// Common window restoration logic (shared between Unix and Windows)
-fn create_restored_window_common<F>(
-    app: &gtk4::Application,
-    config: &Config,
-    theme: &Theme,
-    window_state: WindowUpgradeState,
-    create_tab: F,
-) -> Result<gtk4::ApplicationWindow, Box<dyn std::error::Error>>
-where
-    F: Fn(TabUpgradeState) -> Result<(u64, String, TerminalWidget), Box<dyn std::error::Error>>,
-{
-    use gtk4::{ApplicationWindow, Box as GtkBox, Notebook, Orientation, PopoverMenuBar};
-
-    // Create the main window
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("cterm")
-        .default_width(window_state.width)
-        .default_height(window_state.height)
-        .build();
-
-    // Create the main container
-    let main_box = GtkBox::new(Orientation::Vertical, 0);
-
-    // Create menu bar
-    let menu_model = menu::create_menu_model();
-    let menu_bar = PopoverMenuBar::from_model(Some(&menu_model));
-    main_box.append(&menu_bar);
-
-    // Create tab bar
-    let tab_bar = TabBar::new();
-    main_box.append(tab_bar.widget());
-
-    // Create notebook for terminal tabs
-    let notebook = Notebook::builder()
-        .show_tabs(false)
-        .show_border(false)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
-
-    main_box.append(&notebook);
-    window.set_child(Some(&main_box));
-
-    // Track tabs for callbacks
-    let tabs: Rc<RefCell<Vec<(u64, String, TerminalWidget)>>> = Rc::new(RefCell::new(Vec::new()));
-
-    // Track bell state for window title
-    let has_bell: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    // Set up window actions (required for menu items to work)
-    setup_window_actions(
-        &window, &notebook, &tabs, &tab_bar, &has_bell, config, theme,
+/// Reconstruct windows by reconnecting to daemon sessions
+fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState) {
+    log::info!(
+        "Reconstructing {} window(s) from upgrade state",
+        state.windows.len()
     );
 
-    // Reconstruct each tab
-    for (tab_idx, tab_state) in window_state.tabs.into_iter().enumerate() {
-        log::info!(
-            "  Restoring tab {}: id={}, title='{}', fd_index={}, child_pid={}",
-            tab_idx,
-            tab_state.id,
-            tab_state.title,
-            tab_state.pty_fd_index,
-            tab_state.child_pid
-        );
+    let config = load_config().unwrap_or_default();
+    let theme = cterm_app::resolve_theme(&config);
 
-        // Extract customization state before tab_state is consumed
-        let tab_color = tab_state.color.clone();
-
-        match create_tab(tab_state) {
-            Ok((tab_id, title, terminal_widget)) => {
-                // Add to notebook
-                notebook.append_page(terminal_widget.widget(), None::<&gtk4::Widget>);
-
-                // Add to tab bar
-                tab_bar.add_tab(tab_id, &title);
-
-                // Restore tab color if present
-                if let Some(ref color) = tab_color {
-                    tab_bar.set_color(tab_id, Some(color));
-                }
-
-                // Set up close callback
-                let notebook_close = notebook.clone();
-                let tabs_close = Rc::clone(&tabs);
-                let tab_bar_close = tab_bar.clone();
-                let window_close = window.clone();
-                tab_bar.set_on_close(tab_id, move || {
-                    close_tab_by_id(
-                        &notebook_close,
-                        &tabs_close,
-                        &tab_bar_close,
-                        &window_close,
-                        tab_id,
-                    );
-                });
-
-                // Set up click callback
-                let notebook_click = notebook.clone();
-                let tabs_click = Rc::clone(&tabs);
-                let tab_bar_click = tab_bar.clone();
-                tab_bar.set_on_click(tab_id, move || {
-                    let tabs = tabs_click.borrow();
-                    if let Some(idx) = tabs.iter().position(|(id, _, _)| *id == tab_id) {
-                        notebook_click.set_current_page(Some(idx as u32));
-                        tab_bar_click.set_active(tab_id);
-                        tab_bar_click.clear_bell(tab_id);
-                        // Focus the terminal widget
-                        if let Some(widget) = notebook_click.nth_page(Some(idx as u32)) {
-                            widget.grab_focus();
-                        }
-                    }
-                });
-
-                // Set up exit callback
-                let notebook_exit = notebook.clone();
-                let tabs_exit = Rc::clone(&tabs);
-                let tab_bar_exit = tab_bar.clone();
-                let window_exit = window.clone();
-                terminal_widget.set_on_exit(move || {
-                    close_tab_by_id(
-                        &notebook_exit,
-                        &tabs_exit,
-                        &tab_bar_exit,
-                        &window_exit,
-                        tab_id,
-                    );
-                });
-
-                // Set up bell callback
-                let tab_bar_bell = tab_bar.clone();
-                let notebook_bell = notebook.clone();
-                let tabs_bell = Rc::clone(&tabs);
-                let window_bell = window.clone();
-                let has_bell_bell = Rc::clone(&has_bell);
-                terminal_widget.set_on_bell(move || {
-                    let is_window_active = window_bell.is_active();
-                    let is_current_tab = if let Some(current_page) = notebook_bell.current_page() {
-                        let tabs = tabs_bell.borrow();
-                        tabs.get(current_page as usize)
-                            .map(|(id, _, _)| *id == tab_id)
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-
-                    // Show bell indicator on tab if not current or window not active
-                    if !is_current_tab || !is_window_active {
-                        tab_bar_bell.set_bell(tab_id, true);
-                    }
-
-                    // Update window title if window is not active
-                    if !is_window_active {
-                        *has_bell_bell.borrow_mut() = true;
-                        window_bell.set_title(Some("🔔 cterm"));
-                    }
-                });
-
-                // Store the tab
-                tabs.borrow_mut().push((tab_id, title, terminal_widget));
-            }
-            Err(e) => {
-                log::error!("Failed to restore tab {}: {}", tab_idx, e);
-            }
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Failed to create tokio runtime: {}", e);
+            // Fall back to creating a fresh window
+            crate::app::build_ui(app);
+            return;
         }
-    }
-
-    // Update tab bar visibility (hide if only one tab)
-    tab_bar.update_visibility();
-
-    // Set up window focus handler to clear bell when window becomes active
-    // and send focus events to the terminal (DECSET 1004)
-    {
-        let has_bell_focus = Rc::clone(&has_bell);
-        let window_focus = window.clone();
-        let tab_bar_focus = tab_bar.clone();
-        let tabs_focus = Rc::clone(&tabs);
-        let notebook_focus = notebook.clone();
-        window.connect_is_active_notify(move |win| {
-            let is_active = win.is_active();
-
-            // Send focus event to the active terminal (DECSET 1004)
-            if let Some(page_idx) = notebook_focus.current_page() {
-                let tabs_borrowed = tabs_focus.borrow();
-                if let Some((_, _, terminal)) = tabs_borrowed.get(page_idx as usize) {
-                    terminal.send_focus_event(is_active);
-                }
-            }
-
-            if is_active {
-                let mut bell = has_bell_focus.borrow_mut();
-                if *bell {
-                    *bell = false;
-                    window_focus.set_title(Some("cterm"));
-
-                    // Clear bell on the currently active tab
-                    if let Some(page_idx) = notebook_focus.current_page() {
-                        let tabs = tabs_focus.borrow();
-                        if let Some((tab_id, _, _)) = tabs.get(page_idx as usize) {
-                            tab_bar_focus.clear_bell(*tab_id);
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    // Set active tab
-    if window_state.active_tab < tabs.borrow().len() {
-        notebook.set_current_page(Some(window_state.active_tab as u32));
-        if let Some((id, _, _)) = tabs.borrow().get(window_state.active_tab) {
-            tab_bar.set_active(*id);
-        }
-    }
-
-    // Focus the current terminal (deferred until after window is realized)
-    {
-        let notebook_focus = notebook.clone();
-        glib::idle_add_local_once(move || {
-            if let Some(page) = notebook_focus.current_page() {
-                if let Some(widget) = notebook_focus.nth_page(Some(page)) {
-                    widget.grab_focus();
-                }
-            }
-        });
-    }
-
-    // Handle maximized/fullscreen state
-    if window_state.maximized {
-        window.maximize();
-    }
-    if window_state.fullscreen {
-        window.fullscreen();
-    }
-
-    // Set up terminal focus restoration after menu interactions
-    {
-        let focus_controller = gtk4::EventControllerKey::new();
-        focus_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-
-        let notebook_focus = notebook.clone();
-        let tabs_focus = Rc::clone(&tabs);
-
-        focus_controller.connect_key_pressed(move |controller, keyval, _keycode, state| {
-            // Skip modifier keys and menu activation keys
-            let is_modifier = matches!(
-                keyval,
-                gdk::Key::Shift_L
-                    | gdk::Key::Shift_R
-                    | gdk::Key::Control_L
-                    | gdk::Key::Control_R
-                    | gdk::Key::Alt_L
-                    | gdk::Key::Alt_R
-                    | gdk::Key::Super_L
-                    | gdk::Key::Super_R
-                    | gdk::Key::Meta_L
-                    | gdk::Key::Meta_R
-                    | gdk::Key::F10
-            );
-
-            if is_modifier {
-                return glib::Propagation::Proceed;
-            }
-
-            // Check if focus is on the terminal
-            if let Some(widget) = controller.widget() {
-                if let Some(focus_widget) = widget.focus_child() {
-                    if !focus_widget.has_css_class("terminal") {
-                        // Focus is not on terminal - restore it and forward the key
-                        if let Some(page_idx) = notebook_focus.current_page() {
-                            let tabs_ref = tabs_focus.borrow();
-                            if let Some((_, _, terminal)) = tabs_ref.get(page_idx as usize) {
-                                // Grab focus
-                                terminal.widget().grab_focus();
-
-                                // Forward the key to the terminal
-                                let has_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
-                                let has_alt = state.contains(gdk::ModifierType::ALT_MASK);
-
-                                if let Some(c) = keyval.to_unicode() {
-                                    if has_ctrl && !has_alt {
-                                        // Ctrl+key - convert to control character
-                                        let ctrl_char = match c.to_ascii_lowercase() {
-                                            'a'..='z' => Some(
-                                                (c.to_ascii_lowercase() as u8 - b'a' + 1) as char,
-                                            ),
-                                            '[' | '3' => Some('\x1b'), // Escape
-                                            '\\' | '4' => Some('\x1c'),
-                                            ']' | '5' => Some('\x1d'),
-                                            '^' | '6' => Some('\x1e'),
-                                            '_' | '7' => Some('\x1f'),
-                                            '@' | '2' => Some('\x00'),
-                                            _ => None,
-                                        };
-                                        if let Some(ctrl) = ctrl_char {
-                                            terminal.write_str(&ctrl.to_string());
-                                            terminal.widget().queue_draw();
-                                            return glib::Propagation::Stop;
-                                        }
-                                    } else if !has_ctrl && !has_alt {
-                                        // Simple character - write directly
-                                        let mut s = [0u8; 4];
-                                        let s = c.encode_utf8(&mut s);
-                                        terminal.write_str(s);
-                                        terminal.widget().queue_draw();
-                                        return glib::Propagation::Stop;
-                                    }
-                                }
-
-                                // For special keys or Alt combinations, let the terminal's
-                                // key handler process it. Focus is now on the terminal.
-                            }
-                        }
-                    }
-                }
-            }
-
-            glib::Propagation::Proceed
-        });
-
-        window.add_controller(focus_controller);
-    }
-
-    Ok(window)
-}
-
-/// Create a restored terminal tab (Unix)
-#[cfg(unix)]
-fn create_restored_tab_unix(
-    _config: &Config,
-    _theme: &Theme,
-    tab_state: TabUpgradeState,
-    _fds: &[RawFd],
-) -> Result<(u64, String, TerminalWidget), Box<dyn std::error::Error>> {
-    // TODO: Reconnect restored sessions via daemon instead of using direct PTY.
-    // Previously this used Pty::from_raw_fd + Terminal::from_restored +
-    // TerminalWidget::from_restored to reconstruct a direct-PTY terminal.
-    // Now all sessions should go through ctermd. The upgrade receiver needs to
-    // hand off the PTY FDs to the daemon and obtain a SessionHandle, then call
-    // TerminalWidget::from_daemon().
-    Err(format!(
-        "Upgrade restore not yet implemented for daemon mode (tab id={})",
-        tab_state.id
-    )
-    .into())
-}
-
-/// Create a restored terminal tab (Windows)
-#[cfg(windows)]
-fn create_restored_tab_windows(
-    _config: &Config,
-    _theme: &Theme,
-    tab_state: TabUpgradeState,
-    _handles: &[(RawHandle, RawHandle, RawHandle, RawHandle, u32)],
-) -> Result<(u64, String, TerminalWidget), Box<dyn std::error::Error>> {
-    // TODO: Reconnect restored sessions via daemon instead of using direct PTY.
-    // Previously this used Pty::from_raw_handles + Terminal::from_restored +
-    // TerminalWidget::from_restored to reconstruct a direct-PTY terminal.
-    // Now all sessions should go through ctermd. The upgrade receiver needs to
-    // hand off the PTY handles to the daemon and obtain a SessionHandle, then call
-    // TerminalWidget::from_daemon().
-    Err(format!(
-        "Upgrade restore not yet implemented for daemon mode (tab id={})",
-        tab_state.id
-    )
-    .into())
-}
-
-/// Close a tab by its ID
-#[allow(clippy::type_complexity)]
-fn close_tab_by_id(
-    notebook: &gtk4::Notebook,
-    tabs: &Rc<RefCell<Vec<(u64, String, TerminalWidget)>>>,
-    tab_bar: &TabBar,
-    window: &gtk4::ApplicationWindow,
-    id: u64,
-) {
-    // Find index of this tab
-    let index = {
-        let tabs = tabs.borrow();
-        tabs.iter().position(|(tab_id, _, _)| *tab_id == id)
     };
 
-    let Some(index) = index else { return };
+    let mut any_restored = false;
 
-    // Remove from notebook
-    notebook.remove_page(Some(index as u32));
+    for (window_idx, window_state) in state.windows.into_iter().enumerate() {
+        log::info!(
+            "Window {}: {}x{}, {} tab(s)",
+            window_idx,
+            window_state.width,
+            window_state.height,
+            window_state.tabs.len(),
+        );
 
-    // Remove from tabs list
-    tabs.borrow_mut().remove(index);
+        let mut reconnected_sessions = Vec::new();
 
-    // Remove from tab bar
-    tab_bar.remove_tab(id);
+        for tab_state in &window_state.tabs {
+            let Some(ref session_id) = tab_state.session_id else {
+                log::warn!("Tab '{}' has no session_id, skipping", tab_state.title);
+                continue;
+            };
 
-    // Update tab bar visibility (hide if only one tab)
-    tab_bar.update_visibility();
-
-    // Close window if no tabs left
-    if tabs.borrow().is_empty() {
-        window.close();
-        return;
-    }
-
-    // Update active tab in tab bar
-    if let Some(page_idx) = notebook.current_page() {
-        let tabs = tabs.borrow();
-        if let Some((active_id, _, _)) = tabs.get(page_idx as usize) {
-            tab_bar.set_active(*active_id);
-            tab_bar.clear_bell(*active_id);
+            match rt.block_on(async {
+                let conn = cterm_client::DaemonConnection::connect_local().await?;
+                conn.attach_session(session_id, 80, 24).await
+            }) {
+                Ok((handle, screen)) => {
+                    log::info!("Reconnected to session {}", session_id);
+                    reconnected_sessions.push(cterm_app::daemon_reconnect::ReconnectedSession {
+                        handle,
+                        title: tab_state.title.clone(),
+                        screen,
+                    });
+                }
+                Err(e) => {
+                    log::error!("Failed to reconnect session {}: {}", session_id, e);
+                }
+            }
         }
-    }
 
-    // Focus the current terminal
-    if let Some(page) = notebook.current_page() {
-        if let Some(widget) = notebook.nth_page(Some(page)) {
-            widget.grab_focus();
+        if reconnected_sessions.is_empty() {
+            log::warn!("No sessions restored for window {}, skipping", window_idx);
+            continue;
         }
-    }
-}
 
-/// Set up window actions for menu items
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn setup_window_actions(
-    window: &gtk4::ApplicationWindow,
-    notebook: &gtk4::Notebook,
-    tabs: &Rc<RefCell<Vec<(u64, String, TerminalWidget)>>>,
-    tab_bar: &TabBar,
-    _has_bell: &Rc<RefCell<bool>>,
-    _config: &Config,
-    _theme: &Theme,
-) {
-    // New Tab action (stub - full implementation requires more complex setup)
-    {
-        let action = gio::SimpleAction::new("new-tab", None);
-        action.connect_activate(|_, _| {
-            log::info!("New tab requested from restored window (not fully implemented)");
-        });
-        window.add_action(&action);
+        // Create a window and add reconnected tabs
+        let window = crate::window::CtermWindow::new_empty(app, &config, &theme);
+
+        for recon in reconnected_sessions {
+            window.add_reconnected_tab(recon);
+        }
+
+        // Restore window geometry
+        if window_state.maximized {
+            window.window.maximize();
+        }
+        if window_state.fullscreen {
+            window.window.fullscreen();
+        }
+
+        window.present();
+        any_restored = true;
+        log::info!("Window {} restored successfully", window_idx);
     }
 
-    // Close Tab action
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let notebook_clone = notebook.clone();
-        let tabs_clone = Rc::clone(tabs);
-        let tab_bar_clone = tab_bar.clone();
-        let window_clone = window.clone();
-        action.connect_activate(move |_, _| {
-            if let Some(page_idx) = notebook_clone.current_page() {
-                let tab_id = {
-                    let tabs = tabs_clone.borrow();
-                    tabs.get(page_idx as usize).map(|(id, _, _)| *id)
-                };
-                if let Some(id) = tab_id {
-                    close_tab_by_id(
-                        &notebook_clone,
-                        &tabs_clone,
-                        &tab_bar_clone,
-                        &window_clone,
-                        id,
-                    );
-                }
-            }
-        });
-        window.add_action(&action);
-    }
-
-    // Quit action
-    {
-        let action = gio::SimpleAction::new("quit", None);
-        let window_clone = window.clone();
-        action.connect_activate(move |_, _| {
-            window_clone.close();
-        });
-        window.add_action(&action);
-    }
-
-    // Previous Tab action
-    {
-        let action = gio::SimpleAction::new("prev-tab", None);
-        let notebook = notebook.clone();
-        let tabs = Rc::clone(tabs);
-        let tab_bar = tab_bar.clone();
-        action.connect_activate(move |_, _| {
-            if let Some(current) = notebook.current_page() {
-                let n_pages = notebook.n_pages();
-                if n_pages > 1 {
-                    let new_page = if current == 0 {
-                        n_pages - 1
-                    } else {
-                        current - 1
-                    };
-                    notebook.set_current_page(Some(new_page));
-                    let tabs = tabs.borrow();
-                    if let Some((id, _, _)) = tabs.get(new_page as usize) {
-                        tab_bar.set_active(*id);
-                        tab_bar.clear_bell(*id);
-                    }
-                }
-            }
-        });
-        window.add_action(&action);
-    }
-
-    // Next Tab action
-    {
-        let action = gio::SimpleAction::new("next-tab", None);
-        let notebook = notebook.clone();
-        let tabs = Rc::clone(tabs);
-        let tab_bar = tab_bar.clone();
-        action.connect_activate(move |_, _| {
-            if let Some(current) = notebook.current_page() {
-                let n_pages = notebook.n_pages();
-                if n_pages > 1 {
-                    let new_page = (current + 1) % n_pages;
-                    notebook.set_current_page(Some(new_page));
-                    let tabs = tabs.borrow();
-                    if let Some((id, _, _)) = tabs.get(new_page as usize) {
-                        tab_bar.set_active(*id);
-                        tab_bar.clear_bell(*id);
-                    }
-                }
-            }
-        });
-        window.add_action(&action);
-    }
-
-    // About action
-    {
-        let action = gio::SimpleAction::new("about", None);
-        let window_clone = window.clone();
-        action.connect_activate(move |_, _| {
-            dialogs::show_about_dialog(&window_clone);
-        });
-        window.add_action(&action);
-    }
-
-    // Stub actions for menu items that need more complex setup
-    // These are no-ops but prevent "unknown action" warnings
-    for name in &[
-        "new-window",
-        "close-other-tabs",
-        "docker-picker",
-        "copy",
-        "paste",
-        "select-all",
-        "copy-html",
-        "set-title",
-        "set-color",
-        "find",
-        "set-encoding",
-        "send-signal",
-        "reset",
-        "clear-reset",
-        "switch-tab",
-        "preferences",
-        "check-updates",
-        "debug-relaunch",
-        "debug-dump-state",
-    ] {
-        let action = gio::SimpleAction::new(name, None);
-        window.add_action(&action);
+    if !any_restored {
+        log::warn!("No sessions could be restored, creating fresh window");
+        crate::app::build_ui(app);
     }
 }

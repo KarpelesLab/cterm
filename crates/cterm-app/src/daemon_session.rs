@@ -4,13 +4,11 @@
 //! for rendering. The Terminal has no PTY — input is forwarded to the daemon
 //! and raw output is streamed back and fed through the local parser/screen.
 
+use crate::session::next_tab_id;
 use cterm_client::{ClientError, CreateSessionOpts, DaemonConnection, SessionHandle};
 use cterm_core::pty::PtyError;
 use cterm_core::screen::ScreenConfig;
 use cterm_core::term::{Terminal, WriteFn};
-use std::sync::Arc;
-
-use crate::session::next_tab_id;
 
 /// A tab backed by a daemon session
 pub struct DaemonTab {
@@ -276,56 +274,6 @@ pub fn apply_screen_snapshot(
         screen.modes.bracketed_paste = modes.bracketed_paste;
         screen.modes.focus_events = modes.focus_events;
     }
-}
-
-/// Start the output streaming loop for a daemon tab.
-///
-/// This spawns a background task that streams raw PTY output from the daemon
-/// and feeds it into the local Terminal's parser, keeping the screen in sync.
-///
-/// Returns a join handle for the background task.
-pub fn spawn_output_stream(
-    session: SessionHandle,
-    terminal: Arc<parking_lot::Mutex<Terminal>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        match session.stream_output().await {
-            Ok(mut stream) => {
-                use tokio_stream::StreamExt;
-                while let Some(result) = stream.next().await {
-                    match result {
-                        Ok(chunk) => {
-                            let mut term = terminal.lock();
-                            let events = term.process(&chunk.data);
-                            // Handle events
-                            for event in events {
-                                match event {
-                                    cterm_core::term::TerminalEvent::TitleChanged(title) => {
-                                        log::debug!("Daemon session title: {}", title);
-                                    }
-                                    cterm_core::term::TerminalEvent::Bell => {
-                                        log::debug!("Daemon session bell");
-                                    }
-                                    cterm_core::term::TerminalEvent::ProcessExited(code) => {
-                                        log::info!("Daemon session process exited: {}", code);
-                                        return;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Error streaming daemon output: {}", e);
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to start daemon output stream: {}", e);
-            }
-        }
-    })
 }
 
 /// Error type for daemon tab operations

@@ -33,15 +33,19 @@ cargo clippy --workspace --exclude cterm-cocoa --all-targets -- -D warnings  # L
 crates/
 ├── cterm-core/    # Terminal emulation: VT parser, screen buffer, PTY, Sixel graphics
 ├── cterm-ui/      # UI abstraction traits (TerminalView, TabBar, Window)
-├── cterm-app/     # Application logic: config, sessions, upgrades, crash recovery
+├── cterm-app/     # Application logic: config, sessions, upgrades, daemon reconnect
 ├── cterm-cocoa/   # macOS native UI (AppKit, CoreGraphics)
-└── cterm-gtk/     # GTK4 UI (Linux, Windows, cross-platform)
+├── cterm-gtk/     # GTK4 UI (Linux, Windows, cross-platform)
+├── cterm-client/  # gRPC client for connecting to ctermd daemon
+├── cterm-proto/   # Protobuf/gRPC service definitions
+└── cterm-headless/# ctermd daemon: owns PTYs, sessions survive UI restarts
 ```
 
 ### Core Data Flow
 
-1. PTY data → `vte` parser → Screen buffer → UI renderer
-2. User input → UI events → Terminal → PTY
+1. `ctermd` daemon owns PTY sessions; `cterm` UI connects via gRPC
+2. PTY data → daemon → gRPC stream → client `vte` parser → Screen buffer → UI renderer
+3. User input → UI events → gRPC write → daemon → PTY
 
 ### Key Abstractions
 
@@ -59,8 +63,8 @@ crates/
 
 ### Special Features
 
-- **Crash Recovery** (`cterm-app/crash_recovery/`): Watchdog process preserves terminal state (Unix)
-- **Seamless Upgrades** (`cterm-app/upgrade/`): Update without losing sessions via FD passing
+- **Daemon Architecture**: `ctermd` owns all PTYs; sessions survive cterm UI restarts/upgrades
+- **Seamless Upgrades** (`cterm-app/upgrade/`): Save window layout to temp file, spawn new binary, reconnect to daemon sessions
 - **Graphics**: Sixel (`sixel.rs`), iTerm2 OSC 1337 (`iterm2.rs`), DRCS soft fonts (`drcs.rs`)
 - **Streaming Files** (`streaming_file.rs`): Large file transfers spill to disk above 1MB
 

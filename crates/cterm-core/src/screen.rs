@@ -427,59 +427,6 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// Create a screen restored from upgrade state
-    ///
-    /// This is used during seamless upgrades to restore the terminal state
-    /// from the old process.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_upgrade_state(
-        grid: crate::grid::Grid,
-        scrollback: Vec<crate::grid::Row>,
-        alternate_grid: Option<crate::grid::Grid>,
-        cursor: Cursor,
-        saved_cursor: Option<Cursor>,
-        alt_saved_cursor: Option<Cursor>,
-        scroll_region: ScrollRegion,
-        style: crate::cell::CellStyle,
-        modes: TerminalModes,
-        title: String,
-        scroll_offset: usize,
-        tab_stops: Vec<bool>,
-        config: ScreenConfig,
-    ) -> Self {
-        let scrollback_len = scrollback.len();
-        Self {
-            grid,
-            scrollback: scrollback.into(),
-            alternate_grid,
-            config,
-            cursor,
-            saved_cursor,
-            alt_saved_cursor,
-            scroll_region,
-            style,
-            modes,
-            title,
-            icon_name: String::new(),
-            dirty: true,
-            scroll_offset,
-            bell: false,
-            tab_stops,
-            pending_responses: Vec::new(),
-            pending_clipboard_ops: Vec::new(),
-            pending_color_queries: Vec::new(),
-            selection: None,
-            images: HashMap::new(),
-            next_image_id: 0,
-            pending_file_transfers: Vec::new(),
-            next_file_transfer_id: 0,
-            cell_height_hint: 16.0, // Default assumption
-            cell_width_hint: 8.0,   // Default assumption
-            drcs_fonts: HashMap::new(),
-            scrollback_total_pushed: scrollback_len,
-        }
-    }
-
     /// Create a new screen with the given dimensions
     pub fn new(width: usize, height: usize, config: ScreenConfig) -> Self {
         let modes = TerminalModes {

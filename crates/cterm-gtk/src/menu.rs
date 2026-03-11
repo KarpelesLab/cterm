@@ -156,25 +156,3 @@ pub fn rebuild_menu_bar(menu_bar: &gtk4::PopoverMenuBar, show_debug: bool) {
     let menu_model = create_menu_model_with_options(show_debug);
     menu_bar.set_menu_model(Some(&menu_model));
 }
-
-/// Create the tabs submenu (called when tabs change)
-#[allow(dead_code)]
-pub fn create_tabs_submenu(tab_names: &[(u64, String)]) -> gio::Menu {
-    let menu = gio::Menu::new();
-
-    menu.append(Some("Previous Tab"), Some("win.prev-tab"));
-    menu.append(Some("Next Tab"), Some("win.next-tab"));
-    menu.append(Some("Next Alerted Tab"), Some("win.next-alerted-tab"));
-
-    if !tab_names.is_empty() {
-        let tabs_section = gio::Menu::new();
-        for (idx, (id, name)) in tab_names.iter().enumerate() {
-            let action = format!("win.switch-tab::{}", id);
-            let label = format!("{}. {}", idx + 1, name);
-            tabs_section.append(Some(&label), Some(&action));
-        }
-        menu.append_section(None, &tabs_section);
-    }
-
-    menu
-}

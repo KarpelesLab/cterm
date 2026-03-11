@@ -2,11 +2,9 @@
 //!
 //! This crate contains the application logic that is independent of the UI,
 //! including configuration management, session handling, sticky tabs,
-//! seamless upgrade functionality, and crash recovery.
+//! seamless upgrade functionality, and daemon session management.
 
 pub mod config;
-#[cfg(unix)]
-pub mod crash_recovery;
 pub mod daemon_reconnect;
 pub mod daemon_session;
 pub mod docker;
@@ -23,13 +21,6 @@ pub use config::{
     background_sync, load_config, load_sticky_tabs, load_tool_shortcuts, save_config,
     save_config_with_sync, save_sticky_tabs, save_tool_shortcuts, Config, ToolShortcutEntry,
 };
-#[cfg(unix)]
-pub use crash_recovery::{
-    clear_crash_state, crash_marker_path, crash_state_path, notify_watchdog_shutdown,
-    read_crash_marker, read_crash_state, receive_recovery_fds, register_fd_with_watchdog,
-    run_watchdog, unregister_fd_with_watchdog, write_crash_state, CrashState, RecoveredFd,
-    WatchdogError,
-};
 pub use daemon_reconnect::{
     check_daemon_sessions, reconnect_all_sessions, ReconnectCheck, ReconnectedSession,
 };
@@ -41,9 +32,6 @@ pub use git_sync::{
 };
 pub use session::{Session, TabState, WindowState};
 pub use shortcuts::ShortcutManager;
-#[cfg(windows)]
-pub use upgrade::{execute_upgrade, receive_upgrade, HandleInfo, UpgradeError, WindowsUpgradeData};
-#[cfg(unix)]
 pub use upgrade::{execute_upgrade, receive_upgrade, UpgradeError};
 pub use upgrade::{UpdateError, UpdateInfo, Updater, UpgradeState};
 

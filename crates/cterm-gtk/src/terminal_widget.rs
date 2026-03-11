@@ -12,7 +12,6 @@ use gtk4::{
 use parking_lot::Mutex;
 
 use cterm_app::config::Config;
-use cterm_app::upgrade::TerminalUpgradeState;
 use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
 use cterm_core::screen::{ClipboardOperation, CursorStyle, ScreenConfig};
@@ -61,34 +60,6 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Export terminal state for seamless upgrade
-    #[cfg(unix)]
-    pub fn export_state(&self) -> TerminalUpgradeState {
-        let term = self.terminal.lock();
-        let screen = term.screen();
-
-        TerminalUpgradeState {
-            cols: screen.grid().width(),
-            rows: screen.grid().height(),
-            grid: screen.grid().clone(),
-            scrollback: screen.scrollback().iter().cloned().collect(),
-            scrollback_file: None,
-            alternate_grid: screen.alternate_grid().cloned(),
-            cursor: screen.cursor.clone(),
-            saved_cursor: screen.saved_cursor().cloned(),
-            alt_saved_cursor: screen.alt_saved_cursor().cloned(),
-            scroll_region: *screen.scroll_region(),
-            style: screen.style.clone(),
-            modes: screen.modes.clone(),
-            title: screen.title.clone(),
-            scroll_offset: screen.scroll_offset,
-            tab_stops: screen.tab_stops().to_vec(),
-            alternate_active: screen.alternate_grid().is_some(),
-            cursor_style: screen.cursor.style,
-            mouse_mode: screen.modes.mouse_mode,
-        }
-    }
-
     /// Get the widget for adding to containers
     pub fn widget(&self) -> &DrawingArea {
         &self.drawing_area

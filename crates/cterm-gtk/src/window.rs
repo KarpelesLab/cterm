@@ -32,6 +32,8 @@ struct TabEntry {
     title_locked: bool,
     /// Tab color override
     color: Option<String>,
+    /// Daemon session ID (for upgrade state preservation)
+    session_id: Option<String>,
 }
 
 /// Main window container
@@ -49,35 +51,6 @@ pub struct CtermWindow {
     notification_bar: NotificationBar,
     file_manager: Rc<RefCell<PendingFileManager>>,
     quick_open: QuickOpenOverlay,
-}
-
-/// Show a warning dialog when no PTY handles are available for seamless upgrade.
-/// If the user clicks OK, spawns a new process and exits.
-fn show_upgrade_warning_dialog(window: &ApplicationWindow, binary_path: &str) {
-    let dialog = gtk4::MessageDialog::new(
-        Some(window),
-        gtk4::DialogFlags::MODAL,
-        gtk4::MessageType::Warning,
-        gtk4::ButtonsType::OkCancel,
-        "Seamless upgrade is not fully available.\n\n\
-         Could not get handles for the terminal sessions. \
-         Terminal sessions will be lost during upgrade.\n\n\
-         Continue anyway?",
-    );
-
-    let binary = binary_path.to_string();
-    dialog.connect_response(move |d, response| {
-        d.close();
-        if response == gtk4::ResponseType::Ok {
-            log::info!("User chose to proceed without seamless upgrade");
-            if let Err(e) = std::process::Command::new(&binary).spawn() {
-                log::error!("Failed to spawn new process: {}", e);
-            } else {
-                std::process::exit(0);
-            }
-        }
-    });
-    dialog.present();
 }
 
 /// Show an error dialog when a seamless upgrade fails.
@@ -536,6 +509,7 @@ impl CtermWindow {
                 let notification_bar = notification_bar.clone();
 
                 crate::session_dialog::show_ssh_dialog(&window_clone, move |session| {
+                    let sid = Some(session.session_id().to_string());
                     let cfg = config.borrow();
                     let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
 
@@ -559,7 +533,7 @@ impl CtermWindow {
                     );
 
                     finalize_new_tab(
-                        &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false,
+                        &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false, sid,
                     );
                 });
             });
@@ -965,10 +939,10 @@ impl CtermWindow {
         }
 
         // Execute upgrade action (called from update dialog)
-        #[cfg(unix)]
         {
             let tabs = Rc::clone(&tabs);
             let window_clone = window.clone();
+            let notebook_upgrade = notebook.clone();
             let action = gio::SimpleAction::new(
                 "execute-upgrade",
                 Some(&glib::VariantType::new("s").unwrap()),
@@ -981,201 +955,56 @@ impl CtermWindow {
                     let tabs_borrowed = tabs.borrow();
 
                     // Build upgrade state
-                    let mut upgrade_state =
-                        cterm_app::upgrade::UpgradeState::new(env!("CARGO_PKG_VERSION"));
+                    let mut upgrade_state = cterm_app::upgrade::UpgradeState::new();
 
                     // Collect window state
                     let mut window_state = cterm_app::upgrade::WindowUpgradeState::new();
-                    window_state.width = window_clone.default_width();
-                    window_state.height = window_clone.default_height();
+                    window_state.width = window_clone.width();
+                    window_state.height = window_clone.height();
                     window_state.maximized = window_clone.is_maximized();
                     window_state.fullscreen = window_clone.is_fullscreen();
 
-                    // Collect FDs for terminals
-                    let mut fds: Vec<std::os::unix::io::RawFd> = Vec::new();
-
                     for tab in tabs_borrowed.iter() {
-                        let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id, 0, 0);
+                        let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id);
                         tab_state.title = tab.title.clone();
                         if tab.title_locked {
                             tab_state.custom_title = Some(tab.title.clone());
                         }
-
-                        // Export terminal state
-                        tab_state.terminal = tab.terminal.export_state();
-
                         tab_state.color = tab.color.clone();
+                        tab_state.session_id = tab.session_id.clone();
 
-                        // Try to get PTY file descriptor
-                        let term = tab.terminal.terminal().lock();
-                        tab_state.cwd = term
-                            .foreground_cwd()
-                            .map(|p| p.to_string_lossy().into_owned());
-                        if let Some(fd) = term.dup_pty_fd() {
-                            tab_state.pty_fd_index = fds.len();
-                            tab_state.child_pid = term.child_pid().unwrap_or(0);
-                            fds.push(fd);
-                            log::info!(
-                                "Tab {}: Got PTY FD {} (index {}), child_pid={}",
-                                tab.id,
-                                fd,
-                                tab_state.pty_fd_index,
-                                tab_state.child_pid
-                            );
-                        } else {
-                            log::warn!("Tab {}: Failed to get PTY FD", tab.id);
+                        // Get working directory from terminal
+                        #[cfg(unix)]
+                        {
+                            let term = tab.terminal.terminal().lock();
+                            tab_state.cwd = term
+                                .foreground_cwd()
+                                .map(|p| p.to_string_lossy().into_owned());
                         }
-                        drop(term);
 
                         window_state.tabs.push(tab_state);
                     }
 
                     // Set active tab
-                    // Note: We'd need access to the notebook to know which tab is active
-                    window_state.active_tab = 0;
+                    window_state.active_tab = notebook_upgrade.current_page().unwrap_or(0) as usize;
 
                     upgrade_state.windows.push(window_state);
 
                     drop(tabs_borrowed);
 
                     log::info!(
-                        "Collected upgrade state: {} windows, {} FDs",
+                        "Collected upgrade state: {} windows, {} tabs",
                         upgrade_state.windows.len(),
-                        fds.len()
+                        upgrade_state
+                            .windows
+                            .iter()
+                            .map(|w| w.tabs.len())
+                            .sum::<usize>()
                     );
-
-                    // Check if we have any FDs to pass
-                    if fds.is_empty() {
-                        log::warn!(
-                            "No PTY file descriptors available for seamless upgrade. \
-                             Terminal sessions will not be preserved."
-                        );
-                        show_upgrade_warning_dialog(&window_clone, &binary_path);
-                        return;
-                    }
 
                     // Execute the upgrade
                     let binary = std::path::Path::new(&binary_path);
-                    match cterm_app::upgrade::execute_upgrade(binary, &upgrade_state, &fds) {
-                        Ok(()) => {
-                            log::info!("Upgrade successful, exiting");
-                            std::process::exit(0);
-                        }
-                        Err(e) => {
-                            log::error!("Upgrade failed: {}", e);
-
-                            // Close the FDs we duplicated
-                            for fd in fds {
-                                unsafe { libc::close(fd) };
-                            }
-
-                            show_upgrade_error_dialog(&window_clone, &e);
-                        }
-                    }
-                }
-            });
-            window.add_action(&action);
-        }
-
-        // Windows implementation of execute-upgrade
-        #[cfg(windows)]
-        {
-            let tabs = Rc::clone(&tabs);
-            let window_clone = window.clone();
-            let action = gio::SimpleAction::new(
-                "execute-upgrade",
-                Some(&glib::VariantType::new("s").unwrap()),
-            );
-            action.connect_activate(move |_, param| {
-                if let Some(binary_path) = param.and_then(|p| p.get::<String>()) {
-                    log::info!("Executing seamless upgrade with binary: {}", binary_path);
-
-                    // Collect upgrade state from current window
-                    let tabs_borrowed = tabs.borrow();
-
-                    // Build upgrade state
-                    let mut upgrade_state =
-                        cterm_app::upgrade::UpgradeState::new(env!("CARGO_PKG_VERSION"));
-
-                    // Collect window state
-                    let mut window_state = cterm_app::upgrade::WindowUpgradeState::new();
-                    window_state.width = window_clone.default_width();
-                    window_state.height = window_clone.default_height();
-                    window_state.maximized = window_clone.is_maximized();
-                    window_state.fullscreen = window_clone.is_fullscreen();
-
-                    // Collect handles for terminals
-                    let mut handles: Vec<(
-                        std::os::windows::io::RawHandle,
-                        std::os::windows::io::RawHandle,
-                        std::os::windows::io::RawHandle,
-                        std::os::windows::io::RawHandle,
-                        u32,
-                    )> = Vec::new();
-
-                    for tab in tabs_borrowed.iter() {
-                        let mut tab_state = cterm_app::upgrade::TabUpgradeState::new(tab.id, 0, 0);
-                        tab_state.title = tab.title.clone();
-                        if tab.title_locked {
-                            tab_state.custom_title = Some(tab.title.clone());
-                        }
-
-                        // Export terminal state
-                        tab_state.terminal = tab.terminal.export_state();
-
-                        tab_state.color = tab.color.clone();
-
-                        // Try to get PTY handles
-                        let term = tab.terminal.terminal().lock();
-                        tab_state.cwd = term
-                            .foreground_cwd()
-                            .map(|p| p.to_string_lossy().into_owned());
-                        if let Some(handle_info) = term.get_upgrade_handles() {
-                            tab_state.pty_fd_index = handles.len();
-                            tab_state.child_pid = term.child_pid().unwrap_or(0);
-                            tab_state.process_id = handle_info.4;
-                            handles.push(handle_info);
-                            log::info!(
-                                "Tab {}: Got PTY handles (index {}), child_pid={}, process_id={}",
-                                tab.id,
-                                tab_state.pty_fd_index,
-                                tab_state.child_pid,
-                                tab_state.process_id
-                            );
-                        } else {
-                            log::warn!("Tab {}: Failed to get PTY handles", tab.id);
-                        }
-                        drop(term);
-
-                        window_state.tabs.push(tab_state);
-                    }
-
-                    // Set active tab
-                    window_state.active_tab = 0;
-
-                    upgrade_state.windows.push(window_state);
-
-                    drop(tabs_borrowed);
-
-                    log::info!(
-                        "Collected upgrade state: {} windows, {} handle sets",
-                        upgrade_state.windows.len(),
-                        handles.len()
-                    );
-
-                    // Check if we have any handles to pass
-                    if handles.is_empty() {
-                        log::warn!(
-                            "No PTY handles available for seamless upgrade. \
-                             Terminal sessions will not be preserved."
-                        );
-                        show_upgrade_warning_dialog(&window_clone, &binary_path);
-                        return;
-                    }
-
-                    // Execute the upgrade
-                    let binary = std::path::Path::new(&binary_path);
-                    match cterm_app::upgrade::execute_upgrade(binary, &upgrade_state, &handles) {
+                    match cterm_app::upgrade::execute_upgrade(binary, &upgrade_state) {
                         Ok(()) => {
                             log::info!("Upgrade successful, exiting");
                             std::process::exit(0);
@@ -1998,11 +1827,9 @@ impl CtermWindow {
     ///
     /// Used during startup reconnection to create tabs for existing daemon sessions.
     pub fn add_reconnected_tab(&self, recon: cterm_app::daemon_reconnect::ReconnectedSession) {
+        let sid = recon.handle.session_id().to_string();
         let title = if recon.title.is_empty() {
-            format!(
-                "Session: {}",
-                &recon.handle.session_id()[..8.min(recon.handle.session_id().len())]
-            )
+            format!("Session: {}", &sid[..8.min(sid.len())])
         } else {
             recon.title.clone()
         };
@@ -2040,6 +1867,7 @@ impl CtermWindow {
             title,
             terminal,
             false,
+            Some(sid),
         );
     }
 
@@ -2252,6 +2080,7 @@ fn finalize_new_tab(
     title: String,
     terminal: TerminalWidget,
     title_locked: bool,
+    session_id: Option<String>,
 ) {
     tabs.borrow_mut().push(TabEntry {
         id: tab_id,
@@ -2259,6 +2088,7 @@ fn finalize_new_tab(
         terminal,
         title_locked,
         color: None,
+        session_id,
     });
 
     tab_bar.update_visibility();
@@ -2324,6 +2154,7 @@ fn create_new_tab(
         opts,
         initial_title,
         None,
+        None,
         false,
     );
 }
@@ -2367,6 +2198,7 @@ fn create_docker_tab(
         opts,
         title.to_string(),
         Some("#0db7ed".to_string()),
+        None,
         false,
     );
 }
@@ -2387,6 +2219,7 @@ fn spawn_daemon_tab(
     opts: cterm_client::CreateSessionOpts,
     title: String,
     color: Option<String>,
+    background_color: Option<String>,
     keep_open: bool,
 ) {
     let notebook = notebook.clone();
@@ -2424,9 +2257,15 @@ fn spawn_daemon_tab(
             Ok(result) => {
                 match result {
                     Ok(session) => {
+                        let sid = Some(session.session_id().to_string());
                         let cfg = config.borrow();
                         let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
                         drop(cfg);
+
+                        // Apply background color override from template
+                        if let Some(ref bg) = background_color {
+                            terminal.set_background_override(Some(bg));
+                        }
 
                         let tab_id = generate_tab_id(&next_tab_id);
                         let page_num =
@@ -2460,6 +2299,7 @@ fn spawn_daemon_tab(
                             title.clone(),
                             terminal,
                             false,
+                            sid,
                         );
 
                         // Store color in tab entry
@@ -2546,10 +2386,8 @@ fn create_daemon_tab(
             Ok(result) => {
                 match result {
                     Ok(session) => {
-                        let title = format!(
-                            "Session: {}",
-                            &session.session_id()[..8.min(session.session_id().len())]
-                        );
+                        let sid = session.session_id().to_string();
+                        let title = format!("Session: {}", &sid[..8.min(sid.len())]);
                         let cfg = config.borrow();
                         let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
 
@@ -2573,7 +2411,15 @@ fn create_daemon_tab(
                         );
 
                         finalize_new_tab(
-                            &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false,
+                            &notebook,
+                            &tabs,
+                            &tab_bar,
+                            tab_id,
+                            page_num,
+                            title,
+                            terminal,
+                            false,
+                            Some(sid),
                         );
                     }
                     Err(e) => {
@@ -2657,6 +2503,7 @@ fn create_tab_from_template(
         opts,
         template.name.clone(),
         template.color.clone(),
+        template.background_color.clone(),
         template.keep_open,
     );
 }

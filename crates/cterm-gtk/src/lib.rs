@@ -51,14 +51,9 @@ pub struct Args {
     #[arg(short = 't', long = "title")]
     pub title: Option<String>,
 
-    /// Receive upgrade state from parent process via inherited FD/handle (internal use)
-    /// On Unix: file descriptor (i32), On Windows: handle value (usize)
+    /// Path to upgrade state file (internal use)
     #[arg(long, hide = true)]
-    pub upgrade_receiver: Option<u64>,
-
-    /// Disable watchdog supervision (run directly without crash recovery)
-    #[arg(long)]
-    pub no_watchdog: bool,
+    pub upgrade_state: Option<String>,
 }
 
 /// Global application arguments (accessible from window creation)
@@ -117,9 +112,12 @@ pub fn run() {
     log::info!("Starting cterm");
 
     // Check if we're in upgrade receiver mode
-    if let Some(handle) = args.upgrade_receiver {
-        log::info!("Running in upgrade receiver mode with handle {}", handle);
-        let exit_code = upgrade_receiver::run_receiver(handle);
+    if let Some(ref state_path) = args.upgrade_state {
+        log::info!(
+            "Running in upgrade receiver mode with state file {}",
+            state_path
+        );
+        let exit_code = upgrade_receiver::run_receiver(state_path);
         std::process::exit(exit_code.value());
     }
 
@@ -142,7 +140,7 @@ pub fn run() {
 
     // Run the application
     // Use run_with_args with empty args to prevent GTK from parsing
-    // the command line (which contains --no-watchdog that GTK doesn't know)
+    // the command line (which contains flags that GTK doesn't know)
     let exit_code = app.run_with_args(&[] as &[&str]);
     std::process::exit(exit_code.value());
 }

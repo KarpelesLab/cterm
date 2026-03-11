@@ -646,8 +646,9 @@ jobs:
           mkdir -p "$APP_DIR/Contents/MacOS"
           mkdir -p "$APP_DIR/Contents/Resources"
 
-          # Copy binary
+          # Copy binaries
           cp universal-binary/cterm "$APP_DIR/Contents/MacOS/"
+          cp universal-binary/ctermd "$APP_DIR/Contents/MacOS/"
 
           # Copy generated icon
           cp packaging/macos/cterm.icns "$APP_DIR/Contents/Resources/"
@@ -709,6 +710,13 @@ jobs:
             --sign "$IDENTITY" \
             --timestamp \
             "release/cterm.app/Contents/MacOS/cterm"
+
+          # Sign ctermd inside the bundle
+          codesign --force --options runtime \
+            --entitlements packaging/macos/cterm.entitlements \
+            --sign "$IDENTITY" \
+            --timestamp \
+            "release/cterm.app/Contents/MacOS/ctermd"
 
           # Sign the app bundle itself
           codesign --force --options runtime \

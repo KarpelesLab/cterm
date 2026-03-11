@@ -1,22 +1,16 @@
-//! Upgrade receiver - handles receiving state from the old process during seamless upgrade
+//! Upgrade receiver - handles receiving state during seamless upgrade
 //!
-//! This module is used when cterm is started with --upgrade-receiver flag.
-//! It receives state from the parent process via an inherited FD, then starts
-//! the normal app with the received state.
+//! When cterm is started with --upgrade-state, it reads the saved state from
+//! a temp file, reconnects to running daemon sessions, and reconstructs windows.
 
-use std::os::unix::io::RawFd;
-
-use cterm_app::upgrade::receive_upgrade;
+use std::path::Path;
 
 /// Run the upgrade receiver
 ///
-/// This function:
-/// 1. Reads from the inherited FD passed by the parent
-/// 2. Receives the upgrade state and PTY file descriptors
-/// 3. Sends acknowledgment
-/// 4. Stores state and starts normal app (which will restore windows)
-pub fn run_receiver(fd: i32) -> i32 {
-    match receive_and_start(fd) {
+/// Reads upgrade state from the given file path, then starts the app
+/// which will reconnect to daemon sessions listed in the state.
+pub fn run_receiver(state_path: &str) -> i32 {
+    match receive_and_start(state_path) {
         Ok(()) => 0,
         Err(e) => {
             log::error!("Upgrade receiver failed: {}", e);
@@ -25,19 +19,17 @@ pub fn run_receiver(fd: i32) -> i32 {
     }
 }
 
-fn receive_and_start(fd: i32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the upgrade module to receive the state
-    let (state, fds) = receive_upgrade(fd as RawFd)?;
+fn receive_and_start(state_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let state = cterm_app::upgrade::receive_upgrade(Path::new(state_path))?;
 
     log::info!(
-        "Upgrade state received: format_version={}, cterm_version={}, windows={}",
+        "Upgrade state received: format_version={}, {} window(s)",
         state.format_version,
-        state.cterm_version,
         state.windows.len()
     );
 
     // Store the upgrade state for AppDelegate to use during launch
-    crate::app::set_upgrade_state(state, fds);
+    crate::app::set_upgrade_state(state);
 
     log::info!("Starting app with restored state...");
 

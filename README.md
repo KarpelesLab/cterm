@@ -34,8 +34,8 @@ A high-performance, customizable terminal emulator built in pure Rust. Features 
 
 ### System Integration
 - **Native PTY**: Cross-platform PTY implementation (Unix openpty, Windows ConPTY)
-- **Crash Recovery**: Automatic recovery from crashes - a watchdog process preserves terminal sessions and restores them after unexpected termination (macOS/Linux)
-- **Seamless Upgrades**: Update cterm without losing terminal sessions (macOS/Linux/Windows)
+- **Daemon Architecture**: Terminal sessions live in the `ctermd` daemon and survive UI restarts, upgrades, and crashes
+- **Seamless Upgrades**: Update cterm without losing terminal sessions - daemon keeps sessions alive across restarts
 - **Auto-Update**: Built-in update checker with GitHub releases integration and release notes display
 - **Debug Log Viewer**: In-app log viewer for troubleshooting (Windows)
 

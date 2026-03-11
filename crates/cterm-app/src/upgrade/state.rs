@@ -1,23 +1,16 @@
 //! Upgrade state types for seamless process upgrade
 //!
-//! These types capture all the state needed to reconstruct terminal windows
-//! after a seamless upgrade. They are serialized and passed to the new process.
-
-use std::io;
+//! These types capture the window/tab layout needed to reconstruct terminal
+//! windows after a seamless upgrade. Terminal session state lives in the
+//! ctermd daemon and is referenced by session ID.
 
 use serde::{Deserialize, Serialize};
-
-use cterm_core::cell::CellStyle;
-use cterm_core::grid::{Grid, Row};
-use cterm_core::screen::{Cursor, CursorStyle, MouseMode, ScrollRegion, TerminalModes};
 
 /// Complete upgrade state for all windows
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpgradeState {
     /// Version of the serialization format
     pub format_version: u32,
-    /// Version of cterm that created this state
-    pub cterm_version: String,
     /// All windows to restore
     pub windows: Vec<WindowUpgradeState>,
 }
@@ -25,15 +18,20 @@ pub struct UpgradeState {
 impl UpgradeState {
     /// Current format version
     /// Increment this when making incompatible changes to serialized types
-    pub const FORMAT_VERSION: u32 = 3;
+    pub const FORMAT_VERSION: u32 = 4;
 
     /// Create a new upgrade state
-    pub fn new(cterm_version: &str) -> Self {
+    pub fn new() -> Self {
         Self {
             format_version: Self::FORMAT_VERSION,
-            cterm_version: cterm_version.to_string(),
             windows: Vec::new(),
         }
+    }
+}
+
+impl Default for UpgradeState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -91,194 +89,35 @@ pub struct TabUpgradeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_title: Option<String>,
     /// Tab color (if sticky tab)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Template name (for sticky/unique tabs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_name: Option<String>,
-    /// Terminal state
-    pub terminal: TerminalUpgradeState,
-    /// Index into the FD array for this tab's PTY (Unix)
-    /// Index into the handle array for this tab's PTY (Windows)
-    pub pty_fd_index: usize,
-    /// Child process ID (Unix)
-    #[cfg(unix)]
-    pub child_pid: i32,
-    /// Child process ID (Windows)
-    #[cfg(windows)]
-    pub process_id: u32,
+    /// Daemon session ID for reconnecting to the running session
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Working directory of the shell
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Watchdog FD ID (for crash recovery matching)
-    #[cfg(unix)]
-    pub watchdog_fd_id: u64,
+    /// Keep the tab open after the process exits
+    #[serde(default)]
+    pub keep_open: bool,
 }
 
 impl TabUpgradeState {
-    /// Create a new tab upgrade state (Unix)
-    #[cfg(unix)]
-    pub fn new(id: u64, pty_fd_index: usize, child_pid: i32) -> Self {
+    /// Create a new tab upgrade state
+    pub fn new(id: u64) -> Self {
         Self {
             id,
             title: String::new(),
             custom_title: None,
             color: None,
             template_name: None,
-            terminal: TerminalUpgradeState::default(),
-            pty_fd_index,
-            child_pid,
+            session_id: None,
             cwd: None,
-            watchdog_fd_id: 0,
+            keep_open: false,
         }
-    }
-
-    /// Create a new tab upgrade state (Windows)
-    #[cfg(windows)]
-    pub fn new(id: u64, pty_fd_index: usize, process_id: u32) -> Self {
-        Self {
-            id,
-            title: String::new(),
-            custom_title: None,
-            color: None,
-            template_name: None,
-            terminal: TerminalUpgradeState::default(),
-            pty_fd_index,
-            process_id,
-            cwd: None,
-        }
-    }
-
-    /// Create a new tab upgrade state with watchdog FD ID
-    #[cfg(unix)]
-    pub fn with_watchdog_fd_id(
-        id: u64,
-        pty_fd_index: usize,
-        child_pid: i32,
-        watchdog_fd_id: u64,
-    ) -> Self {
-        Self {
-            id,
-            title: String::new(),
-            custom_title: None,
-            color: None,
-            template_name: None,
-            terminal: TerminalUpgradeState::default(),
-            pty_fd_index,
-            child_pid,
-            cwd: None,
-            watchdog_fd_id,
-        }
-    }
-}
-
-/// Terminal emulator state
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TerminalUpgradeState {
-    /// Terminal width in columns
-    pub cols: usize,
-    /// Terminal height in rows
-    pub rows: usize,
-    /// Main screen grid
-    pub grid: Grid,
-    /// Scrollback buffer (may be empty if spilled to file)
-    pub scrollback: Vec<Row>,
-    /// Path to temp file containing bincode-serialized scrollback (when spilled to disk)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scrollback_file: Option<String>,
-    /// Alternate screen grid (for vim, less, etc.)
-    pub alternate_grid: Option<Grid>,
-    /// Current cursor position and style
-    pub cursor: Cursor,
-    /// Saved cursor (for DECSC/DECRC)
-    pub saved_cursor: Option<Cursor>,
-    /// Alternate screen saved cursor
-    pub alt_saved_cursor: Option<Cursor>,
-    /// Scroll region
-    pub scroll_region: ScrollRegion,
-    /// Current cell style
-    pub style: CellStyle,
-    /// Terminal modes
-    pub modes: TerminalModes,
-    /// Terminal title
-    pub title: String,
-    /// Current scroll offset (for viewing scrollback)
-    pub scroll_offset: usize,
-    /// Tab stops
-    pub tab_stops: Vec<bool>,
-    /// Whether alternate screen is active
-    pub alternate_active: bool,
-    /// Cursor style
-    pub cursor_style: CursorStyle,
-    /// Mouse mode
-    pub mouse_mode: MouseMode,
-}
-
-impl Default for TerminalUpgradeState {
-    fn default() -> Self {
-        Self {
-            cols: 80,
-            rows: 24,
-            grid: Grid::new(80, 24),
-            scrollback: Vec::new(),
-            scrollback_file: None,
-            alternate_grid: None,
-            cursor: Cursor::default(),
-            saved_cursor: None,
-            alt_saved_cursor: None,
-            scroll_region: ScrollRegion { top: 0, bottom: 24 },
-            style: CellStyle::default(),
-            modes: TerminalModes::default(),
-            title: String::new(),
-            scroll_offset: 0,
-            tab_stops: vec![false; 80],
-            alternate_active: false,
-            cursor_style: CursorStyle::default(),
-            mouse_mode: MouseMode::default(),
-        }
-    }
-}
-
-impl TerminalUpgradeState {
-    /// Spill scrollback to a temp file using bincode serialization.
-    /// Called before serialization to keep the state compact for socket transfer.
-    pub fn save_scrollback_to_file(&mut self, _index: usize) -> io::Result<()> {
-        if self.scrollback.is_empty() {
-            return Ok(());
-        }
-        // Use random suffix to avoid predictable temp file names
-        let random: u64 = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::time::SystemTime::now().hash(&mut hasher);
-            std::process::id().hash(&mut hasher);
-            std::thread::current().id().hash(&mut hasher);
-            hasher.finish()
-        };
-        let path = std::env::temp_dir().join(format!("cterm_scrollback_{:016x}.bin", random));
-        let file = std::fs::File::create(&path)?;
-
-        // Set restrictive permissions since scrollback may contain secrets
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
-
-        bincode::serialize_into(std::io::BufWriter::new(file), &self.scrollback)
-            .map_err(io::Error::other)?;
-        self.scrollback_file = Some(path.to_string_lossy().into_owned());
-        self.scrollback = Vec::new();
-        Ok(())
-    }
-
-    /// Load scrollback from a temp file if one was used.
-    /// Called after deserialization to restore spilled scrollback data.
-    pub fn load_scrollback_from_file(&mut self) -> io::Result<()> {
-        if let Some(path) = self.scrollback_file.take() {
-            let file = std::fs::File::open(&path)?;
-            self.scrollback = bincode::deserialize_from(std::io::BufReader::new(file))
-                .map_err(io::Error::other)?;
-            let _ = std::fs::remove_file(&path);
-        }
-        Ok(())
     }
 }
 
@@ -288,22 +127,18 @@ mod tests {
 
     #[test]
     fn test_upgrade_state_serialization() {
-        let state = UpgradeState::new("0.1.0");
+        let state = UpgradeState::new();
 
-        // Serialize with JSON
-        let bytes = serde_json::to_vec(&state).expect("Failed to serialize");
-
-        // Deserialize
-        let restored: UpgradeState = serde_json::from_slice(&bytes).expect("Failed to deserialize");
+        let json = serde_json::to_vec(&state).expect("Failed to serialize");
+        let restored: UpgradeState = serde_json::from_slice(&json).expect("Failed to deserialize");
 
         assert_eq!(restored.format_version, UpgradeState::FORMAT_VERSION);
-        assert_eq!(restored.cterm_version, "0.1.0");
         assert!(restored.windows.is_empty());
     }
 
     #[test]
     fn test_window_state_serialization() {
-        let mut state = UpgradeState::new("0.1.0");
+        let mut state = UpgradeState::new();
 
         let mut window = WindowUpgradeState::new();
         window.x = 100;
@@ -314,8 +149,8 @@ mod tests {
 
         state.windows.push(window);
 
-        let bytes = serde_json::to_vec(&state).expect("Failed to serialize");
-        let restored: UpgradeState = serde_json::from_slice(&bytes).expect("Failed to deserialize");
+        let json = serde_json::to_vec(&state).expect("Failed to serialize");
+        let restored: UpgradeState = serde_json::from_slice(&json).expect("Failed to deserialize");
 
         assert_eq!(restored.windows.len(), 1);
         assert_eq!(restored.windows[0].x, 100);
@@ -323,18 +158,85 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_state_serialization() {
-        let terminal = TerminalUpgradeState {
-            cols: 120,
-            rows: 40,
-            ..Default::default()
-        };
+    fn test_tab_state_serialization() {
+        let mut tab = TabUpgradeState::new(42);
+        tab.title = "My Tab".to_string();
+        tab.session_id = Some("sess-abc123".to_string());
+        tab.cwd = Some("/home/user".to_string());
+        tab.keep_open = true;
 
-        let bytes = serde_json::to_vec(&terminal).expect("Failed to serialize");
-        let restored: TerminalUpgradeState =
-            serde_json::from_slice(&bytes).expect("Failed to deserialize");
+        let json = serde_json::to_vec(&tab).expect("Failed to serialize");
+        let restored: TabUpgradeState =
+            serde_json::from_slice(&json).expect("Failed to deserialize");
 
-        assert_eq!(restored.cols, 120);
-        assert_eq!(restored.rows, 40);
+        assert_eq!(restored.id, 42);
+        assert_eq!(restored.title, "My Tab");
+        assert_eq!(restored.session_id.as_deref(), Some("sess-abc123"));
+        assert_eq!(restored.cwd.as_deref(), Some("/home/user"));
+        assert!(restored.keep_open);
+    }
+
+    #[test]
+    fn test_tab_state_optional_fields_omitted() {
+        let tab = TabUpgradeState::new(1);
+
+        let json = serde_json::to_string(&tab).expect("Failed to serialize");
+
+        // Optional None fields should be omitted from JSON
+        assert!(!json.contains("custom_title"));
+        assert!(!json.contains("color"));
+        assert!(!json.contains("template_name"));
+        assert!(!json.contains("session_id"));
+        assert!(!json.contains("cwd"));
+    }
+
+    #[test]
+    fn test_full_roundtrip() {
+        let mut state = UpgradeState::new();
+
+        let mut window = WindowUpgradeState::new();
+        window.x = 50;
+        window.y = 100;
+        window.width = 1920;
+        window.height = 1080;
+        window.fullscreen = true;
+        window.active_tab = 1;
+
+        let mut tab0 = TabUpgradeState::new(1);
+        tab0.title = "bash".to_string();
+        tab0.session_id = Some("sess-001".to_string());
+
+        let mut tab1 = TabUpgradeState::new(2);
+        tab1.title = "vim".to_string();
+        tab1.custom_title = Some("Editor".to_string());
+        tab1.session_id = Some("sess-002".to_string());
+        tab1.color = Some("#ff0000".to_string());
+        tab1.template_name = Some("dev".to_string());
+        tab1.keep_open = true;
+
+        window.tabs.push(tab0);
+        window.tabs.push(tab1);
+        state.windows.push(window);
+
+        let json = serde_json::to_vec_pretty(&state).expect("Failed to serialize");
+        let restored: UpgradeState = serde_json::from_slice(&json).expect("Failed to deserialize");
+
+        assert_eq!(restored.format_version, 4);
+        assert_eq!(restored.windows.len(), 1);
+
+        let w = &restored.windows[0];
+        assert_eq!(w.width, 1920);
+        assert!(w.fullscreen);
+        assert_eq!(w.active_tab, 1);
+        assert_eq!(w.tabs.len(), 2);
+
+        assert_eq!(w.tabs[0].title, "bash");
+        assert_eq!(w.tabs[0].session_id.as_deref(), Some("sess-001"));
+        assert!(!w.tabs[0].keep_open);
+
+        assert_eq!(w.tabs[1].title, "vim");
+        assert_eq!(w.tabs[1].custom_title.as_deref(), Some("Editor"));
+        assert_eq!(w.tabs[1].color.as_deref(), Some("#ff0000"));
+        assert!(w.tabs[1].keep_open);
     }
 }

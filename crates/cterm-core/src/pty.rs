@@ -110,7 +110,7 @@ mod unix {
             }
         }
 
-        /// Get the raw file descriptor for passing via SCM_RIGHTS
+        /// Get the raw file descriptor
         pub fn raw_fd(&self) -> RawFd {
             self.master_fd
         }
@@ -605,7 +605,7 @@ mod windows {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+    use std::os::windows::io::{FromRawHandle, RawHandle};
     use std::ptr;
     use winapi::shared::minwindef::{DWORD, FALSE};
     use winapi::shared::winerror::S_OK;
@@ -654,28 +654,6 @@ mod windows {
         /// Create a new PTY and spawn the shell
         pub fn new(config: &PtyConfig) -> Result<Self, PtyError> {
             unsafe { Self::create_conpty(config) }
-        }
-
-        /// Create PTY from raw handles (for upgrade receiver)
-        ///
-        /// # Safety
-        /// The caller must ensure all handles are valid.
-        pub unsafe fn from_raw_handles(
-            hpc: RawHandle,
-            read_pipe: RawHandle,
-            write_pipe: RawHandle,
-            process_handle: RawHandle,
-            process_id: u32,
-        ) -> Self {
-            Self {
-                hpc: hpc as HANDLE,
-                read_pipe: File::from_raw_handle(read_pipe),
-                write_pipe: File::from_raw_handle(write_pipe),
-                process_handle: process_handle as HANDLE,
-                thread_handle: INVALID_HANDLE_VALUE,
-                process_id,
-                exit_status: None,
-            }
         }
 
         /// Get the process ID (equivalent to child_pid on Unix)
@@ -803,67 +781,6 @@ mod windows {
         /// Try to clone the reader for concurrent access
         pub fn try_clone_reader(&self) -> io::Result<File> {
             self.read_pipe.try_clone()
-        }
-
-        /// Get all handles needed for upgrade transfer
-        ///
-        /// Returns (hpc, read_pipe, write_pipe, process_handle, process_id)
-        pub fn get_upgrade_handles(&self) -> (RawHandle, RawHandle, RawHandle, RawHandle, u32) {
-            (
-                self.hpc as RawHandle,
-                self.read_pipe.as_raw_handle(),
-                self.write_pipe.as_raw_handle(),
-                self.process_handle as RawHandle,
-                self.process_id,
-            )
-        }
-
-        /// Duplicate a handle for transfer to another process
-        ///
-        /// # Arguments
-        /// * `handle` - The handle to duplicate
-        /// * `target_process` - Handle to the target process (from OpenProcess)
-        ///
-        /// # Returns
-        /// The duplicated handle value in the target process
-        ///
-        /// # Safety
-        /// The caller must ensure `target_process` is a valid process handle
-        /// with PROCESS_DUP_HANDLE access.
-        pub unsafe fn duplicate_handle_to_process(
-            handle: RawHandle,
-            target_process: HANDLE,
-        ) -> io::Result<RawHandle> {
-            use winapi::um::handleapi::DuplicateHandle;
-            use winapi::um::processthreadsapi::GetCurrentProcess;
-
-            let mut new_handle: HANDLE = INVALID_HANDLE_VALUE;
-            let result = DuplicateHandle(
-                GetCurrentProcess(),
-                handle as HANDLE,
-                target_process,
-                &mut new_handle,
-                0,
-                FALSE,
-                winapi::um::winnt::DUPLICATE_SAME_ACCESS,
-            );
-
-            if result == FALSE {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(new_handle as RawHandle)
-            }
-        }
-
-        /// Duplicate handles for transfer (for compatibility with Unix API)
-        pub fn dup_fd(&self) -> io::Result<RawHandle> {
-            // Return the read pipe handle - caller should use get_upgrade_handles() for full transfer
-            Ok(self.read_pipe.as_raw_handle())
-        }
-
-        /// Get the raw handle (for compatibility)
-        pub fn raw_fd(&self) -> RawHandle {
-            self.read_pipe.as_raw_handle()
         }
 
         unsafe fn create_conpty(config: &PtyConfig) -> Result<Self, PtyError> {

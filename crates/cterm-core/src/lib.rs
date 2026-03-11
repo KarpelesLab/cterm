@@ -9,8 +9,6 @@
 pub mod cell;
 pub mod color;
 pub mod drcs;
-#[cfg(unix)]
-pub mod fd_passing;
 pub mod grid;
 pub mod image_decode;
 pub mod iterm2;

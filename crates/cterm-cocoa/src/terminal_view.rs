@@ -20,7 +20,6 @@ use objc2_foundation::{
 use parking_lot::Mutex;
 
 use cterm_app::config::Config;
-use cterm_app::upgrade::TerminalUpgradeState;
 use cterm_core::screen::{ScreenConfig, SelectionMode};
 use cterm_core::term::TerminalEvent;
 use cterm_core::Terminal;
@@ -80,9 +79,8 @@ pub struct TerminalViewIvars {
     auto_scroll_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
     /// Template name (if this view was created from a template)
     template_name: RefCell<Option<String>>,
-    /// Watchdog FD ID (for crash recovery unregistration)
-    #[cfg(unix)]
-    watchdog_fd_id: Cell<u64>,
+    /// Daemon session ID for this terminal
+    session_id: RefCell<Option<String>>,
     /// Marked text for IME input (Japanese, Chinese, etc.)
     marked_text: RefCell<String>,
     /// Notification bar for file transfers
@@ -145,10 +143,6 @@ define_class!(
             if new_window.is_none() {
                 log::debug!("View being removed from window, marking invalid");
                 self.ivars().state.view_invalid.store(true, Ordering::SeqCst);
-
-                // Unregister PTY from watchdog when view is removed
-                #[cfg(unix)]
-                self.unregister_pty_from_watchdog();
 
                 // Take and drop the PTY to close the master FD.
                 // This causes the background read thread to get an error/EOF and exit,
@@ -809,11 +803,10 @@ define_class!(
             log::info!("  Modes: {:?}", screen.modes);
         }
 
-        /// Debug: Trigger a crash to test crash recovery
+        /// Debug: Trigger a crash for testing
         #[unsafe(method(debugCrash:))]
         fn action_debug_crash(&self, _sender: Option<&objc2::runtime::AnyObject>) {
-            log::warn!("Debug: Triggering intentional crash for recovery testing");
-            // Use abort() to trigger a crash that the watchdog can detect
+            log::warn!("Debug: Triggering intentional crash");
             std::process::abort();
         }
 
@@ -1281,8 +1274,6 @@ define_class!(
 #[derive(Default)]
 struct ViewInitOptions {
     template_name: Option<String>,
-    #[cfg(unix)]
-    watchdog_fd_id: u64,
 }
 
 impl TerminalView {
@@ -1310,8 +1301,7 @@ impl TerminalView {
             auto_scroll_col: Cell::new(0),
             auto_scroll_timer: RefCell::new(None),
             template_name: RefCell::new(options.template_name),
-            #[cfg(unix)]
-            watchdog_fd_id: Cell::new(options.watchdog_fd_id),
+            session_id: RefCell::new(None),
             marked_text: RefCell::new(String::new()),
             notification_bar: RefCell::new(None),
             file_manager: RefCell::new(PendingFileManager::new()),
@@ -1354,6 +1344,9 @@ impl TerminalView {
         terminal.screen_mut().set_cell_height_hint(cell_height);
         terminal.screen_mut().set_cell_width_hint(cell_width);
 
+        // Capture session ID before session is moved into closures/threads
+        let sid = session.session_id().to_string();
+
         // Set up write callback to forward input to daemon
         let write_session = session.clone();
         terminal.set_write_fn(Box::new(move |data: &[u8]| {
@@ -1376,6 +1369,9 @@ impl TerminalView {
             theme,
             ViewInitOptions::default(),
         );
+
+        // Store daemon session ID for upgrade state
+        this.set_session_id(Some(sid));
 
         let view_ptr = &*this as *const _ as usize;
 
@@ -1415,6 +1411,9 @@ impl TerminalView {
         // Apply screen snapshot BEFORE wrapping in Arc<Mutex<>>
         recon.apply_screen(&mut terminal);
 
+        // Capture session ID before session is moved into closures/threads
+        let sid = recon.handle.session_id().to_string();
+
         // Set up write callback to forward input to daemon
         let session = recon.handle;
         let write_session = session.clone();
@@ -1438,6 +1437,9 @@ impl TerminalView {
             theme,
             ViewInitOptions::default(),
         );
+
+        // Store daemon session ID for upgrade state
+        this.set_session_id(Some(sid));
 
         let view_ptr = &*this as *const _ as usize;
 
@@ -1639,6 +1641,13 @@ impl TerminalView {
     /// Set the template name (for restoration from saved state)
     pub fn set_template_name(&self, name: Option<String>) {
         *self.ivars().template_name.borrow_mut() = name;
+    }
+
+    /// Set the background color override (from template configuration)
+    pub fn set_background_override(&self, color: Option<&str>) {
+        if let Some(ref mut renderer) = *self.ivars().renderer.borrow_mut() {
+            renderer.set_background_override(color);
+        }
     }
 
     /// Check if the title is locked (user-set or template-set)
@@ -1928,98 +1937,14 @@ impl TerminalView {
         }
     }
 
-    /// Export terminal state for seamless upgrade
-    #[cfg(unix)]
-    pub fn export_state(&self) -> TerminalUpgradeState {
-        let term = self.ivars().terminal.lock();
-        let screen = term.screen();
-
-        TerminalUpgradeState {
-            cols: screen.grid().width(),
-            rows: screen.grid().height(),
-            grid: screen.grid().clone(),
-            scrollback: screen.scrollback().iter().cloned().collect(),
-            scrollback_file: None,
-            alternate_grid: screen.alternate_grid().cloned(),
-            cursor: screen.cursor.clone(),
-            saved_cursor: screen.saved_cursor().cloned(),
-            alt_saved_cursor: screen.alt_saved_cursor().cloned(),
-            scroll_region: *screen.scroll_region(),
-            style: screen.style.clone(),
-            modes: screen.modes.clone(),
-            title: screen.title.clone(),
-            scroll_offset: screen.scroll_offset,
-            tab_stops: screen.tab_stops().to_vec(),
-            alternate_active: screen.alternate_grid().is_some(),
-            cursor_style: screen.cursor.style,
-            mouse_mode: screen.modes.mouse_mode,
-        }
+    /// Get the daemon session ID
+    pub fn session_id(&self) -> Option<String> {
+        self.ivars().session_id.borrow().clone()
     }
 
-    /// Duplicate the PTY file descriptor for upgrade transfer
-    #[cfg(unix)]
-    pub fn dup_pty_fd(&self) -> Option<std::os::unix::io::RawFd> {
-        self.ivars().terminal.lock().dup_pty_fd()
-    }
-
-    /// Get the child process ID
-    #[cfg(unix)]
-    pub fn child_pid(&self) -> Option<i32> {
-        self.ivars().terminal.lock().child_pid()
-    }
-
-    /// Register PTY FD with watchdog for crash recovery
-    #[cfg(unix)]
-    fn register_pty_with_watchdog(&self) {
-        use std::os::unix::io::AsRawFd;
-
-        let Some(watchdog_fd) = crate::app::get_watchdog_fd() else {
-            return; // Not running under watchdog
-        };
-
-        let terminal = self.ivars().terminal.lock();
-        let Some(pty_fd) = terminal.pty().map(|p| p.as_raw_fd()) else {
-            drop(terminal);
-            return; // No PTY yet
-        };
-        drop(terminal);
-
-        match cterm_app::register_fd_with_watchdog(watchdog_fd, pty_fd) {
-            Ok(id) => {
-                self.ivars().watchdog_fd_id.set(id);
-                log::debug!("Registered PTY FD {} with watchdog (id={})", pty_fd, id);
-            }
-            Err(e) => {
-                log::error!("Failed to register PTY with watchdog: {}", e);
-            }
-        }
-    }
-
-    /// Unregister PTY FD from watchdog (called when terminal is closed)
-    #[cfg(unix)]
-    pub fn unregister_pty_from_watchdog(&self) {
-        let id = self.ivars().watchdog_fd_id.get();
-        if id == 0 {
-            return; // Not registered
-        }
-
-        let Some(watchdog_fd) = crate::app::get_watchdog_fd() else {
-            return; // Not running under watchdog
-        };
-
-        if let Err(e) = cterm_app::unregister_fd_with_watchdog(watchdog_fd, id) {
-            log::error!("Failed to unregister PTY from watchdog: {}", e);
-        } else {
-            log::debug!("Unregistered PTY from watchdog (id={})", id);
-        }
-
-        self.ivars().watchdog_fd_id.set(0);
-    }
-
-    /// Get the watchdog FD ID (for crash state saving)
-    #[cfg(unix)]
-    pub fn watchdog_fd_id(&self) -> u64 {
-        self.ivars().watchdog_fd_id.get()
+    /// Set the daemon session ID
+    pub fn set_session_id(&self, id: Option<String>) {
+        *self.ivars().session_id.borrow_mut() = id;
     }
 
     /// Setup the notification bar
@@ -2354,47 +2279,5 @@ impl TerminalView {
             .map_err(std::io::Error::other)?;
 
         Ok(())
-    }
-
-    /// Restore terminal display state from saved crash state
-    #[cfg(unix)]
-    pub fn restore_display_state(&self, state: &TerminalUpgradeState) {
-        let mut terminal = self.ivars().terminal.lock();
-
-        // Restore scrollback and screen content
-        let screen_config = cterm_core::screen::ScreenConfig {
-            scrollback_lines: 10000, // Default, could get from config
-        };
-
-        let restored_screen = cterm_core::Screen::from_upgrade_state(
-            state.grid.clone(),
-            state.scrollback.clone(),
-            state.alternate_grid.clone(),
-            state.cursor.clone(),
-            state.saved_cursor.clone(),
-            state.alt_saved_cursor.clone(),
-            state.scroll_region,
-            state.style.clone(),
-            state.modes.clone(),
-            state.title.clone(),
-            state.scroll_offset,
-            state.tab_stops.clone(),
-            screen_config,
-        );
-
-        // Replace the terminal's screen with the restored one
-        terminal.restore_screen(restored_screen);
-
-        drop(terminal);
-
-        // Trigger a redraw to show the restored content
-        self.set_needs_display();
-
-        log::info!(
-            "Restored display state: {}x{}, {} scrollback lines",
-            state.cols,
-            state.rows,
-            state.scrollback.len()
-        );
     }
 }

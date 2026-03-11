@@ -48,7 +48,7 @@ pub fn decode_image(data: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
     let (width, height) = img.dimensions();
 
     // Sanity check dimensions
-    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
         return Err(ImageDecodeError::TooLarge(width, height));
     }
 

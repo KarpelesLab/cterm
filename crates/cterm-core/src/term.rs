@@ -54,45 +54,6 @@ impl Terminal {
         }
     }
 
-    /// Create a terminal from restored screen state and PTY
-    ///
-    /// This is used during seamless upgrades to restore terminals from the old process.
-    pub fn from_restored(screen: Screen, pty: Pty) -> Self {
-        let title = screen.title.clone();
-        Self {
-            screen,
-            parser: Parser::new(),
-            pty: Some(pty),
-            write_fn: None,
-            last_title: title,
-        }
-    }
-
-    /// Create a terminal from restored screen state and PTY file descriptor (Unix only)
-    ///
-    /// This is used during seamless upgrades on Unix to restore terminals
-    /// using file descriptors passed from the old process.
-    ///
-    /// # Safety
-    /// The caller must ensure `fd` is a valid master PTY file descriptor
-    /// and `child_pid` is the correct process ID of the child process.
-    #[cfg(unix)]
-    pub unsafe fn from_restored_fd(
-        screen: Screen,
-        fd: std::os::unix::io::RawFd,
-        child_pid: i32,
-    ) -> Self {
-        let title = screen.title.clone();
-        let pty = Pty::from_raw_fd(fd, child_pid);
-        Self {
-            screen,
-            parser: Parser::new(),
-            pty: Some(pty),
-            write_fn: None,
-            last_title: title,
-        }
-    }
-
     /// Create a terminal and spawn a shell
     pub fn with_shell(
         cols: usize,
@@ -151,14 +112,6 @@ impl Terminal {
     /// which closes the master FD and unblocks any background read threads.
     pub fn take_pty(&mut self) -> Option<Pty> {
         self.pty.take()
-    }
-
-    /// Restore the screen state (for crash recovery)
-    ///
-    /// Replaces the current screen with the provided one, preserving the PTY.
-    pub fn restore_screen(&mut self, screen: Screen) {
-        self.last_title = screen.title.clone();
-        self.screen = screen;
     }
 
     /// Process input from the PTY and update the screen
@@ -271,31 +224,6 @@ impl Terminal {
     /// Get the child process ID
     pub fn child_pid(&self) -> Option<i32> {
         self.pty.as_ref().map(|p| p.child_pid())
-    }
-
-    /// Get a duplicated file descriptor for the PTY (Unix only)
-    ///
-    /// The returned FD is a duplicate and must be closed by the caller
-    /// if not passed to another process.
-    #[cfg(unix)]
-    pub fn dup_pty_fd(&self) -> Option<std::os::unix::io::RawFd> {
-        self.pty.as_ref().and_then(|p| p.dup_fd().ok())
-    }
-
-    /// Get upgrade handles for the PTY (Windows only)
-    ///
-    /// Returns (hpc, read_pipe, write_pipe, process_handle, process_id)
-    #[cfg(windows)]
-    pub fn get_upgrade_handles(
-        &self,
-    ) -> Option<(
-        std::os::windows::io::RawHandle,
-        std::os::windows::io::RawHandle,
-        std::os::windows::io::RawHandle,
-        std::os::windows::io::RawHandle,
-        u32,
-    )> {
-        self.pty.as_ref().map(|p| p.get_upgrade_handles())
     }
 
     /// Check if there's a foreground process running (other than the shell)

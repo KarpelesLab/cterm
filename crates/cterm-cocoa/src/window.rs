@@ -350,11 +350,15 @@ impl CtermWindow {
             cwd,
             ..Default::default()
         };
-        self.spawn_initial_daemon_session_with_opts(opts);
+        self.spawn_initial_daemon_session_with_opts(opts, None);
     }
 
     /// Spawn a daemon session with custom options in the background and attach when ready.
-    fn spawn_initial_daemon_session_with_opts(&self, opts: cterm_client::CreateSessionOpts) {
+    fn spawn_initial_daemon_session_with_opts(
+        &self,
+        opts: cterm_client::CreateSessionOpts,
+        background_color: Option<String>,
+    ) {
         let config = self.ivars().config.clone();
         let theme = self.ivars().theme.clone();
         let window_ptr = self as *const Self as usize;
@@ -380,6 +384,9 @@ impl CtermWindow {
                         let window: &CtermWindow = unsafe { &*(window_ptr as *const CtermWindow) };
                         let terminal_view =
                             TerminalView::from_daemon(mtm, &config, &theme, session);
+                        if let Some(ref bg) = background_color {
+                            terminal_view.set_background_override(Some(bg));
+                        }
                         window.attach_terminal_view(terminal_view);
                     });
                 }
@@ -398,9 +405,10 @@ impl CtermWindow {
         opts: cterm_client::CreateSessionOpts,
         title: String,
         color: Option<String>,
+        background_color: Option<String>,
     ) -> Retained<Self> {
         let this = Self::init_window(mtm, config, theme, &title, color.clone());
-        this.spawn_initial_daemon_session_with_opts(opts);
+        this.spawn_initial_daemon_session_with_opts(opts, background_color);
         this
     }
 
@@ -485,15 +493,16 @@ impl CtermWindow {
             ..Default::default()
         };
 
-        self.spawn_daemon_tab(opts, None, None);
+        self.spawn_daemon_tab(opts, None, None, None);
     }
 
     /// Spawn a daemon session in a background thread and create a tab when ready
     pub fn spawn_daemon_tab(
         &self,
         opts: cterm_client::CreateSessionOpts,
-        title_override: Option<String>,
+        template_name: Option<String>,
         color: Option<String>,
+        background_color: Option<String>,
     ) {
         let config = self.ivars().config.clone();
         let theme = self.ivars().theme.clone();
@@ -521,7 +530,7 @@ impl CtermWindow {
                         let mtm = unsafe { MainThreadMarker::new_unchecked() };
                         let window: &CtermWindow = unsafe { &*(window_ptr as *const CtermWindow) };
 
-                        let title = title_override.unwrap_or_else(|| {
+                        let title = template_name.clone().unwrap_or_else(|| {
                             format!(
                                 "Session: {}",
                                 &session.session_id()[..8.min(session.session_id().len())]
@@ -530,6 +539,16 @@ impl CtermWindow {
 
                         let new_window = CtermWindow::from_daemon(mtm, &config, &theme, session);
                         new_window.setTitle(&NSString::from_str(&title));
+
+                        // Store template name and apply background color on the terminal view
+                        if let Some(tv) = new_window.active_terminal() {
+                            if let Some(ref name) = template_name {
+                                tv.set_template_name(Some(name.clone()));
+                            }
+                            if let Some(ref bg) = background_color {
+                                tv.set_background_override(Some(bg));
+                            }
+                        }
 
                         let app = NSApplication::sharedApplication(mtm);
                         if let Some(delegate) = app.delegate() {
@@ -735,7 +754,12 @@ impl CtermWindow {
             ..Default::default()
         };
 
-        self.spawn_daemon_tab(opts, Some(template.name.clone()), template.color.clone());
+        self.spawn_daemon_tab(
+            opts,
+            Some(template.name.clone()),
+            template.color.clone(),
+            template.background_color.clone(),
+        );
     }
 
     /// Get the current tab color

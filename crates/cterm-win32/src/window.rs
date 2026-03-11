@@ -45,6 +45,7 @@ pub struct TabEntry {
     pub title: String,
     pub terminal: Arc<Mutex<Terminal>>,
     pub color: Option<String>,
+    pub background_color: Option<String>,
     pub has_bell: bool,
     /// Whether title was explicitly set (locks out OSC updates)
     pub title_locked: bool,
@@ -174,6 +175,7 @@ impl WindowState {
             title: initial_title.clone(),
             terminal,
             color: None,
+            background_color: None,
             has_bell: false,
             title_locked: false,
             reader_handle: Some(reader_handle),
@@ -279,6 +281,7 @@ impl WindowState {
             title: template.name.clone(),
             terminal,
             color: template.color.clone(),
+            background_color: template.background_color.clone(),
             has_bell: false,
             title_locked: true, // Lock title for template tabs
             reader_handle: Some(reader_handle),
@@ -295,6 +298,13 @@ impl WindowState {
         if let Some(ref color_hex) = template.color {
             let rgb = parse_hex_color(color_hex);
             self.tab_bar.set_color(tab_id, rgb);
+        }
+
+        // Apply background color override from template
+        if let Some(ref bg) = template.background_color {
+            if let Some(ref mut renderer) = self.renderer {
+                renderer.set_background_override(Some(bg));
+            }
         }
 
         self.invalidate();
@@ -375,6 +385,7 @@ impl WindowState {
             title: title.clone(),
             terminal,
             color: None,
+            background_color: None,
             has_bell: false,
             title_locked: true, // Lock title for docker tabs
             reader_handle: Some(reader_handle),
@@ -554,6 +565,12 @@ impl WindowState {
             self.tab_bar.set_active(tab_id);
             self.tab_bar.clear_bell(tab_id);
             self.tabs[index].has_bell = false;
+
+            // Apply per-tab background color override
+            if let Some(ref mut renderer) = self.renderer {
+                renderer.set_background_override(self.tabs[index].background_color.as_deref());
+            }
+
             self.invalidate();
         }
     }

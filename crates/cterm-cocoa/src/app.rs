@@ -46,85 +46,30 @@ pub struct Args {
     #[arg(short = 't', long = "title")]
     pub title: Option<String>,
 
-    /// Receive upgrade state from parent process via inherited FD (internal use)
+    /// Receive upgrade state from a file path (internal use)
     #[arg(long, hide = true)]
-    pub upgrade_receiver: Option<i32>,
-
-    /// Run under watchdog supervision (internal use)
-    #[arg(long, hide = true)]
-    pub supervised: Option<i32>,
-
-    /// Recover from crash with FDs from watchdog (internal use)
-    #[arg(long, hide = true)]
-    pub crash_recovery: Option<i32>,
-
-    /// Disable watchdog supervision (run directly without crash recovery)
-    #[arg(long)]
-    pub no_watchdog: bool,
+    pub upgrade_state: Option<String>,
 }
 
 /// Global application arguments (accessible from window creation)
 static APP_ARGS: std::sync::OnceLock<Args> = std::sync::OnceLock::new();
 
-/// Watchdog FD for crash recovery (-1 if not supervised)
-#[cfg(unix)]
-static WATCHDOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-
-/// Get the watchdog FD if we're running supervised
-#[cfg(unix)]
-pub fn get_watchdog_fd() -> Option<i32> {
-    let fd = WATCHDOG_FD.load(std::sync::atomic::Ordering::SeqCst);
-    if fd >= 0 {
-        Some(fd)
-    } else {
-        None
-    }
-}
-
-/// Thread-local storage for recovery FDs (used during crash recovery)
-#[cfg(unix)]
-thread_local! {
-    static RECOVERY_FDS: std::cell::RefCell<Vec<cterm_app::RecoveredFd>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 /// Thread-local storage for upgrade state (used during seamless upgrade)
-#[cfg(unix)]
 thread_local! {
-    static UPGRADE_STATE: std::cell::RefCell<Option<(cterm_app::upgrade::UpgradeState, Vec<std::os::unix::io::RawFd>)>> =
+    static UPGRADE_STATE: std::cell::RefCell<Option<cterm_app::upgrade::UpgradeState>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Take recovery FDs (consumes them)
-#[cfg(unix)]
-pub fn take_recovery_fds() -> Vec<cterm_app::RecoveredFd> {
-    RECOVERY_FDS.with(|r| std::mem::take(&mut *r.borrow_mut()))
-}
-
 /// Take upgrade state (consumes it)
-#[cfg(unix)]
-pub fn take_upgrade_state() -> Option<(
-    cterm_app::upgrade::UpgradeState,
-    Vec<std::os::unix::io::RawFd>,
-)> {
+pub fn take_upgrade_state() -> Option<cterm_app::upgrade::UpgradeState> {
     UPGRADE_STATE.with(|s| s.borrow_mut().take())
 }
 
 /// Store upgrade state for use during app launch
-#[cfg(unix)]
-pub fn set_upgrade_state(
-    state: cterm_app::upgrade::UpgradeState,
-    fds: Vec<std::os::unix::io::RawFd>,
-) {
+pub fn set_upgrade_state(state: cterm_app::upgrade::UpgradeState) {
     UPGRADE_STATE.with(|s| {
-        *s.borrow_mut() = Some((state, fds));
+        *s.borrow_mut() = Some(state);
     });
-}
-
-/// Check if we're in crash recovery mode
-#[cfg(unix)]
-pub fn is_crash_recovery() -> bool {
-    RECOVERY_FDS.with(|r| !r.borrow().is_empty())
 }
 
 /// Get the application arguments (call only after run())
@@ -137,9 +82,6 @@ pub struct AppDelegateIvars {
     config: Config,
     theme: Theme,
     windows: std::cell::RefCell<Vec<Retained<CtermWindow>>>,
-    /// Hash of last saved crash state (to avoid redundant writes)
-    #[cfg(unix)]
-    last_state_hash: std::cell::Cell<u64>,
     /// Set to true during relaunch to skip close confirmation
     is_relaunching: std::cell::Cell<bool>,
     /// Count of windows with active bell notifications
@@ -162,40 +104,46 @@ define_class!(
 
             let mtm = MainThreadMarker::from(self);
 
-            // Check for crash recovery
-            // TODO: Crash recovery needs daemon-based session reconnection.
-            // Direct PTY recovery has been removed as all sessions now go through ctermd.
-            #[cfg(unix)]
-            {
-                let recovery_fds = take_recovery_fds();
-                if !recovery_fds.is_empty() {
-                    log::warn!(
-                        "Crash recovery received {} FDs, but direct PTY recovery is no longer supported. \
-                         Sessions should be recovered via daemon reconnection.",
-                        recovery_fds.len()
-                    );
-                    // Close the recovered FDs since we can't use them directly
-                    for recovered in &recovery_fds {
-                        unsafe { libc::close(recovered.fd) };
-                    }
-                    let _ = cterm_app::clear_crash_state();
-                }
-            }
-
             // Check for seamless upgrade state
-            // TODO: Seamless upgrade needs daemon-based session reconnection.
-            // Direct PTY restoration has been removed as all sessions now go through ctermd.
-            #[cfg(unix)]
-            if let Some((upgrade_state, fds)) = take_upgrade_state() {
-                log::warn!(
-                    "Seamless upgrade received {} windows with {} FDs, but direct PTY restoration \
-                     is no longer supported. Sessions should be recovered via daemon reconnection.",
-                    upgrade_state.windows.len(),
-                    fds.len()
+            if let Some(upgrade_state) = take_upgrade_state() {
+                log::info!(
+                    "Restoring {} window(s) from upgrade state",
+                    upgrade_state.windows.len()
                 );
-                // Close the transferred FDs since we can't use them directly
-                for fd in &fds {
-                    unsafe { libc::close(*fd) };
+                let config = self.ivars().config.clone();
+                let theme = self.ivars().theme.clone();
+
+                // Reconnect to daemon sessions from upgrade state
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+
+                if let Ok(rt) = rt {
+                    for window_state in upgrade_state.windows {
+                        for tab_state in &window_state.tabs {
+                            if let Some(ref session_id) = tab_state.session_id {
+                                match rt.block_on(async {
+                                    let conn = cterm_client::DaemonConnection::connect_local().await?;
+                                    conn.attach_session(session_id, 80, 24).await
+                                }) {
+                                    Ok((handle, _snapshot)) => {
+                                        let window = CtermWindow::from_daemon(mtm, &config, &theme, handle);
+                                        self.ivars().windows.borrow_mut().push(window.clone());
+                                        window.makeKeyAndOrderFront(None);
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to reconnect session {}: {}", session_id, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !self.ivars().windows.borrow().is_empty() {
+                        #[allow(deprecated)]
+                        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+                        return;
+                    }
                 }
             }
 
@@ -243,12 +191,6 @@ define_class!(
                                     #[allow(deprecated)]
                                     NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
                                     log::info!("Reconnected to daemon sessions, skipping normal startup");
-
-                                    // Start periodic state saving (only if running under watchdog)
-                                    #[cfg(unix)]
-                                    if get_watchdog_fd().is_some() {
-                                        self.start_state_save_timer(mtm);
-                                    }
                                     return;
                                 }
                             }
@@ -274,12 +216,6 @@ define_class!(
             #[allow(deprecated)]
             NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
             log::debug!("App activated");
-
-            // Start periodic state saving (only if running under watchdog)
-            #[cfg(unix)]
-            if get_watchdog_fd().is_some() {
-                self.start_state_save_timer(mtm);
-            }
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -358,12 +294,6 @@ define_class!(
 
     // Menu action handlers
     impl AppDelegate {
-        /// Timer callback for periodic state saving
-        #[unsafe(method(saveStateTimer:))]
-        fn save_state_timer(&self, _timer: Option<&objc2::runtime::AnyObject>) {
-            self.save_crash_state();
-        }
-
         #[unsafe(method(showPreferences:))]
         fn action_show_preferences(&self, _sender: Option<&objc2::runtime::AnyObject>) {
             let mtm = MainThreadMarker::from(self);
@@ -813,8 +743,6 @@ impl AppDelegate {
             config,
             theme,
             windows: std::cell::RefCell::new(Vec::new()),
-            #[cfg(unix)]
-            last_state_hash: std::cell::Cell::new(0),
             is_relaunching: std::cell::Cell::new(false),
             bell_count: std::cell::Cell::new(0),
         });
@@ -910,157 +838,45 @@ impl AppDelegate {
 
         let template_name = template.name.clone();
         let template_color = template.color.clone();
+        let template_bg_color = template.background_color.clone();
 
         // If there's a key window, add as a tab; otherwise create standalone
         let app = NSApplication::sharedApplication(mtm);
         if let Some(key_window) = app.keyWindow() {
             let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
             let cterm_window: &CtermWindow = unsafe { &*window_ptr };
-            cterm_window.spawn_daemon_tab(opts, Some(template_name), template_color);
+            cterm_window.spawn_daemon_tab(
+                opts,
+                Some(template_name),
+                template_color,
+                template_bg_color,
+            );
         } else {
             // No key window — create a new standalone daemon-backed window
-            let window =
-                CtermWindow::new_daemon(mtm, &config, &theme, opts, template_name, template_color);
+            let window = CtermWindow::new_daemon(
+                mtm,
+                &config,
+                &theme,
+                opts,
+                template_name,
+                template_color,
+                template_bg_color,
+            );
             self.ivars().windows.borrow_mut().push(window.clone());
             window.makeKeyAndOrderFront(None);
         }
     }
 
-    /// Save crash recovery state to disk
-    #[cfg(unix)]
-    pub fn save_crash_state(&self) {
-        use cterm_app::crash_recovery::{write_crash_state, CrashState};
-        use cterm_app::upgrade::{TabUpgradeState, UpgradeState, WindowUpgradeState};
-
-        let windows = self.ivars().windows.borrow();
-
-        // Build upgrade state from all windows
-        let mut upgrade_state = UpgradeState::new(env!("CARGO_PKG_VERSION"));
-
-        for window in windows.iter() {
-            let mut window_state = WindowUpgradeState::new();
-
-            // Get window frame
-            let frame = window.frame();
-            window_state.x = frame.origin.x as i32;
-            window_state.y = frame.origin.y as i32;
-            window_state.width = frame.size.width as i32;
-            window_state.height = frame.size.height as i32;
-
-            // Get terminal state
-            if let Some(terminal_view) = window.active_terminal() {
-                let watchdog_fd_id = terminal_view.watchdog_fd_id();
-
-                // Only save if registered with watchdog
-                if watchdog_fd_id > 0 {
-                    let terminal_state = terminal_view.export_state();
-
-                    let terminal = terminal_view.terminal();
-                    let term = terminal.lock();
-                    let child_pid = term.child_pid().unwrap_or(0);
-                    drop(term);
-
-                    let mut tab_state = TabUpgradeState::with_watchdog_fd_id(
-                        0, // Tab ID not used for crash recovery
-                        0, // FD index not used (we use watchdog_fd_id instead)
-                        child_pid,
-                        watchdog_fd_id,
-                    );
-                    tab_state.terminal = terminal_state;
-                    let title = window.title().to_string();
-                    if terminal_view.is_title_locked() {
-                        tab_state.custom_title = Some(title.clone());
-                    }
-                    tab_state.title = title;
-                    tab_state.template_name = terminal_view.template_name();
-                    tab_state.color = window.tab_color();
-                    tab_state.cwd = terminal_view
-                        .terminal()
-                        .lock()
-                        .foreground_cwd()
-                        .map(|p| p.to_string_lossy().into_owned());
-
-                    window_state.tabs.push(tab_state);
-                }
-            }
-
-            if !window_state.tabs.is_empty() {
-                upgrade_state.windows.push(window_state);
-            }
-        }
-
-        // Only write if we have state to save
-        if upgrade_state.windows.is_empty() {
-            return;
-        }
-
-        // Compute a simple hash of the state to avoid redundant writes
-        // We hash the debug representation which includes all fields
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        format!("{:?}", upgrade_state).hash(&mut hasher);
-        let state_hash = hasher.finish();
-
-        // Skip if state hasn't changed
-        let last_hash = self.ivars().last_state_hash.get();
-        if state_hash == last_hash {
-            return;
-        }
-
-        let crash_state = CrashState::new(upgrade_state);
-
-        if let Err(e) = write_crash_state(&crash_state) {
-            log::error!("Failed to save crash state: {}", e);
-        } else {
-            self.ivars().last_state_hash.set(state_hash);
-            log::trace!(
-                "Saved crash state: {} windows",
-                crash_state.state.windows.len()
-            );
-        }
-    }
-
-    /// Start the periodic state saving timer
-    #[cfg(unix)]
-    pub fn start_state_save_timer(&self, mtm: MainThreadMarker) {
-        use objc2::sel;
-        use objc2_foundation::NSTimer;
-
-        // Save state every 5 seconds
-        let interval = 5.0;
-
-        unsafe {
-            // scheduledTimer... automatically adds to the current run loop which retains it
-            let _timer = NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                interval,
-                self,
-                sel!(saveStateTimer:),
-                None,
-                true,
-            );
-        }
-
-        log::info!("Started crash state save timer (interval: {}s)", interval);
-    }
-
     /// Perform a seamless relaunch, preserving all windows and tabs
     ///
-    /// This collects state from all windows, duplicates PTY file descriptors,
-    /// and transfers everything to a new process running the same binary.
-    ///
-    /// For upgrades: replace the binary first, then call this method.
-    /// For debug/testing: just call this method to relaunch with the same binary.
+    /// Since all terminal sessions live in the ctermd daemon, upgrading only
+    /// requires saving the window/tab layout with session IDs. The daemon
+    /// keeps sessions alive across cterm restarts.
     #[cfg(unix)]
     pub fn perform_relaunch(&self) {
         use cterm_app::upgrade::{
             execute_upgrade, TabUpgradeState, UpgradeState, WindowUpgradeState,
         };
-        use std::os::unix::io::RawFd;
-
-        // Save crash state immediately before relaunch so buffers are preserved
-        // in case something goes wrong during the upgrade process
-        self.save_crash_state();
-        log::info!("Crash state saved before relaunch");
 
         let binary = match std::env::current_exe() {
             Ok(path) => path,
@@ -1072,20 +888,16 @@ impl AppDelegate {
 
         log::info!("Performing seamless relaunch: {}", binary.display());
 
-        let mut upgrade_state = UpgradeState::new(env!("CARGO_PKG_VERSION"));
-        let mut fds: Vec<RawFd> = Vec::new();
+        let mut upgrade_state = UpgradeState::new();
 
         // Get windows in tab order using macOS native tabbedWindows
-        // This preserves the actual visual tab order instead of creation order
         let windows = self.ivars().windows.borrow();
         let ordered_windows: Vec<Retained<CtermWindow>> =
             if let Some(first_window) = windows.first() {
-                // Get tabbedWindows from the first window to get correct tab order
                 let tabbed: Option<Retained<objc2_foundation::NSArray<NSWindow>>> =
                     unsafe { msg_send![&**first_window, tabbedWindows] };
 
                 if let Some(tabbed_windows) = tabbed {
-                    // Convert NSWindow refs back to CtermWindow refs by matching pointers
                     tabbed_windows
                         .iter()
                         .filter_map(|nswin| {
@@ -1097,7 +909,6 @@ impl AppDelegate {
                         })
                         .collect()
                 } else {
-                    // Fallback to our stored order
                     windows.iter().cloned().collect()
                 }
             } else {
@@ -1108,49 +919,29 @@ impl AppDelegate {
         for window in ordered_windows.iter() {
             let mut window_state = WindowUpgradeState::new();
 
-            // Get window frame
             let frame = window.frame();
             window_state.x = frame.origin.x as i32;
             window_state.y = frame.origin.y as i32;
             window_state.width = frame.size.width as i32;
             window_state.height = frame.size.height as i32;
 
-            // Get terminal state
             if let Some(terminal_view) = window.active_terminal() {
-                let terminal_state = terminal_view.export_state();
-
-                let terminal = terminal_view.terminal();
-                let term = terminal.lock();
-                let child_pid = term.child_pid().unwrap_or(0);
-                drop(term);
-
-                // Duplicate the PTY FD
-                if let Some(fd) = terminal_view.dup_pty_fd() {
-                    let fd_index = fds.len();
-                    fds.push(fd);
-
-                    let mut tab_state = TabUpgradeState::new(
-                        0, // Tab ID not needed
-                        fd_index, child_pid,
-                    );
-                    tab_state.terminal = terminal_state;
-                    let title = window.title().to_string();
-                    if terminal_view.is_title_locked() {
-                        tab_state.custom_title = Some(title.clone());
-                    }
-                    tab_state.title = title;
-                    tab_state.template_name = terminal_view.template_name();
-                    tab_state.color = window.tab_color();
-                    tab_state.cwd = terminal_view
-                        .terminal()
-                        .lock()
-                        .foreground_cwd()
-                        .map(|p| p.to_string_lossy().into_owned());
-
-                    window_state.tabs.push(tab_state);
-                } else {
-                    log::warn!("Failed to duplicate PTY FD for terminal");
+                let mut tab_state = TabUpgradeState::new(0);
+                let title = window.title().to_string();
+                tab_state.title = title.clone();
+                if terminal_view.is_title_locked() {
+                    tab_state.custom_title = Some(title);
                 }
+                tab_state.template_name = terminal_view.template_name();
+                tab_state.color = window.tab_color();
+                tab_state.session_id = terminal_view.session_id();
+                tab_state.cwd = terminal_view
+                    .terminal()
+                    .lock()
+                    .foreground_cwd()
+                    .map(|p| p.to_string_lossy().into_owned());
+
+                window_state.tabs.push(tab_state);
             }
 
             if !window_state.tabs.is_empty() {
@@ -1164,28 +955,20 @@ impl AppDelegate {
         }
 
         log::info!(
-            "Relaunch state collected: {} windows, {} FDs",
+            "Relaunch state collected: {} windows",
             upgrade_state.windows.len(),
-            fds.len()
         );
 
-        // Execute relaunch
-        match execute_upgrade(&binary, &upgrade_state, &fds) {
+        match execute_upgrade(&binary, &upgrade_state) {
             Ok(()) => {
                 log::info!("Relaunch successful, terminating old process");
-                // Mark as relaunching to skip close confirmation
                 self.ivars().is_relaunching.set(true);
-                // Terminate this process - the new one has taken over
                 let mtm = MainThreadMarker::from(self);
                 let app = NSApplication::sharedApplication(mtm);
                 app.terminate(None);
             }
             Err(e) => {
                 log::error!("Relaunch failed: {}", e);
-                // Close the duplicated FDs on failure
-                for fd in fds {
-                    unsafe { libc::close(fd) };
-                }
             }
         }
     }
@@ -1251,78 +1034,13 @@ pub fn run() {
     log::info!("Starting cterm (native macOS)");
 
     // Check if we're in upgrade receiver mode
-    #[cfg(unix)]
-    if let Some(fd) = args.upgrade_receiver {
-        log::info!("Running in upgrade receiver mode with FD {}", fd);
-        let exit_code = crate::upgrade_receiver::run_receiver(fd);
+    if let Some(ref state_path) = args.upgrade_state {
+        log::info!(
+            "Running in upgrade receiver mode with state file: {}",
+            state_path
+        );
+        let exit_code = crate::upgrade_receiver::run_receiver(state_path);
         std::process::exit(exit_code);
-    }
-
-    // Check if we should start with watchdog for crash recovery
-    #[cfg(unix)]
-    if args.supervised.is_none() && args.crash_recovery.is_none() && !args.no_watchdog {
-        // We're not supervised and watchdog is not disabled - start watchdog
-        log::info!("Starting watchdog for crash recovery...");
-
-        let binary = std::env::current_exe().expect("Failed to get current executable");
-        let other_args: Vec<String> = std::env::args().skip(1).collect();
-
-        match cterm_app::run_watchdog(&binary, &other_args) {
-            Ok(exit_code) => std::process::exit(exit_code),
-            Err(e) => {
-                log::error!("Watchdog failed: {}, running without crash recovery", e);
-                // Fall through to normal startup
-            }
-        }
-    }
-
-    // Handle crash recovery mode - receive FDs from watchdog
-    #[cfg(unix)]
-    let recovery_fds = if let Some(fd) = args.crash_recovery {
-        log::info!("Running in crash recovery mode (FD {})", fd);
-        WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
-        // Set CLOEXEC so child shell processes don't inherit the watchdog socket
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags >= 0 {
-                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-            }
-        }
-
-        match cterm_app::receive_recovery_fds(fd) {
-            Ok(fds) => {
-                log::info!("Received {} PTY FDs for recovery", fds.len());
-                Some(fds)
-            }
-            Err(e) => {
-                log::error!("Failed to receive recovery FDs: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    #[cfg(unix)]
-    if let Some(fd) = args.supervised {
-        log::info!("Running under watchdog supervision (FD {})", fd);
-        // Store watchdog FD for later use (registering PTYs, shutdown notification)
-        WATCHDOG_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
-        // Set CLOEXEC so child shell processes don't inherit the watchdog socket
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags >= 0 {
-                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-            }
-        }
-    }
-
-    // Store recovery FDs for use during window creation
-    #[cfg(unix)]
-    if let Some(fds) = recovery_fds {
-        RECOVERY_FDS.with(|r| {
-            *r.borrow_mut() = fds;
-        });
     }
 
     // Store args for later access
