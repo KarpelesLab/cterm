@@ -692,6 +692,44 @@ define_class!(
             self.perform_relaunch();
         }
 
+        /// Debug menu: Relaunch ctermd daemon (exec-in-place, preserving PTY FDs)
+        #[unsafe(method(debugRelaunchDaemon:))]
+        fn action_debug_relaunch_daemon(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::info!("Debug: Requesting ctermd relaunch");
+            // Send the relaunch request in a background thread
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime");
+                rt.block_on(async {
+                    let socket_path = cterm_client::default_socket_path();
+                    match cterm_client::DaemonConnection::connect_unix(&socket_path, false).await {
+                        Ok(conn) => {
+                            // The daemon will exec() so the connection will drop.
+                            // We ignore the error from the dropped connection.
+                            match conn.relaunch_daemon("").await {
+                                Ok(resp) => {
+                                    if resp.success {
+                                        log::info!("ctermd relaunch succeeded");
+                                    } else {
+                                        log::error!("ctermd relaunch failed: {}", resp.reason);
+                                    }
+                                }
+                                Err(e) => {
+                                    // Connection drop during exec is expected
+                                    log::info!("ctermd relaunch in progress (connection dropped: {})", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to connect to ctermd for relaunch: {}", e);
+                        }
+                    }
+                });
+            });
+        }
+
         /// Debug menu: Show application logs
         #[unsafe(method(showLogs:))]
         fn action_show_logs(&self, _sender: Option<&objc2::runtime::AnyObject>) {

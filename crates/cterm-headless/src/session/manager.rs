@@ -110,6 +110,50 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Restore a session from a raw FD (used during relaunch).
+    ///
+    /// # Safety
+    /// The caller must ensure `fd` is a valid PTY master FD and `child_pid` is correct.
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn restore_session(
+        &self,
+        id: String,
+        fd: i32,
+        child_pid: i32,
+        cols: usize,
+        rows: usize,
+        custom_title: String,
+        scrollback_lines: usize,
+    ) -> Result<Arc<SessionState>> {
+        let state = SessionState::from_raw_fd(
+            id.clone(),
+            fd,
+            child_pid,
+            cols,
+            rows,
+            custom_title,
+            scrollback_lines,
+        )?;
+
+        // Start the PTY reader task
+        let state = state.start_reader()?;
+
+        self.had_sessions.store(true, Ordering::Relaxed);
+        self.sessions.write().insert(id.clone(), Arc::clone(&state));
+
+        log::info!(
+            "Restored session {} (fd={}, pid={}, {}x{})",
+            id,
+            fd,
+            child_pid,
+            cols,
+            rows
+        );
+
+        Ok(state)
+    }
+
     /// Get the number of active sessions
     pub fn session_count(&self) -> usize {
         self.sessions.read().len()

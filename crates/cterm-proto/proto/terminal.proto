@@ -46,6 +46,7 @@ service TerminalService {
   // Daemon Management
   rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  rpc RelaunchDaemon(RelaunchDaemonRequest) returns (RelaunchDaemonResponse);
 }
 
 // ============================================================================
@@ -523,5 +524,15 @@ message ShutdownRequest {
 message ShutdownResponse {
   bool success = 1;
   // If not successful, reason why (e.g. "active sessions exist")
+  string reason = 2;
+}
+
+message RelaunchDaemonRequest {
+  // Optional path to the new binary (empty = re-exec current binary)
+  string binary_path = 1;
+}
+
+message RelaunchDaemonResponse {
+  bool success = 1;
   string reason = 2;
 }

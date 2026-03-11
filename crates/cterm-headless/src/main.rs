@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("ctermd starting...");
 
+    let relaunch_state_path = cli.relaunch_state.clone();
     let config = cli.to_server_config();
 
     // Daemonize if not running in foreground and not using TCP
@@ -32,8 +33,8 @@ async fn main() -> anyhow::Result<()> {
         daemonize()?;
     }
 
-    // Run the server
-    run_server(config).await?;
+    // Run the server (with optional relaunch state restoration)
+    run_server(config, relaunch_state_path).await?;
 
     Ok(())
 }

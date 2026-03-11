@@ -759,6 +759,13 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     debug_menu.addItem(&create_menu_item(
         mtm,
+        "Re-launch ctermd",
+        Some(sel!(debugRelaunchDaemon:)),
+        "",
+    ));
+
+    debug_menu.addItem(&create_menu_item(
+        mtm,
         "Dump State",
         Some(sel!(debugDumpState:)),
         "",

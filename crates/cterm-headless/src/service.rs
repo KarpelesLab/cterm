@@ -33,6 +33,10 @@ pub struct TerminalServiceImpl {
     client_count: AtomicU32,
     /// Number of active output streams (proxy for connected clients)
     active_streams: Arc<AtomicU32>,
+    /// Socket path (needed for relaunch)
+    socket_path: String,
+    /// Default scrollback lines (needed for relaunch)
+    scrollback_lines: usize,
 }
 
 impl TerminalServiceImpl {
@@ -45,7 +49,15 @@ impl TerminalServiceImpl {
             start_time: Instant::now(),
             client_count: AtomicU32::new(0),
             active_streams: Arc::new(AtomicU32::new(0)),
+            socket_path: String::new(),
+            scrollback_lines: 10000,
         }
+    }
+
+    /// Set the socket path and scrollback lines (needed for relaunch)
+    pub fn set_server_config(&mut self, socket_path: String, scrollback_lines: usize) {
+        self.socket_path = socket_path;
+        self.scrollback_lines = scrollback_lines;
     }
 }
 
@@ -647,6 +659,55 @@ impl TerminalService for TerminalServiceImpl {
             success: true,
             reason: String::new(),
         }))
+    }
+
+    async fn relaunch_daemon(
+        &self,
+        request: Request<RelaunchDaemonRequest>,
+    ) -> Result<Response<RelaunchDaemonResponse>, Status> {
+        #[cfg(not(unix))]
+        {
+            let _ = request;
+            return Ok(Response::new(RelaunchDaemonResponse {
+                success: false,
+                reason: "Relaunch is only supported on Unix".to_string(),
+            }));
+        }
+
+        #[cfg(unix)]
+        {
+            let req = request.into_inner();
+            let binary_path = if req.binary_path.is_empty() {
+                None
+            } else {
+                Some(req.binary_path.as_str())
+            };
+
+            log::info!(
+                "Relaunch requested (binary: {})",
+                binary_path.unwrap_or("<current>")
+            );
+
+            // perform_relaunch calls exec() and does not return on success
+            match crate::relaunch::perform_relaunch(
+                &self.session_manager,
+                &self.socket_path,
+                self.scrollback_lines,
+                binary_path,
+            ) {
+                Ok(()) => {
+                    // Should not reach here — exec replaces the process
+                    unreachable!("exec should not return on success");
+                }
+                Err(e) => {
+                    log::error!("Relaunch failed: {}", e);
+                    Ok(Response::new(RelaunchDaemonResponse {
+                        success: false,
+                        reason: e,
+                    }))
+                }
+            }
+        }
     }
 }
 

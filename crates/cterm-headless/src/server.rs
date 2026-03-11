@@ -41,7 +41,10 @@ impl Default for ServerConfig {
 }
 
 /// Run the gRPC server with the given configuration
-pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
+pub async fn run_server(
+    config: ServerConfig,
+    relaunch_state_path: Option<String>,
+) -> anyhow::Result<()> {
     // Write PID file
     let pid_path = crate::cli::pid_file_path();
     let pid = std::process::id();
@@ -50,8 +53,61 @@ pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
     }
 
     let session_manager = Arc::new(SessionManager::with_scrollback(config.scrollback_lines));
+
+    // Restore sessions from relaunch state if provided
+    #[cfg(unix)]
+    if let Some(ref state_path) = relaunch_state_path {
+        match crate::relaunch::read_relaunch_state(state_path) {
+            Ok(state) => {
+                log::info!(
+                    "Restoring {} sessions from relaunch state",
+                    state.sessions.len()
+                );
+                for s in &state.sessions {
+                    match unsafe {
+                        session_manager.restore_session(
+                            s.session_id.clone(),
+                            s.master_fd,
+                            s.child_pid,
+                            s.cols,
+                            s.rows,
+                            s.custom_title.clone(),
+                            s.scrollback_lines,
+                        )
+                    } {
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::error!(
+                                "Failed to restore session {} (fd={}, pid={}): {}",
+                                s.session_id,
+                                s.master_fd,
+                                s.child_pid,
+                                e
+                            );
+                        }
+                    }
+                }
+                log::info!(
+                    "Restored {}/{} sessions",
+                    session_manager.session_count(),
+                    state.sessions.len()
+                );
+            }
+            Err(e) => {
+                log::error!("Failed to read relaunch state: {}", e);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    if relaunch_state_path.is_some() {
+        log::warn!("Relaunch state is only supported on Unix, ignoring");
+    }
+
     let shutdown_notify = Arc::new(Notify::new());
-    let service = TerminalServiceImpl::new(session_manager.clone(), Arc::clone(&shutdown_notify));
+    let mut service =
+        TerminalServiceImpl::new(session_manager.clone(), Arc::clone(&shutdown_notify));
+    service.set_server_config(config.socket_path.clone(), config.scrollback_lines);
 
     // Spawn periodic dead session cleanup task
     {

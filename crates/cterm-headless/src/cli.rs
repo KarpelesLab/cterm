@@ -41,6 +41,10 @@ pub struct Cli {
     /// Default scrollback lines for new sessions (0 = no scrollback)
     #[arg(long = "scrollback", default_value = "10000")]
     pub scrollback_lines: usize,
+
+    /// Path to relaunch state file (internal, used during daemon relaunch)
+    #[arg(long = "relaunch-state", hide = true)]
+    pub relaunch_state: Option<String>,
 }
 
 impl Cli {

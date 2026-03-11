@@ -128,6 +128,7 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
         let debug_menu = gio::Menu::new();
         debug_menu.append(Some("View Logs"), Some("win.view-logs"));
         debug_menu.append(Some("Re-launch cterm"), Some("win.debug-relaunch"));
+        debug_menu.append(Some("Re-launch ctermd"), Some("win.debug-relaunch-daemon"));
         debug_menu.append(Some("Dump State"), Some("win.debug-dump-state"));
         help_menu.append_submenu(Some("Debug"), &debug_menu);
     }

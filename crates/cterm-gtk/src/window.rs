@@ -1123,6 +1123,46 @@ impl CtermWindow {
         }
 
         {
+            // Re-launch ctermd - trigger daemon exec-in-place relaunch
+            let action = gio::SimpleAction::new("debug-relaunch-daemon", None);
+            action.connect_activate(move |_, _| {
+                log::info!("Debug: Requesting ctermd relaunch");
+                std::thread::spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create tokio runtime");
+                    rt.block_on(async {
+                        let socket_path = cterm_client::default_socket_path();
+                        match cterm_client::DaemonConnection::connect_unix(&socket_path, false)
+                            .await
+                        {
+                            Ok(conn) => match conn.relaunch_daemon("").await {
+                                Ok(resp) => {
+                                    if resp.success {
+                                        log::info!("ctermd relaunch succeeded");
+                                    } else {
+                                        log::error!("ctermd relaunch failed: {}", resp.reason);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::info!(
+                                        "ctermd relaunch in progress (connection dropped: {})",
+                                        e
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                log::error!("Failed to connect to ctermd for relaunch: {}", e);
+                            }
+                        }
+                    });
+                });
+            });
+            window.add_action(&action);
+        }
+
+        {
             // Dump State - dump current terminal state for debugging
             let tabs = Rc::clone(&tabs);
             let action = gio::SimpleAction::new("debug-dump-state", None);

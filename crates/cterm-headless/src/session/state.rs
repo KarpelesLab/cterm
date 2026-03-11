@@ -4,6 +4,8 @@ use crate::bridge::PtyReader;
 use crate::error::Result;
 use cterm_core::screen::ScreenConfig;
 use cterm_core::term::TerminalEvent;
+#[cfg(unix)]
+use cterm_core::Pty;
 use cterm_core::{PtyConfig, PtySize, Terminal};
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -79,6 +81,40 @@ impl SessionState {
             event_tx,
             attached_clients: AtomicU32::new(0),
             custom_title: RwLock::new(String::new()),
+        });
+
+        Ok(state)
+    }
+
+    /// Reconstruct a session from a raw PTY file descriptor (used during relaunch).
+    ///
+    /// # Safety
+    /// The caller must ensure `fd` is a valid PTY master FD and `child_pid` is correct.
+    #[cfg(unix)]
+    pub unsafe fn from_raw_fd(
+        id: String,
+        fd: i32,
+        child_pid: i32,
+        cols: usize,
+        rows: usize,
+        custom_title: String,
+        scrollback_lines: usize,
+    ) -> Result<Arc<Self>> {
+        let pty = Pty::from_raw_fd(fd, child_pid);
+        let screen_config = ScreenConfig { scrollback_lines };
+        let mut terminal = Terminal::new(cols, rows, screen_config);
+        terminal.set_pty(pty);
+
+        let (output_tx, _) = broadcast::channel(1024);
+        let (event_tx, _) = broadcast::channel(256);
+
+        let state = Arc::new(Self {
+            terminal: RwLock::new(terminal),
+            id,
+            output_tx,
+            event_tx,
+            attached_clients: AtomicU32::new(0),
+            custom_title: RwLock::new(custom_title),
         });
 
         Ok(state)

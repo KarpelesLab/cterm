@@ -483,4 +483,22 @@ impl DaemonConnection {
 
         Ok(response.into_inner())
     }
+
+    /// Request daemon relaunch (exec-in-place, preserving PTY FDs).
+    ///
+    /// If `binary_path` is empty, the daemon re-execs the current binary.
+    /// The connection will be dropped when the daemon execs — callers
+    /// should reconnect after a brief delay.
+    pub async fn relaunch_daemon(&self, binary_path: &str) -> Result<RelaunchDaemonResponse> {
+        let response = self
+            .client
+            .lock()
+            .await
+            .relaunch_daemon(RelaunchDaemonRequest {
+                binary_path: binary_path.to_string(),
+            })
+            .await?;
+
+        Ok(response.into_inner())
+    }
 }
