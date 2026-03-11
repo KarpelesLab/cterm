@@ -521,7 +521,6 @@ dependencies = [
  "cterm-core",
  "cterm-proto",
  "env_logger",
- "futures",
  "libc",
  "log",
  "parking_lot",

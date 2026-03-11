@@ -80,86 +80,156 @@ impl DaemonConnection {
         Self::handshake(channel).await
     }
 
-    /// Connect to a remote ctermd via SSH.
+    /// Connect to a remote ctermd via SSH socket forwarding.
     ///
-    /// Spawns `ssh user@host ctermd --stdio` and uses stdin/stdout as the gRPC transport.
+    /// This:
+    /// 1. Ensures ctermd is running on the remote host (starts it if needed)
+    /// 2. Gets the remote Unix socket path via `ctermd --print-socket-path`
+    /// 3. Sets up SSH local forwarding (`-L`) to tunnel the remote socket locally
+    /// 4. Connects the gRPC client to the local forwarded socket
+    ///
+    /// Because ctermd runs as a daemon on the remote with its own Unix socket,
+    /// sessions survive SSH disconnects and can be reattached.
+    ///
     /// The `host` parameter can be `user@hostname` or just `hostname`.
     pub async fn connect_ssh(host: &str) -> Result<Self> {
         use tokio::process::Command as TokioCommand;
 
         log::info!("Connecting to {} via SSH", host);
 
-        // Check if ctermd is available on the remote host
-        let check = TokioCommand::new("ssh")
-            .args([host, "which", "ctermd"])
+        // 1. Get the remote socket path
+        let output = TokioCommand::new("ssh")
+            .args([host, "ctermd", "--print-socket-path"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .status()
+            .output()
             .await
             .map_err(|e| ClientError::Connection(format!("Failed to run ssh: {}", e)))?;
 
-        if !check.success() {
+        if !output.status.success() {
             return Err(ClientError::Connection(format!(
                 "ctermd not found on remote host {}. Install it first.",
                 host
             )));
         }
 
-        // Spawn: ssh user@host ctermd --stdio
-        let mut child = TokioCommand::new("ssh")
-            .args([host, "ctermd", "--stdio"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+        let remote_socket = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if remote_socket.is_empty() {
+            return Err(ClientError::Connection(
+                "Empty socket path from remote ctermd".to_string(),
+            ));
+        }
+        log::info!("Remote socket path: {}", remote_socket);
+
+        // 2. Ensure ctermd is running on the remote (it daemonizes by default)
+        let start_result = TokioCommand::new("ssh")
+            .args([host, "ctermd"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .status()
+            .await
+            .map_err(|e| {
+                ClientError::Connection(format!("Failed to start remote ctermd: {}", e))
+            })?;
+
+        if !start_result.success() {
+            log::warn!("ctermd start returned non-zero (may already be running)");
+        }
+
+        // Give the daemon a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // 3. Create a local temp socket for forwarding
+        let local_socket = Self::ssh_forward_socket_path(host);
+
+        // Clean up stale local socket from previous connection
+        if local_socket.exists() {
+            let _ = std::fs::remove_file(&local_socket);
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = local_socket.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        // 4. Start SSH tunnel: forward remote Unix socket to local Unix socket
+        let forward_spec = format!("{}:{}", local_socket.display(), remote_socket);
+
+        log::info!("Starting SSH tunnel: -L {}", forward_spec);
+
+        let tunnel = TokioCommand::new("ssh")
+            .args([
+                "-N", // No remote command
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "StreamLocalBindUnlink=yes",
+                "-L",
+                &forward_spec,
+                host,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| ClientError::Connection(format!("Failed to spawn ssh: {}", e)))?;
+            .map_err(|e| ClientError::Connection(format!("Failed to start SSH tunnel: {}", e)))?;
 
-        let child_stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| ClientError::Connection("Failed to capture ssh stdin".to_string()))?;
-        let child_stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ClientError::Connection("Failed to capture ssh stdout".to_string()))?;
-
-        // Wrap stdin/stdout as a combined AsyncRead+AsyncWrite
-        let pipe = SshPipe {
-            reader: child_stdout,
-            writer: child_stdin,
-        };
-
-        // Connect tonic channel over the SSH pipe using a one-shot connector
-        let pipe_cell = std::sync::Arc::new(tokio::sync::Mutex::new(Some(pipe)));
-        let channel = tonic::transport::Endpoint::try_from("http://[::]:0")
-            .map_err(|e| ClientError::Connection(e.to_string()))?
-            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                let pipe_cell = pipe_cell.clone();
-                async move {
-                    let pipe =
-                        pipe_cell.lock().await.take().ok_or_else(|| {
-                            std::io::Error::other("SSH connection already consumed")
-                        })?;
-                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(pipe))
-                }
-            }))
-            .await?;
-
-        // Spawn a task to wait for the child process and log when it exits
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => log::info!("SSH process exited: {}", status),
-                Err(e) => log::error!("Failed to wait for SSH process: {}", e),
+        // Wait for the local socket to appear (tunnel is establishing)
+        for i in 0..30 {
+            if local_socket.exists() {
+                break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(100 * (i / 5 + 1))).await;
+        }
+
+        if !local_socket.exists() {
+            return Err(ClientError::Connection(format!(
+                "SSH tunnel failed to create local socket at {}",
+                local_socket.display()
+            )));
+        }
+
+        // 5. Connect to the forwarded socket
+        let conn = Self::try_connect_unix(&local_socket).await?;
+
+        // Keep the tunnel process alive in the background
+        tokio::spawn(async move {
+            let local_socket_cleanup = local_socket;
+            match tunnel.wait_with_output().await {
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.is_empty() {
+                        log::warn!("SSH tunnel stderr: {}", stderr.trim());
+                    }
+                    log::info!("SSH tunnel exited: {}", output.status);
+                }
+                Err(e) => log::error!("SSH tunnel error: {}", e),
+            }
+            // Clean up local socket
+            let _ = std::fs::remove_file(&local_socket_cleanup);
         });
 
-        let mut conn = Self::handshake(channel).await?;
-        // Override is_local since this is a remote connection
-        if let Some(info) = Arc::get_mut(&mut conn.info) {
-            info.is_local = false;
-        }
         Ok(conn)
+    }
+
+    /// Get the local socket path used for SSH forwarding to a given host
+    fn ssh_forward_socket_path(host: &str) -> PathBuf {
+        // Sanitize hostname for use in path
+        let safe_host: String = host
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        let mut path = socket::default_socket_path();
+        path.set_file_name(format!("ctermd-ssh-{}.sock", safe_host));
+        path
     }
 
     /// Try to connect to an existing Unix socket
@@ -368,48 +438,5 @@ impl DaemonConnection {
             .await?;
 
         Ok(response.into_inner())
-    }
-}
-
-/// Combined child stdout/stdin as a single AsyncRead + AsyncWrite stream.
-///
-/// Reads from child stdout, writes to child stdin. Used for SSH transport
-/// where gRPC runs over a process pipe.
-struct SshPipe {
-    reader: tokio::process::ChildStdout,
-    writer: tokio::process::ChildStdin,
-}
-
-impl tokio::io::AsyncRead for SshPipe {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for SshPipe {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
     }
 }

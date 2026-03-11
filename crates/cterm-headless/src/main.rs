@@ -8,6 +8,13 @@ async fn main() -> anyhow::Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
 
+    // Handle --print-socket-path: print and exit
+    if cli.print_socket_path {
+        let path = cterm_headless::cli::default_socket_path();
+        println!("{}", path.display());
+        return Ok(());
+    }
+
     // Initialize logging
     let log_level = cli.log_level.parse().unwrap_or(log::LevelFilter::Info);
     env_logger::Builder::new()
@@ -19,9 +26,9 @@ async fn main() -> anyhow::Result<()> {
 
     let config = cli.to_server_config();
 
-    // Daemonize if not running in foreground, not using TCP, and not in stdio mode
+    // Daemonize if not running in foreground and not using TCP
     #[cfg(unix)]
-    if !config.foreground && !config.use_tcp && !config.stdio {
+    if !config.foreground && !config.use_tcp {
         daemonize()?;
     }
 

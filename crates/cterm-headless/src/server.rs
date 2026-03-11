@@ -6,7 +6,6 @@ use crate::session::SessionManager;
 #[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tonic::transport::Server;
 
 /// Server configuration
@@ -23,8 +22,6 @@ pub struct ServerConfig {
     pub scrollback_lines: usize,
     /// Run in foreground (don't daemonize)
     pub foreground: bool,
-    /// Run in stdio mode (gRPC over stdin/stdout)
-    pub stdio: bool,
 }
 
 impl Default for ServerConfig {
@@ -38,29 +35,23 @@ impl Default for ServerConfig {
                 .to_string(),
             scrollback_lines: 10000,
             foreground: false,
-            stdio: false,
         }
     }
 }
 
 /// Run the gRPC server with the given configuration
 pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
-    // Write PID file (not in stdio mode)
+    // Write PID file
     let pid_path = crate::cli::pid_file_path();
-    if !config.stdio {
-        let pid = std::process::id();
-        if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
-            log::warn!("Failed to write PID file {}: {}", pid_path.display(), e);
-        }
+    let pid = std::process::id();
+    if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
+        log::warn!("Failed to write PID file {}: {}", pid_path.display(), e);
     }
 
-    let is_stdio = config.stdio;
     let session_manager = Arc::new(SessionManager::with_scrollback(config.scrollback_lines));
     let service = TerminalServiceImpl::new(session_manager);
 
-    let result = if config.stdio {
-        run_stdio_server(service).await
-    } else if config.use_tcp {
+    let result = if config.use_tcp {
         run_tcp_server(config, service).await
     } else {
         #[cfg(unix)]
@@ -75,82 +66,9 @@ pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
     };
 
     // Clean up PID file on exit
-    if !is_stdio {
-        let _ = std::fs::remove_file(&pid_path);
-    }
+    let _ = std::fs::remove_file(&pid_path);
 
     result
-}
-
-/// Run the server in stdio mode (gRPC over stdin/stdout).
-///
-/// Used for SSH transport: `ssh user@host ctermd --stdio`
-/// The gRPC protocol runs directly over the SSH channel's stdin/stdout.
-async fn run_stdio_server(service: TerminalServiceImpl) -> anyhow::Result<()> {
-    log::info!("Starting ctermd in stdio mode");
-
-    // Create a combined stdin/stdout stream
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let pipe = StdioPipe { stdin, stdout };
-
-    // Create a one-shot stream that yields our single connection
-    let incoming = futures::stream::once(async { Ok::<_, std::io::Error>(pipe) });
-
-    Server::builder()
-        .add_service(TerminalServiceServer::new(service))
-        .serve_with_incoming(incoming)
-        .await?;
-
-    Ok(())
-}
-
-/// Combined stdin/stdout as a single AsyncRead + AsyncWrite stream.
-///
-/// Reads from stdin, writes to stdout. Used for stdio mode where gRPC
-/// runs over a process pipe (e.g. SSH).
-struct StdioPipe {
-    stdin: tokio::io::Stdin,
-    stdout: tokio::io::Stdout,
-}
-
-impl AsyncRead for StdioPipe {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stdin).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for StdioPipe {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.stdout).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stdout).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stdout).poll_shutdown(cx)
-    }
-}
-
-impl tonic::transport::server::Connected for StdioPipe {
-    type ConnectInfo = ();
-    fn connect_info(&self) -> Self::ConnectInfo {}
 }
 
 /// Run the server on a TCP socket
