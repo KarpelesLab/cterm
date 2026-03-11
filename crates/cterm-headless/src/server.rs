@@ -6,6 +6,7 @@ use crate::session::SessionManager;
 #[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Notify;
 use tonic::transport::Server;
 
 /// Server configuration
@@ -49,19 +50,32 @@ pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
     }
 
     let session_manager = Arc::new(SessionManager::with_scrollback(config.scrollback_lines));
-    let service = TerminalServiceImpl::new(session_manager);
+    let shutdown_notify = Arc::new(Notify::new());
+    let service = TerminalServiceImpl::new(session_manager.clone(), Arc::clone(&shutdown_notify));
+
+    // Spawn periodic dead session cleanup task
+    {
+        let sm = session_manager.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                sm.cleanup_dead_sessions();
+            }
+        });
+    }
 
     let result = if config.use_tcp {
-        run_tcp_server(config, service).await
+        run_tcp_server(config, service, shutdown_notify).await
     } else {
         #[cfg(unix)]
         {
-            run_unix_socket_server(config, service).await
+            run_unix_socket_server(config, service, shutdown_notify).await
         }
         #[cfg(not(unix))]
         {
             log::warn!("Unix sockets not supported on this platform, falling back to TCP");
-            run_tcp_server(config, service).await
+            run_tcp_server(config, service, shutdown_notify).await
         }
     };
 
@@ -72,14 +86,42 @@ pub async fn run_server(config: ServerConfig) -> anyhow::Result<()> {
 }
 
 /// Run the server on a TCP socket
-async fn run_tcp_server(config: ServerConfig, service: TerminalServiceImpl) -> anyhow::Result<()> {
+async fn run_tcp_server(
+    config: ServerConfig,
+    service: TerminalServiceImpl,
+    shutdown_notify: Arc<Notify>,
+) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.bind_addr, config.port).parse()?;
 
     log::info!("Starting ctermd on TCP {}", addr);
 
+    let shutdown = async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => log::info!("Received SIGINT"),
+                _ = sigterm.recv() => log::info!("Received SIGTERM"),
+                _ = shutdown_notify.notified() => log::info!("Shutdown requested via RPC"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::select! {
+                _ = ctrl_c => log::info!("Received SIGINT"),
+                _ = shutdown_notify.notified() => log::info!("Shutdown requested via RPC"),
+            }
+        }
+        log::info!("Shutting down...");
+    };
+
     Server::builder()
         .add_service(TerminalServiceServer::new(service))
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown)
         .await?;
 
     Ok(())
@@ -90,6 +132,7 @@ async fn run_tcp_server(config: ServerConfig, service: TerminalServiceImpl) -> a
 async fn run_unix_socket_server(
     config: ServerConfig,
     service: TerminalServiceImpl,
+    shutdown_notify: Arc<Notify>,
 ) -> anyhow::Result<()> {
     use tokio::net::UnixListener;
     use tokio_stream::wrappers::UnixListenerStream;
@@ -125,14 +168,15 @@ async fn run_unix_socket_server(
 
     log::info!("Starting ctermd on Unix socket {}", config.socket_path);
 
-    // Set up signal handler for graceful shutdown (SIGINT + SIGTERM)
-    let shutdown = async {
+    // Set up signal handler for graceful shutdown (SIGINT + SIGTERM + RPC shutdown)
+    let shutdown = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
         tokio::select! {
             _ = ctrl_c => log::info!("Received SIGINT"),
             _ = sigterm.recv() => log::info!("Received SIGTERM"),
+            _ = shutdown_notify.notified() => log::info!("Shutdown requested via RPC"),
         }
         log::info!("Shutting down...");
     };

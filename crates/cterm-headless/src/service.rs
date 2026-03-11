@@ -11,7 +11,10 @@ use crate::session::SessionManager;
 use libc;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Notify;
 use tokio_stream::{
     wrappers::errors::BroadcastStreamRecvError, wrappers::BroadcastStream, Stream, StreamExt,
 };
@@ -20,12 +23,26 @@ use tonic::{Request, Response, Status};
 /// TerminalService implementation
 pub struct TerminalServiceImpl {
     session_manager: Arc<SessionManager>,
+    /// Notifier used to trigger server shutdown from the shutdown RPC
+    shutdown_notify: Arc<Notify>,
+    /// Unique identifier for this daemon instance
+    daemon_id: String,
+    /// Time when the daemon was started
+    start_time: Instant,
+    /// Number of clients that have performed a handshake
+    client_count: AtomicU32,
 }
 
 impl TerminalServiceImpl {
-    /// Create a new TerminalService
-    pub fn new(session_manager: Arc<SessionManager>) -> Self {
-        Self { session_manager }
+    /// Create a new TerminalService with a shutdown notifier
+    pub fn new(session_manager: Arc<SessionManager>, shutdown_notify: Arc<Notify>) -> Self {
+        Self {
+            session_manager,
+            shutdown_notify,
+            daemon_id: uuid::Uuid::new_v4().to_string(),
+            start_time: Instant::now(),
+            client_count: AtomicU32::new(0),
+        }
     }
 }
 
@@ -83,7 +100,7 @@ impl TerminalService for TerminalServiceImpl {
                     title: s.title(),
                     running: s.is_running(),
                     child_pid: s.child_pid().unwrap_or(0),
-                    attached_clients: 0, // TODO: track attached clients
+                    attached_clients: s.attached_clients(),
                 }
             })
             .collect();
@@ -111,7 +128,7 @@ impl TerminalService for TerminalServiceImpl {
             title: session.title(),
             running: session.is_running(),
             child_pid: session.child_pid().unwrap_or(0),
-            attached_clients: 0, // TODO: track attached clients
+            attached_clients: session.attached_clients(),
         };
 
         Ok(Response::new(GetSessionResponse {
@@ -201,18 +218,30 @@ impl TerminalService for TerminalServiceImpl {
             .get_session(&req.session_id)
             .map_err(Status::from)?;
 
+        session.attach();
+
         let rx = session.subscribe_output();
-        let stream = BroadcastStream::new(rx).filter_map(|result| {
-            match result {
-                Ok(data) => Some(Ok(OutputChunk {
-                    data: data.data,
-                    timestamp_ms: data.timestamp_ms,
-                })),
-                Err(BroadcastStreamRecvError::Lagged(_)) => {
-                    // Skip lagged messages
-                    None
-                }
+        let session_id = req.session_id.clone();
+        let session_detach = session.clone();
+        let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
+            Ok(data) => Some(Ok(OutputChunk {
+                data: data.data,
+                timestamp_ms: data.timestamp_ms,
+            })),
+            Err(BroadcastStreamRecvError::Lagged(count)) => {
+                log::warn!(
+                    "stream_output: client lagged, dropped {} messages for session {}. \
+                         Client terminal state may be stale until new output arrives.",
+                    count,
+                    session_id,
+                );
+                None
             }
+        });
+
+        // Wrap the stream to detach when the client disconnects
+        let stream = StreamNotify::new(stream, move || {
+            session_detach.detach();
         });
 
         Ok(Response::new(Box::pin(stream)))
@@ -360,9 +389,17 @@ impl TerminalService for TerminalServiceImpl {
             .map_err(Status::from)?;
 
         let rx = session.subscribe_events();
-        let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        let session_id = req.session_id.clone();
+        let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
             Ok(event) => Some(Ok(event_to_proto(&event))),
-            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+            Err(BroadcastStreamRecvError::Lagged(count)) => {
+                log::warn!(
+                    "stream_events: client lagged, dropped {} events for session {}",
+                    count,
+                    session_id,
+                );
+                None
+            }
         });
 
         Ok(Response::new(Box::pin(stream)))
@@ -383,12 +420,14 @@ impl TerminalService for TerminalServiceImpl {
             req.client_version
         );
 
+        self.client_count.fetch_add(1, Ordering::Relaxed);
+
         let hostname = gethostname();
 
         Ok(Response::new(HandshakeResponse {
-            daemon_id: String::new(), // TODO: generate daemon ID
+            daemon_id: self.daemon_id.clone(),
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-            is_local: true, // TODO: detect from transport
+            is_local: true,
             hostname,
             protocol_version: 1,
         }))
@@ -404,6 +443,8 @@ impl TerminalService for TerminalServiceImpl {
             .get_session(&req.session_id)
             .map_err(Status::from)?;
 
+        session.attach();
+
         // Resize to client dimensions if provided
         if req.cols > 0 && req.rows > 0 {
             session.resize(req.cols as usize, req.rows as usize);
@@ -417,7 +458,7 @@ impl TerminalService for TerminalServiceImpl {
             title: session.title(),
             running: session.is_running(),
             child_pid: session.child_pid().unwrap_or(0),
-            attached_clients: 1, // TODO: track properly
+            attached_clients: session.attached_clients(),
         };
 
         let initial_screen = if req.want_screen_snapshot {
@@ -438,13 +479,17 @@ impl TerminalService for TerminalServiceImpl {
     ) -> Result<Response<DetachSessionResponse>, Status> {
         let req = request.into_inner();
 
+        // Decrement attached count if session still exists
+        if let Ok(session) = self.session_manager.get_session(&req.session_id) {
+            session.detach();
+        }
+
         if !req.keep_running {
             // Destroy the session
             self.session_manager
                 .destroy_session(&req.session_id, None)
                 .map_err(Status::from)?;
         }
-        // TODO: track detach state
 
         Ok(Response::new(DetachSessionResponse { success: true }))
     }
@@ -499,7 +544,14 @@ impl TerminalService for TerminalServiceImpl {
                     None
                 }
             }
-            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+            Err(BroadcastStreamRecvError::Lagged(count)) => {
+                log::warn!(
+                    "stream_screen_updates: client lagged, dropped {} events for session {}",
+                    count,
+                    session_id,
+                );
+                None
+            }
         });
 
         Ok(Response::new(Box::pin(stream)))
@@ -516,12 +568,12 @@ impl TerminalService for TerminalServiceImpl {
         let hostname = gethostname();
 
         Ok(Response::new(GetDaemonInfoResponse {
-            daemon_id: String::new(), // TODO
+            daemon_id: self.daemon_id.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             hostname,
             session_count: self.session_manager.session_count() as u32,
-            client_count: 0, // TODO: track connected clients
-            uptime_secs: 0,  // TODO: track uptime
+            client_count: self.client_count.load(Ordering::Relaxed),
+            uptime_secs: self.start_time.elapsed().as_secs(),
         }))
     }
 
@@ -538,13 +590,69 @@ impl TerminalService for TerminalServiceImpl {
             }));
         }
 
-        // TODO: trigger actual shutdown
         log::info!("Shutdown requested (force={})", req.force);
+
+        // If force=true and sessions exist, destroy them all first
+        if req.force {
+            let sessions = self.session_manager.list_sessions();
+            for session in &sessions {
+                if let Err(e) = self.session_manager.destroy_session(&session.id, None) {
+                    log::warn!(
+                        "Failed to destroy session {} during shutdown: {}",
+                        session.id,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Trigger actual server shutdown
+        self.shutdown_notify.notify_one();
 
         Ok(Response::new(ShutdownResponse {
             success: true,
             reason: String::new(),
         }))
+    }
+}
+
+/// A stream wrapper that calls a callback when dropped (i.e. when the client disconnects).
+struct StreamNotify<F: FnOnce()> {
+    inner: Pin<Box<dyn Stream<Item = Result<OutputChunk, Status>> + Send>>,
+    on_drop: Option<F>,
+}
+
+impl<F: FnOnce()> StreamNotify<F> {
+    fn new<S>(inner: S, on_drop: F) -> Self
+    where
+        S: Stream<Item = Result<OutputChunk, Status>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(inner),
+            on_drop: Some(on_drop),
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for StreamNotify<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.on_drop.take() {
+            f();
+        }
+    }
+}
+
+// SAFETY: Both fields are Unpin — Pin<Box<...>> is always Unpin, and Option<F> is Unpin.
+impl<F: FnOnce()> Unpin for StreamNotify<F> {}
+
+impl<F: FnOnce()> Stream for StreamNotify<F> {
+    type Item = Result<OutputChunk, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
     }
 }
 

@@ -6,6 +6,7 @@ use cterm_core::screen::ScreenConfig;
 use cterm_core::term::TerminalEvent;
 use cterm_core::{PtyConfig, PtySize, Terminal};
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -29,6 +30,9 @@ pub struct SessionState {
 
     /// Broadcast sender for terminal events
     event_tx: broadcast::Sender<TerminalEvent>,
+
+    /// Number of currently attached clients
+    attached_clients: AtomicU32,
 }
 
 impl SessionState {
@@ -70,6 +74,7 @@ impl SessionState {
             id,
             output_tx,
             event_tx,
+            attached_clients: AtomicU32::new(0),
         });
 
         Ok(state)
@@ -89,6 +94,21 @@ impl SessionState {
         }
 
         Ok(Arc::clone(self))
+    }
+
+    /// Increment the attached client count
+    pub fn attach(&self) {
+        self.attached_clients.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the attached client count
+    pub fn detach(&self) {
+        self.attached_clients.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get the number of currently attached clients
+    pub fn attached_clients(&self) -> u32 {
+        self.attached_clients.load(Ordering::Relaxed)
     }
 
     /// Get the terminal dimensions
