@@ -10,10 +10,12 @@
 //! Screen snapshots are written as separate binary protobuf files to avoid
 //! bloating the JSON metadata (scrollback can be many megabytes).
 
+#[cfg(unix)]
 use crate::session::SessionManager;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::Arc;
 
 /// Serialized state for a single session (JSON metadata only, screen data is separate)

@@ -14,11 +14,6 @@ fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
     item
 }
 
-/// Create the application menu model
-pub fn create_menu_model() -> gio::Menu {
-    create_menu_model_with_options(false)
-}
-
 /// Create the application menu model with options
 ///
 /// If `show_debug` is true, includes a Debug submenu in the Help menu
