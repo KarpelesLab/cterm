@@ -384,6 +384,50 @@ impl CtermWindow {
             window.add_action(&action);
         }
 
+        // Session actions (daemon attach)
+        {
+            let notebook = notebook.clone();
+            let tabs = Rc::clone(&tabs);
+            let next_tab_id = Rc::clone(&next_tab_id);
+            let config = Rc::clone(&config);
+            let theme = theme.clone();
+            let tab_bar = tab_bar.clone();
+            let window_clone = window.clone();
+            let has_bell = Rc::clone(&has_bell);
+            let file_manager = Rc::clone(&self.file_manager);
+            let notification_bar = self.notification_bar.clone();
+            let action = gio::SimpleAction::new("attach-session", None);
+            action.connect_activate(move |_, _| {
+                let notebook = notebook.clone();
+                let tabs = Rc::clone(&tabs);
+                let next_tab_id = Rc::clone(&next_tab_id);
+                let config = Rc::clone(&config);
+                let theme = theme.clone();
+                let tab_bar = tab_bar.clone();
+                let window_inner = window_clone.clone();
+                let has_bell = Rc::clone(&has_bell);
+                let file_manager = Rc::clone(&file_manager);
+                let notification_bar = notification_bar.clone();
+
+                crate::session_dialog::show_session_picker(&window_clone, move |session_id| {
+                    create_daemon_tab(
+                        &notebook,
+                        &tabs,
+                        &next_tab_id,
+                        &config,
+                        &theme,
+                        &tab_bar,
+                        &window_inner,
+                        &has_bell,
+                        &file_manager,
+                        &notification_bar,
+                        &session_id,
+                    );
+                });
+            });
+            window.add_action(&action);
+        }
+
         // Edit menu actions
         {
             // Copy selection to clipboard
@@ -2172,6 +2216,108 @@ fn create_docker_tab(
         tab.color = docker_color;
     }
 }
+
+/// Create a new daemon-backed tab by attaching to a session
+#[allow(clippy::too_many_arguments)]
+fn create_daemon_tab(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    next_tab_id: &Rc<RefCell<u64>>,
+    config: &Rc<RefCell<Config>>,
+    theme: &Theme,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    has_bell: &Rc<RefCell<bool>>,
+    file_manager: &Rc<RefCell<PendingFileManager>>,
+    notification_bar: &NotificationBar,
+    session_id: &str,
+) {
+    let cfg = config.borrow();
+    let session_id = session_id.to_string();
+
+    let notebook = notebook.clone();
+    let tabs = Rc::clone(tabs);
+    let next_tab_id = Rc::clone(next_tab_id);
+    let config = Rc::clone(config);
+    let theme = theme.clone();
+    let tab_bar = tab_bar.clone();
+    let window = window.clone();
+    let has_bell = Rc::clone(has_bell);
+    let file_manager = Rc::clone(file_manager);
+    let notification_bar = notification_bar.clone();
+
+    // Calculate terminal dimensions from current allocation
+    let cell_dims = calculate_initial_cell_dimensions(&cfg);
+    let alloc = notebook.allocation();
+    let cols = ((alloc.width() as f64) / cell_dims.width).floor().max(80.0) as u32;
+    let rows = ((alloc.height() as f64) / cell_dims.height)
+        .floor()
+        .max(24.0) as u32;
+    drop(cfg);
+
+    // Connect and attach in background thread, then create tab on main thread
+    let (tx, rx) = glib::MainContext::channel::<DaemonAttachResult>(glib::Priority::DEFAULT);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+
+        let result = match rt {
+            Ok(rt) => rt.block_on(async {
+                let conn = cterm_client::DaemonConnection::connect_local().await?;
+                let (session, _initial_screen) =
+                    conn.attach_session(&session_id, cols, rows).await?;
+                Ok(session)
+            }),
+            Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
+        };
+
+        let _ = tx.send(result);
+    });
+
+    rx.attach(None, move |result| {
+        match result {
+            Ok(session) => {
+                let title = format!(
+                    "Session: {}",
+                    &session.session_id()[..8.min(session.session_id().len())]
+                );
+                let cfg = config.borrow();
+                let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
+
+                let tab_id = generate_tab_id(&next_tab_id);
+                let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
+                tab_bar.add_tab(tab_id, &title);
+
+                setup_tab_callbacks(
+                    &notebook,
+                    &tabs,
+                    &config,
+                    &tab_bar,
+                    &window,
+                    &has_bell,
+                    &file_manager,
+                    &notification_bar,
+                    &terminal,
+                    tab_id,
+                    false,
+                );
+
+                finalize_new_tab(
+                    &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false,
+                );
+            }
+            Err(e) => {
+                log::error!("Failed to attach to daemon session: {}", e);
+            }
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+type DaemonAttachResult =
+    std::result::Result<cterm_client::SessionHandle, cterm_client::ClientError>;
 
 /// Create a new terminal tab from a template
 #[allow(clippy::too_many_arguments)]

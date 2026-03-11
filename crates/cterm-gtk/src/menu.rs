@@ -45,6 +45,11 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     docker_menu.append(Some("Docker Terminal..."), Some("win.docker-picker"));
     file_menu.append_submenu(Some("Docker"), &docker_menu);
 
+    // Session submenu (daemon)
+    let session_menu = gio::Menu::new();
+    session_menu.append(Some("Attach to Session..."), Some("win.attach-session"));
+    file_menu.append_submenu(Some("Sessions"), &session_menu);
+
     file_menu.append(Some("Tab Templates..."), Some("win.tab-templates"));
     file_menu.append_item(&menu_item(
         "Close Tab",

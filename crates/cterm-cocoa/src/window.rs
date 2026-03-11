@@ -378,6 +378,43 @@ impl CtermWindow {
         this
     }
 
+    /// Create a window connected to a daemon session
+    pub fn from_daemon(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        session: cterm_client::SessionHandle,
+    ) -> Retained<Self> {
+        let title = format!(
+            "Session: {}",
+            &session.session_id()[..8.min(session.session_id().len())]
+        );
+        let this = Self::init_window(mtm, config, theme, &title, None);
+        let terminal_view = TerminalView::from_daemon(mtm, config, theme, session);
+        this.attach_terminal_view(terminal_view);
+        this
+    }
+
+    /// Create a new tab connected to a daemon session (using native macOS window tabbing)
+    pub fn create_daemon_tab(&self, session: cterm_client::SessionHandle) {
+        let mtm = MainThreadMarker::from(self);
+
+        let new_window =
+            CtermWindow::from_daemon(mtm, &self.ivars().config, &self.ivars().theme, session);
+
+        // Register with AppDelegate
+        let app = NSApplication::sharedApplication(mtm);
+        if let Some(delegate) = app.delegate() {
+            let _: () = unsafe { msg_send![&*delegate, registerWindow: &*new_window] };
+        }
+
+        // Add as tab to this window
+        self.addTabbedWindow_ordered(&new_window, objc2_app_kit::NSWindowOrderingMode::Above);
+        new_window.makeKeyAndOrderFront(None);
+
+        log::info!("Created daemon tab");
+    }
+
     /// Create a new tab (using native macOS window tabbing)
     pub fn create_new_tab(&self) {
         let mtm = MainThreadMarker::from(self);
