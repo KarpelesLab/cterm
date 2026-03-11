@@ -28,6 +28,7 @@ members = [
     "crates/cterm-ui",
     "crates/cterm-app",
     "crates/cterm-proto",
+    "crates/cterm-client",
     "crates/cterm-gtk",
     "crates/cterm-cocoa",
     "crates/cterm-win32",
@@ -88,6 +89,8 @@ tar = "0.4"
 flate2 = "1"
 
 # gRPC
+tower = "0.4"
+hyper-util = { version = "0.1", features = ["tokio"] }
 tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
@@ -119,6 +122,7 @@ cterm-core = { path = "crates/cterm-core" }
 cterm-ui = { path = "crates/cterm-ui" }
 cterm-app = { path = "crates/cterm-app" }
 cterm-proto = { path = "crates/cterm-proto" }
+cterm-client = { path = "crates/cterm-client" }
 cterm-headless = { path = "crates/cterm-headless" }
 
 [profile.release]

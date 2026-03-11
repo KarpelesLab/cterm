@@ -1,0 +1,24 @@
+[package]
+name = "cterm-client"
+version.workspace = true
+edition.workspace = true
+description = "Client library for connecting to ctermd"
+
+[dependencies]
+cterm-core.workspace = true
+cterm-proto.workspace = true
+tonic.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["sync", "net"] }
+log.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
