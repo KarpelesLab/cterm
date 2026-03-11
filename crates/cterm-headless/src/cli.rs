@@ -34,6 +34,10 @@ pub struct Cli {
     #[arg(short = 'f', long = "foreground")]
     pub foreground: bool,
 
+    /// Run in stdio mode (gRPC over stdin/stdout, for SSH transport)
+    #[arg(long = "stdio")]
+    pub stdio: bool,
+
     /// Default scrollback lines for new sessions (0 = no scrollback)
     #[arg(long = "scrollback", default_value = "10000")]
     pub scrollback_lines: usize,
@@ -59,6 +63,7 @@ impl Cli {
             socket_path,
             scrollback_lines: self.scrollback_lines,
             foreground: self.foreground,
+            stdio: self.stdio,
         }
     }
 }

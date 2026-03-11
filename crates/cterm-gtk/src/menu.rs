@@ -48,6 +48,7 @@ pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     // Session submenu (daemon)
     let session_menu = gio::Menu::new();
     session_menu.append(Some("Attach to Session..."), Some("win.attach-session"));
+    session_menu.append(Some("SSH Remote..."), Some("win.ssh-connect"));
     file_menu.append_submenu(Some("Sessions"), &session_menu);
 
     file_menu.append(Some("Tab Templates..."), Some("win.tab-templates"));

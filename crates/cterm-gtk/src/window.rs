@@ -428,6 +428,62 @@ impl CtermWindow {
             window.add_action(&action);
         }
 
+        // SSH connect action
+        {
+            let notebook = notebook.clone();
+            let tabs = Rc::clone(&tabs);
+            let next_tab_id = Rc::clone(&next_tab_id);
+            let config = Rc::clone(&config);
+            let theme = theme.clone();
+            let tab_bar = tab_bar.clone();
+            let window_clone = window.clone();
+            let has_bell = Rc::clone(&has_bell);
+            let file_manager = Rc::clone(&self.file_manager);
+            let notification_bar = self.notification_bar.clone();
+            let action = gio::SimpleAction::new("ssh-connect", None);
+            action.connect_activate(move |_, _| {
+                let notebook = notebook.clone();
+                let tabs = Rc::clone(&tabs);
+                let next_tab_id = Rc::clone(&next_tab_id);
+                let config = Rc::clone(&config);
+                let theme = theme.clone();
+                let tab_bar = tab_bar.clone();
+                let window_inner = window_clone.clone();
+                let has_bell = Rc::clone(&has_bell);
+                let file_manager = Rc::clone(&file_manager);
+                let notification_bar = notification_bar.clone();
+
+                crate::session_dialog::show_ssh_dialog(&window_clone, move |session| {
+                    let cfg = config.borrow();
+                    let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
+
+                    let tab_id = generate_tab_id(&next_tab_id);
+                    let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
+                    let title = "SSH".to_string();
+                    tab_bar.add_tab(tab_id, &title);
+
+                    setup_tab_callbacks(
+                        &notebook,
+                        &tabs,
+                        &config,
+                        &tab_bar,
+                        &window_inner,
+                        &has_bell,
+                        &file_manager,
+                        &notification_bar,
+                        &terminal,
+                        tab_id,
+                        false,
+                    );
+
+                    finalize_new_tab(
+                        &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false,
+                    );
+                });
+            });
+            window.add_action(&action);
+        }
+
         // Edit menu actions
         {
             // Copy selection to clipboard

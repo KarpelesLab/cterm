@@ -235,3 +235,124 @@ fn create_session_row(session: &SessionEntry) -> ListBoxRow {
     row.set_child(Some(&hbox));
     row
 }
+
+/// Show the SSH connection dialog.
+///
+/// Prompts the user for a hostname (user@host), connects via SSH, creates a
+/// session on the remote daemon, and calls the callback with the SessionHandle.
+pub fn show_ssh_dialog<F>(parent: &impl IsA<Window>, callback: F)
+where
+    F: Fn(cterm_client::SessionHandle) + 'static,
+{
+    let dialog = Dialog::builder()
+        .title("SSH Remote Terminal")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(400)
+        .default_height(150)
+        .build();
+
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Connect", ResponseType::Ok);
+
+    let content = dialog.content_area();
+    content.set_spacing(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let label = Label::new(Some("Host (e.g. user@hostname):"));
+    label.set_halign(Align::Start);
+    content.append(&label);
+
+    let entry = gtk4::Entry::new();
+    entry.set_placeholder_text(Some("user@hostname"));
+    entry.set_activates_default(true);
+    content.append(&entry);
+
+    let status_label = Label::new(None);
+    status_label.set_halign(Align::Start);
+    content.append(&status_label);
+
+    dialog.set_default_response(ResponseType::Ok);
+
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Ok {
+            dialog.close();
+            return;
+        }
+
+        let host = entry.text().to_string();
+        if host.is_empty() {
+            status_label.set_text("Please enter a hostname.");
+            return;
+        }
+
+        // Disable buttons while connecting
+        status_label.set_text("Connecting...");
+
+        let (tx, rx) = glib::MainContext::channel::<SshConnectResult>(glib::Priority::DEFAULT);
+        let host_bg = host.clone();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+
+            let result = match rt {
+                Ok(rt) => rt.block_on(async {
+                    let conn = cterm_client::DaemonConnection::connect_ssh(&host_bg).await?;
+                    // Create a default session on the remote daemon
+                    let session = conn
+                        .create_session(cterm_client::CreateSessionOpts {
+                            cols: 80,
+                            rows: 24,
+                            ..Default::default()
+                        })
+                        .await?;
+                    Ok(session)
+                }),
+                Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
+            };
+
+            let _ = tx.send(result);
+        });
+
+        let dialog_weak = dialog.downgrade();
+        rx.attach(None, move |result| {
+            match result {
+                Ok(session) => {
+                    callback(session);
+                    if let Some(dialog) = dialog_weak.upgrade() {
+                        dialog.close();
+                    }
+                }
+                Err(e) => {
+                    if let Some(dialog) = dialog_weak.upgrade() {
+                        let content = dialog.content_area();
+                        // Find status label (last label in content area)
+                        let mut child = content.first_child();
+                        let mut last_label = None;
+                        while let Some(widget) = child {
+                            if widget.downcast_ref::<Label>().is_some() {
+                                last_label = Some(widget.clone());
+                            }
+                            child = widget.next_sibling();
+                        }
+                        if let Some(label) = last_label {
+                            if let Some(label) = label.downcast_ref::<Label>() {
+                                label.set_text(&format!("Connection failed: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    });
+
+    dialog.present();
+}
+
+type SshConnectResult = std::result::Result<cterm_client::SessionHandle, cterm_client::ClientError>;

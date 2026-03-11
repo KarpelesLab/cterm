@@ -19,9 +19,9 @@ async fn main() -> anyhow::Result<()> {
 
     let config = cli.to_server_config();
 
-    // Daemonize if not running in foreground and not using TCP
+    // Daemonize if not running in foreground, not using TCP, and not in stdio mode
     #[cfg(unix)]
-    if !config.foreground && !config.use_tcp {
+    if !config.foreground && !config.use_tcp && !config.stdio {
         daemonize()?;
     }
 

@@ -83,14 +83,83 @@ impl DaemonConnection {
     /// Connect to a remote ctermd via SSH.
     ///
     /// Spawns `ssh user@host ctermd --stdio` and uses stdin/stdout as the gRPC transport.
-    pub async fn connect_ssh(_host: &str) -> Result<Self> {
-        // TODO: implement SSH transport
-        // 1. Check if ctermd exists on remote, if not, deploy it
-        // 2. Spawn: ssh user@host ctermd --stdio
-        // 3. Wrap the SSH process stdin/stdout as a tonic Channel
-        Err(ClientError::Connection(
-            "SSH transport not yet implemented".to_string(),
-        ))
+    /// The `host` parameter can be `user@hostname` or just `hostname`.
+    pub async fn connect_ssh(host: &str) -> Result<Self> {
+        use tokio::process::Command as TokioCommand;
+
+        log::info!("Connecting to {} via SSH", host);
+
+        // Check if ctermd is available on the remote host
+        let check = TokioCommand::new("ssh")
+            .args([host, "which", "ctermd"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .status()
+            .await
+            .map_err(|e| ClientError::Connection(format!("Failed to run ssh: {}", e)))?;
+
+        if !check.success() {
+            return Err(ClientError::Connection(format!(
+                "ctermd not found on remote host {}. Install it first.",
+                host
+            )));
+        }
+
+        // Spawn: ssh user@host ctermd --stdio
+        let mut child = TokioCommand::new("ssh")
+            .args([host, "ctermd", "--stdio"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| ClientError::Connection(format!("Failed to spawn ssh: {}", e)))?;
+
+        let child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ClientError::Connection("Failed to capture ssh stdin".to_string()))?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ClientError::Connection("Failed to capture ssh stdout".to_string()))?;
+
+        // Wrap stdin/stdout as a combined AsyncRead+AsyncWrite
+        let pipe = SshPipe {
+            reader: child_stdout,
+            writer: child_stdin,
+        };
+
+        // Connect tonic channel over the SSH pipe using a one-shot connector
+        let pipe_cell = std::sync::Arc::new(tokio::sync::Mutex::new(Some(pipe)));
+        let channel = tonic::transport::Endpoint::try_from("http://[::]:0")
+            .map_err(|e| ClientError::Connection(e.to_string()))?
+            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let pipe_cell = pipe_cell.clone();
+                async move {
+                    let pipe =
+                        pipe_cell.lock().await.take().ok_or_else(|| {
+                            std::io::Error::other("SSH connection already consumed")
+                        })?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(pipe))
+                }
+            }))
+            .await?;
+
+        // Spawn a task to wait for the child process and log when it exits
+        tokio::spawn(async move {
+            match child.wait().await {
+                Ok(status) => log::info!("SSH process exited: {}", status),
+                Err(e) => log::error!("Failed to wait for SSH process: {}", e),
+            }
+        });
+
+        let mut conn = Self::handshake(channel).await?;
+        // Override is_local since this is a remote connection
+        if let Some(info) = Arc::get_mut(&mut conn.info) {
+            info.is_local = false;
+        }
+        Ok(conn)
     }
 
     /// Try to connect to an existing Unix socket
@@ -299,5 +368,48 @@ impl DaemonConnection {
             .await?;
 
         Ok(response.into_inner())
+    }
+}
+
+/// Combined child stdout/stdin as a single AsyncRead + AsyncWrite stream.
+///
+/// Reads from child stdout, writes to child stdin. Used for SSH transport
+/// where gRPC runs over a process pipe.
+struct SshPipe {
+    reader: tokio::process::ChildStdout,
+    writer: tokio::process::ChildStdin,
+}
+
+impl tokio::io::AsyncRead for SshPipe {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for SshPipe {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
     }
 }
