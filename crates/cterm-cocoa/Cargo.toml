@@ -9,6 +9,7 @@ description = "Native macOS UI for cterm using AppKit and CoreGraphics"
 [dependencies]
 # Internal crates
 cterm-core.workspace = true
+cterm-client.workspace = true
 cterm-ui.workspace = true
 cterm-app.workspace = true
 
@@ -22,6 +23,7 @@ thiserror.workspace = true
 
 # Async runtime
 tokio.workspace = true
+tokio-stream.workspace = true
 futures.workspace = true
 
 # objc2 ecosystem for macOS

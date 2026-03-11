@@ -1511,6 +1511,123 @@ impl TerminalView {
         this
     }
 
+    /// Create a terminal view backed by a daemon session.
+    ///
+    /// The Terminal has no PTY — input is forwarded to the daemon via write callback,
+    /// and output is streamed from the daemon and parsed locally.
+    pub fn from_daemon(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        session: cterm_client::SessionHandle,
+    ) -> Retained<Self> {
+        let renderer = CGRenderer::new(
+            mtm,
+            &config.appearance.font.family,
+            config.appearance.font.size,
+            theme,
+            config.appearance.bold_is_bright,
+        );
+        let (cell_width, cell_height) = renderer.cell_size();
+
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
+
+        // Set up write callback to forward input to daemon
+        let write_session = session.clone();
+        terminal.set_write_fn(Box::new(move |data: &[u8]| {
+            let session = write_session.clone();
+            let data = data.to_vec();
+            tokio::spawn(async move {
+                if let Err(e) = session.write_input(&data).await {
+                    log::error!("Failed to write to daemon: {}", e);
+                }
+            });
+            Ok(())
+        }));
+
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        let (this, state) = Self::init_view(
+            mtm,
+            renderer,
+            terminal.clone(),
+            theme,
+            ViewInitOptions::default(),
+        );
+
+        let view_ptr = &*this as *const _ as usize;
+
+        // Start daemon output reader instead of PTY reader
+        let state_clone = state.clone();
+        std::thread::spawn(move || {
+            Self::read_daemon_loop(session, terminal, state_clone);
+        });
+
+        this.schedule_redraw_check(view_ptr, state);
+        this
+    }
+
+    /// Background thread to read output from a daemon session.
+    ///
+    /// Creates a local tokio runtime, streams raw PTY output from the daemon,
+    /// and feeds it through the local terminal parser.
+    fn read_daemon_loop(
+        session: cterm_client::SessionHandle,
+        terminal: Arc<Mutex<Terminal>>,
+        state: Arc<ViewState>,
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime for daemon reader");
+
+        rt.block_on(async move {
+            match session.stream_output().await {
+                Ok(mut stream) => {
+                    use tokio_stream::StreamExt;
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(chunk) => {
+                                let mut term = terminal.lock();
+                                let events = term.process(&chunk.data);
+
+                                for event in events {
+                                    match event {
+                                        TerminalEvent::TitleChanged(ref title) => {
+                                            if let Ok(mut current_title) = state.title.write() {
+                                                *current_title = title.clone();
+                                            }
+                                            state.title_changed.store(true, Ordering::Relaxed);
+                                        }
+                                        TerminalEvent::Bell => {
+                                            state.bell_changed.store(true, Ordering::Relaxed);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                drop(term);
+                                state.needs_redraw.store(true, Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                log::error!("Daemon stream error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to start daemon output stream: {}", e);
+                }
+            }
+
+            // Signal that the stream has ended
+            state.pty_closed.store(true, Ordering::Relaxed);
+        });
+    }
+
     fn schedule_redraw_check(&self, view_ptr: usize, state: Arc<ViewState>) {
         // Start a background thread that periodically triggers redraws on main thread
         std::thread::spawn(move || {

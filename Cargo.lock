@@ -444,6 +444,7 @@ dependencies = [
  "block2",
  "clap",
  "cterm-app",
+ "cterm-client",
  "cterm-core",
  "cterm-ui",
  "dispatch2",
@@ -459,6 +460,7 @@ dependencies = [
  "parking_lot",
  "thiserror",
  "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
