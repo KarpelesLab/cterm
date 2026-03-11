@@ -250,6 +250,7 @@ pub fn show_ssh_dialog<F>(parent: &impl IsA<Window>, callback: F)
 where
     F: Fn(cterm_client::SessionHandle) + 'static,
 {
+    let callback = Rc::new(callback);
     let dialog = Dialog::builder()
         .title("SSH Remote Terminal")
         .transient_for(parent)
@@ -326,6 +327,7 @@ where
         });
 
         let dialog_weak = dialog.downgrade();
+        let callback = Rc::clone(&callback);
         glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             match rx.try_recv() {
                 Ok(result) => {

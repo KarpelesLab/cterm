@@ -1056,7 +1056,6 @@ impl TerminalWidget {
     /// Set up the daemon output reader — streams raw PTY output from the daemon
     /// and feeds it through the local terminal parser.
     fn setup_daemon_reader(&self, session: cterm_client::SessionHandle) {
-        let terminal = Arc::clone(&self.terminal);
         let drawing_area = self.drawing_area.clone();
 
         let (tx, rx) = std::sync::mpsc::channel::<PtyMessage>();
