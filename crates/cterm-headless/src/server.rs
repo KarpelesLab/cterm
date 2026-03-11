@@ -58,7 +58,7 @@ pub async fn run_server(
     #[cfg(unix)]
     if let Some(ref state_path) = relaunch_state_path {
         match crate::relaunch::read_relaunch_state(state_path) {
-            Ok(state) => {
+            Ok((state, state_dir)) => {
                 log::info!(
                     "Restoring {} sessions from relaunch state",
                     state.sessions.len()
@@ -76,22 +76,17 @@ pub async fn run_server(
                         )
                     } {
                         Ok(session) => {
-                            // Apply screen snapshot if available
-                            if !s.screen_snapshot.is_empty() {
-                                if let Some(screen_data) =
-                                    crate::relaunch::decode_screen_snapshot(&s.screen_snapshot)
-                                {
-                                    session.with_terminal_mut(|term| {
-                                        cterm_proto::convert::screen::apply_screen_snapshot(
-                                            term,
-                                            &screen_data,
-                                        );
-                                    });
-                                    log::info!(
-                                        "Applied screen snapshot for session {}",
-                                        s.session_id
+                            // Apply screen snapshot from binary file
+                            if let Some(screen_data) =
+                                crate::relaunch::read_screen_snapshot(&state_dir, &s.session_id)
+                            {
+                                session.with_terminal_mut(|term| {
+                                    cterm_proto::convert::screen::apply_screen_snapshot(
+                                        term,
+                                        &screen_data,
                                     );
-                                }
+                                });
+                                log::info!("Applied screen snapshot for session {}", s.session_id);
                             }
                         }
                         Err(e) => {
@@ -105,6 +100,8 @@ pub async fn run_server(
                         }
                     }
                 }
+                // Clean up the state directory
+                crate::relaunch::cleanup_state_dir(&state_dir);
                 log::info!(
                     "Restored {}/{} sessions",
                     session_manager.session_count(),

@@ -517,7 +517,6 @@ name = "cterm-headless"
 version = "0.0.15"
 dependencies = [
  "anyhow",
- "base64",
  "clap",
  "cterm-core",
  "cterm-proto",
