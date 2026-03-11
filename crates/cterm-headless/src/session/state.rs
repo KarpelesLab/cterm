@@ -33,6 +33,9 @@ pub struct SessionState {
 
     /// Number of currently attached clients
     attached_clients: AtomicU32,
+
+    /// User-set custom title (overrides OSC title for display)
+    custom_title: RwLock<String>,
 }
 
 impl SessionState {
@@ -75,6 +78,7 @@ impl SessionState {
             output_tx,
             event_tx,
             attached_clients: AtomicU32::new(0),
+            custom_title: RwLock::new(String::new()),
         });
 
         Ok(state)
@@ -120,6 +124,16 @@ impl SessionState {
     /// Get the terminal title
     pub fn title(&self) -> String {
         self.terminal.read().title().to_string()
+    }
+
+    /// Get the user-set custom title
+    pub fn custom_title(&self) -> String {
+        self.custom_title.read().clone()
+    }
+
+    /// Set a custom title (empty string to clear)
+    pub fn set_custom_title(&self, title: String) {
+        *self.custom_title.write() = title;
     }
 
     /// Check if the terminal is still running

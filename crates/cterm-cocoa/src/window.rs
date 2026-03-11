@@ -432,13 +432,19 @@ impl CtermWindow {
         theme: &Theme,
         recon: cterm_app::daemon_reconnect::ReconnectedSession,
     ) -> Retained<Self> {
-        let title = if recon.title.is_empty() {
-            "Terminal".to_string()
-        } else {
+        let has_custom_title = !recon.custom_title.is_empty();
+        let title = if has_custom_title {
+            recon.custom_title.clone()
+        } else if !recon.title.is_empty() {
             recon.title.clone()
+        } else {
+            "Terminal".to_string()
         };
         let this = Self::init_window(mtm, config, theme, &title, None);
         let terminal_view = TerminalView::from_daemon_with_screen(mtm, config, theme, recon);
+        if has_custom_title {
+            terminal_view.set_title_locked(true);
+        }
         this.attach_terminal_view(terminal_view);
         this
     }

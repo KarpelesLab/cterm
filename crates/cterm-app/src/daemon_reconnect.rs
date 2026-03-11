@@ -13,6 +13,7 @@ use cterm_proto::proto::GetScreenResponse;
 pub struct DaemonSessionInfo {
     pub session_id: String,
     pub title: String,
+    pub custom_title: String,
     pub cols: u32,
     pub rows: u32,
     pub running: bool,
@@ -48,6 +49,7 @@ pub async fn check_daemon_sessions() -> ReconnectCheck {
                 .map(|s| DaemonSessionInfo {
                     session_id: s.session_id,
                     title: s.title,
+                    custom_title: s.custom_title,
                     cols: s.cols,
                     rows: s.rows,
                     running: s.running,
@@ -64,6 +66,8 @@ pub struct ReconnectedSession {
     pub handle: SessionHandle,
     /// Session title from the daemon
     pub title: String,
+    /// User-set custom title (empty if none)
+    pub custom_title: String,
     /// Initial screen snapshot (if available)
     pub screen: Option<GetScreenResponse>,
 }
@@ -98,6 +102,7 @@ pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientE
             continue;
         }
         let title = session_info.title.clone();
+        let custom_title = session_info.custom_title.clone();
         match conn
             .attach_session(
                 &session_info.session_id,
@@ -110,6 +115,7 @@ pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientE
                 results.push(ReconnectedSession {
                     handle,
                     title,
+                    custom_title,
                     screen,
                 });
             }

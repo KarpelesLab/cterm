@@ -66,6 +66,7 @@ enum DaemonCommand {
     Write(Vec<u8>),
     Resize(u32, u32),
     Destroy,
+    SetTitle(String),
 }
 
 /// Terminal view state
@@ -880,11 +881,16 @@ define_class!(
             let response = alert.runModal();
             if response == NSAlertFirstButtonReturn {
                 let new_title = input.stringValue();
+                let title_str = new_title.to_string();
                 if let Some(window) = self.window() {
                     window.setTitle(&new_title);
                 }
                 // Lock the title so OSC sequences won't override it
                 self.ivars().state.title_locked.store(true, Ordering::Relaxed);
+                // Persist custom title to daemon
+                if let Some(ref tx) = *self.ivars().daemon_cmd_tx.borrow() {
+                    let _ = tx.send(DaemonCommand::SetTitle(title_str));
+                }
             }
         }
 
@@ -1526,6 +1532,11 @@ impl TerminalView {
                                 log::error!("Failed to destroy daemon session: {}", e);
                             }
                             break;
+                        }
+                        DaemonCommand::SetTitle(title) => {
+                            if let Err(e) = cmd_session.set_custom_title(&title).await {
+                                log::error!("Failed to set custom title: {}", e);
+                            }
                         }
                     }
                 }

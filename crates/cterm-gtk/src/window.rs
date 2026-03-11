@@ -1711,6 +1711,8 @@ impl CtermWindow {
                         tab.title_locked = true;
                         tab_bar_clone.set_title(tab_id, &new_title);
                         window_clone.set_title(Some(&new_title));
+                        // Persist custom title to daemon
+                        tab.terminal.set_custom_title(&new_title);
                     }
                 });
             });
@@ -1828,10 +1830,13 @@ impl CtermWindow {
     /// Used during startup reconnection to create tabs for existing daemon sessions.
     pub fn add_reconnected_tab(&self, recon: cterm_app::daemon_reconnect::ReconnectedSession) {
         let sid = recon.handle.session_id().to_string();
-        let title = if recon.title.is_empty() {
-            "Terminal".to_string()
+        // Prefer custom_title (user-set), then daemon title, then fallback
+        let (title, title_locked) = if !recon.custom_title.is_empty() {
+            (recon.custom_title.clone(), true)
+        } else if !recon.title.is_empty() {
+            (recon.title.clone(), false)
         } else {
-            recon.title.clone()
+            ("Terminal".to_string(), false)
         };
 
         let cfg = self.config.borrow();
@@ -1866,7 +1871,7 @@ impl CtermWindow {
             page_num,
             title,
             terminal,
-            false,
+            title_locked,
             Some(sid),
         );
     }

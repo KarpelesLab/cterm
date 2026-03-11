@@ -104,6 +104,7 @@ impl TerminalService for TerminalServiceImpl {
                     running: s.is_running(),
                     child_pid: s.child_pid().unwrap_or(0),
                     attached_clients: s.attached_clients(),
+                    custom_title: s.custom_title(),
                 }
             })
             .collect();
@@ -132,6 +133,7 @@ impl TerminalService for TerminalServiceImpl {
             running: session.is_running(),
             child_pid: session.child_pid().unwrap_or(0),
             attached_clients: session.attached_clients(),
+            custom_title: session.custom_title(),
         };
 
         Ok(Response::new(GetSessionResponse {
@@ -149,6 +151,25 @@ impl TerminalService for TerminalServiceImpl {
             .map_err(Status::from)?;
 
         Ok(Response::new(DestroySessionResponse { success: true }))
+    }
+
+    // ========================================================================
+    // Session Metadata
+    // ========================================================================
+
+    async fn set_session_title(
+        &self,
+        request: Request<SetSessionTitleRequest>,
+    ) -> Result<Response<SetSessionTitleResponse>, Status> {
+        let req = request.into_inner();
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .map_err(Status::from)?;
+
+        session.set_custom_title(req.custom_title);
+
+        Ok(Response::new(SetSessionTitleResponse { success: true }))
     }
 
     // ========================================================================
@@ -471,6 +492,7 @@ impl TerminalService for TerminalServiceImpl {
             running: session.is_running(),
             child_pid: session.child_pid().unwrap_or(0),
             attached_clients: session.attached_clients(),
+            custom_title: session.custom_title(),
         };
 
         let initial_screen = if req.want_screen_snapshot {

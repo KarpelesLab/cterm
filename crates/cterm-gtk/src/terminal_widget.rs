@@ -81,6 +81,13 @@ impl TerminalWidget {
         }
     }
 
+    /// Set a custom title on the daemon (persists across reconnects)
+    pub fn set_custom_title(&self, title: &str) {
+        if let Some(ref tx) = self.daemon_cmd_tx {
+            let _ = tx.send(DaemonCommand::SetTitle(title.to_string()));
+        }
+    }
+
     /// Set callback for when the terminal process exits
     pub fn set_on_exit<F: Fn() + 'static>(&self, callback: F) {
         *self.on_exit.borrow_mut() = Some(Box::new(callback));
@@ -1097,6 +1104,11 @@ impl TerminalWidget {
                                 }
                                 break;
                             }
+                            DaemonCommand::SetTitle(title) => {
+                                if let Err(e) = cmd_session.set_custom_title(&title).await {
+                                    log::error!("Failed to set custom title: {}", e);
+                                }
+                            }
                         }
                     }
                 });
@@ -1299,6 +1311,7 @@ enum DaemonCommand {
     Write(Vec<u8>),
     Resize(u32, u32),
     Destroy,
+    SetTitle(String),
 }
 
 /// Rendering parameters for draw_terminal

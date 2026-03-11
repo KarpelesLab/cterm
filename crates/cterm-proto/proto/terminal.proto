@@ -17,6 +17,9 @@ service TerminalService {
   rpc AttachSession(AttachSessionRequest) returns (AttachSessionResponse);
   rpc DetachSession(DetachSessionRequest) returns (DetachSessionResponse);
 
+  // Session Metadata
+  rpc SetSessionTitle(SetSessionTitleRequest) returns (SetSessionTitleResponse);
+
   // Input
   rpc WriteInput(WriteInputRequest) returns (WriteInputResponse);
   rpc SendKey(SendKeyRequest) returns (SendKeyResponse);
@@ -117,6 +120,8 @@ message SessionInfo {
   int32 child_pid = 6;
   // Number of UI clients currently attached to this session
   uint32 attached_clients = 7;
+  // User-set custom title (overrides OSC title for display)
+  string custom_title = 8;
 }
 
 message GetSessionRequest {
@@ -164,6 +169,20 @@ message DetachSessionRequest {
 }
 
 message DetachSessionResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Session Metadata
+// ============================================================================
+
+message SetSessionTitleRequest {
+  string session_id = 1;
+  // Custom title set by the user (empty string to clear)
+  string custom_title = 2;
+}
+
+message SetSessionTitleResponse {
   bool success = 1;
 }
 

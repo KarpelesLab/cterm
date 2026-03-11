@@ -223,6 +223,19 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Set a custom title for this session (persists across reconnects)
+    pub async fn set_custom_title(&self, title: &str) -> Result<()> {
+        self.client
+            .lock()
+            .await
+            .set_session_title(SetSessionTitleRequest {
+                session_id: self.session_id.clone(),
+                custom_title: title.to_string(),
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Get session info
     pub async fn info(&self) -> Result<SessionInfo> {
         let response = self
