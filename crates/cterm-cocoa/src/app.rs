@@ -9,7 +9,9 @@ use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSWindow,
 };
-use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 use std::path::PathBuf;
 
 use cterm_app::config::{load_config, Config};
@@ -136,6 +138,26 @@ define_class!(
                                             screen,
                                         };
                                         let window = CtermWindow::from_daemon_with_screen(mtm, &config, &theme, recon);
+
+                                        // Restore window frame from saved state
+                                        let frame = NSRect::new(
+                                            NSPoint::new(window_state.x as f64, window_state.y as f64),
+                                            NSSize::new(window_state.width as f64, window_state.height as f64),
+                                        );
+                                        window.setFrame_display(frame, true);
+
+                                        // Restore tab color
+                                        if let Some(ref color) = tab_state.color {
+                                            window.set_tab_color(Some(color));
+                                        }
+
+                                        // Restore template name
+                                        if let Some(ref tpl_name) = tab_state.template_name {
+                                            if let Some(tv) = window.active_terminal() {
+                                                tv.set_template_name(Some(tpl_name.clone()));
+                                            }
+                                        }
+
                                         self.ivars().windows.borrow_mut().push(window.clone());
                                         window.makeKeyAndOrderFront(None);
                                     }

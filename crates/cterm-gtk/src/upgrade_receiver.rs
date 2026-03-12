@@ -133,8 +133,23 @@ fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState) {
         // Create a window and add reconnected tabs
         let window = crate::window::CtermWindow::new_empty(app, &config, &theme);
 
-        for recon in reconnected_sessions {
-            window.add_reconnected_tab(recon);
+        // Restore window size before presenting
+        if window_state.width > 0 && window_state.height > 0 {
+            window
+                .window
+                .set_default_size(window_state.width, window_state.height);
+        }
+
+        for (i, recon) in reconnected_sessions.into_iter().enumerate() {
+            let tab_color = window_state.tabs.get(i).and_then(|t| t.color.clone());
+            window.add_reconnected_tab(recon, tab_color);
+        }
+
+        // Restore active tab
+        if window_state.active_tab > 0 {
+            window
+                .notebook
+                .set_current_page(Some(window_state.active_tab as u32));
         }
 
         // Restore window geometry

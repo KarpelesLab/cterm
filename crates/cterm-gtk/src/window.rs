@@ -1868,7 +1868,11 @@ impl CtermWindow {
     /// Add a tab for a reconnected daemon session (with screen snapshot).
     ///
     /// Used during startup reconnection to create tabs for existing daemon sessions.
-    pub fn add_reconnected_tab(&self, recon: cterm_app::daemon_reconnect::ReconnectedSession) {
+    pub fn add_reconnected_tab(
+        &self,
+        recon: cterm_app::daemon_reconnect::ReconnectedSession,
+        tab_color: Option<String>,
+    ) {
         let sid = recon.handle.session_id().to_string();
         // Prefer custom_title (user-set), then daemon title, then fallback
         let (title, title_locked) = if !recon.custom_title.is_empty() {
@@ -1914,6 +1918,14 @@ impl CtermWindow {
             title_locked,
             Some(sid),
         );
+
+        // Restore tab color if saved
+        if let Some(ref color) = tab_color {
+            self.tab_bar.set_color(tab_id, Some(color));
+            if let Some(tab) = self.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+                tab.color = tab_color;
+            }
+        }
     }
 
     /// Update window title when switching tabs

@@ -57,7 +57,7 @@ pub fn build_ui(app: &Application) {
         // Create window without initial tab, then add reconnected sessions as tabs
         let window = CtermWindow::new_empty(app, &config, &theme);
         for recon in reconnected {
-            window.add_reconnected_tab(recon);
+            window.add_reconnected_tab(recon, None);
         }
         log::info!("Reconnected to daemon sessions, skipping normal startup");
         window.present();
