@@ -833,6 +833,41 @@ define_class!(
             });
         }
 
+        /// Debug menu: Kill local ctermd daemon (force shutdown)
+        #[unsafe(method(killLocalDaemon:))]
+        fn action_kill_local_daemon(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            log::info!("Debug: Requesting ctermd force shutdown");
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime");
+                rt.block_on(async {
+                    let socket_path = cterm_client::default_socket_path();
+                    match cterm_client::DaemonConnection::connect_unix(&socket_path, false).await {
+                        Ok(conn) => match conn.shutdown(true).await {
+                            Ok(resp) => {
+                                if resp.success {
+                                    log::info!("ctermd shutdown succeeded");
+                                } else {
+                                    log::error!("ctermd shutdown failed: {}", resp.reason);
+                                }
+                            }
+                            Err(e) => {
+                                log::info!(
+                                    "ctermd shutdown in progress (connection dropped: {})",
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("Failed to connect to ctermd for shutdown: {}", e);
+                        }
+                    }
+                });
+            });
+        }
+
         /// Debug menu: Show application logs
         #[unsafe(method(showLogs:))]
         fn action_show_logs(&self, _sender: Option<&objc2::runtime::AnyObject>) {

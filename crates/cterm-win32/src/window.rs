@@ -1190,6 +1190,74 @@ impl WindowState {
                     log::info!("DPI: {:?}", self.dpi);
                     log::info!("========================");
                 }
+                MenuAction::DebugRelaunchDaemon => {
+                    log::info!("Debug: Requesting ctermd relaunch");
+                    std::thread::spawn(|| {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("Failed to create tokio runtime");
+                        rt.block_on(async {
+                            let socket_path = cterm_client::default_socket_path();
+                            match cterm_client::DaemonConnection::connect_unix(&socket_path, false)
+                                .await
+                            {
+                                Ok(conn) => match conn.relaunch_daemon("").await {
+                                    Ok(resp) => {
+                                        if resp.success {
+                                            log::info!("ctermd relaunch succeeded");
+                                        } else {
+                                            log::error!("ctermd relaunch failed: {}", resp.reason);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::info!(
+                                            "ctermd relaunch in progress (connection dropped: {})",
+                                            e
+                                        );
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to connect to ctermd for relaunch: {}", e);
+                                }
+                            }
+                        });
+                    });
+                }
+                MenuAction::KillDaemon => {
+                    log::info!("Debug: Requesting ctermd force shutdown");
+                    std::thread::spawn(|| {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("Failed to create tokio runtime");
+                        rt.block_on(async {
+                            let socket_path = cterm_client::default_socket_path();
+                            match cterm_client::DaemonConnection::connect_unix(&socket_path, false)
+                                .await
+                            {
+                                Ok(conn) => match conn.shutdown(true).await {
+                                    Ok(resp) => {
+                                        if resp.success {
+                                            log::info!("ctermd shutdown succeeded");
+                                        } else {
+                                            log::error!("ctermd shutdown failed: {}", resp.reason);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::info!(
+                                            "ctermd shutdown in progress (connection dropped: {})",
+                                            e
+                                        );
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to connect to ctermd for shutdown: {}", e);
+                                }
+                            }
+                        });
+                    });
+                }
                 MenuAction::ViewLogs => {
                     // Show the in-app log viewer
                     crate::log_viewer::show_log_viewer(self.hwnd.0 as *mut _);

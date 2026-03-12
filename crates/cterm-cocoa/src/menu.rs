@@ -773,6 +773,13 @@ fn create_help_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
 
     debug_menu.addItem(&create_menu_item(
         mtm,
+        "Kill Local ctermd",
+        Some(sel!(killLocalDaemon:)),
+        "",
+    ));
+
+    debug_menu.addItem(&create_menu_item(
+        mtm,
         "Dump State",
         Some(sel!(debugDumpState:)),
         "",

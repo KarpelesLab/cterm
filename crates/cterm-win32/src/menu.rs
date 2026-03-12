@@ -74,6 +74,8 @@ pub enum MenuAction {
     DebugRelaunch = 6001,
     DebugDumpState = 6002,
     ViewLogs = 6003,
+    DebugRelaunchDaemon = 6004,
+    KillDaemon = 6005,
 }
 
 impl MenuAction {
@@ -126,6 +128,8 @@ impl MenuAction {
             6001 => Some(Self::DebugRelaunch),
             6002 => Some(Self::DebugDumpState),
             6003 => Some(Self::ViewLogs),
+            6004 => Some(Self::DebugRelaunchDaemon),
+            6005 => Some(Self::KillDaemon),
             _ => None,
         }
     }
@@ -274,6 +278,12 @@ pub fn create_menu_bar(show_debug: bool) -> HMENU {
                 MenuAction::DebugRelaunch,
                 "&Re-launch (Test Upgrade)",
             );
+            append_menu_item(
+                debug_menu,
+                MenuAction::DebugRelaunchDaemon,
+                "Re-launch ctermo&d",
+            );
+            append_menu_item(debug_menu, MenuAction::KillDaemon, "&Kill Local ctermd");
             append_popup_menu(menu_bar, debug_menu, "&Debug");
         }
 
