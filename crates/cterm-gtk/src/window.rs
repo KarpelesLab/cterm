@@ -680,6 +680,8 @@ impl CtermWindow {
                         let mut tabs = tabs_clone.borrow_mut();
                         if let Some(tab) = tabs.get_mut(page_idx as usize) {
                             tab_bar_clone.set_color(tab.id, color.as_deref());
+                            tab.terminal
+                                .set_tab_color_on_daemon(color.as_deref().unwrap_or(""));
                             tab.color = color;
                         }
                     }
@@ -1830,6 +1832,8 @@ impl CtermWindow {
                     let mut tabs = tabs_clone.borrow_mut();
                     if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab_bar_clone.set_color(tab_id, color.as_deref());
+                        tab.terminal
+                            .set_tab_color_on_daemon(color.as_deref().unwrap_or(""));
                         tab.color = color;
                     }
                 });
@@ -1943,6 +1947,15 @@ impl CtermWindow {
             ("Terminal".to_string(), false)
         };
 
+        // Use explicit tab_color if provided (upgrade path), otherwise use daemon's
+        let effective_color = tab_color.or_else(|| {
+            if recon.tab_color.is_empty() {
+                None
+            } else {
+                Some(recon.tab_color.clone())
+            }
+        });
+
         let cfg = self.config.borrow();
         let terminal = TerminalWidget::from_daemon_with_screen(recon, &cfg, &self.theme);
         drop(cfg);
@@ -1979,11 +1992,11 @@ impl CtermWindow {
             Some(sid),
         );
 
-        // Restore tab color if saved
-        if let Some(ref color) = tab_color {
+        // Restore tab color if available
+        if let Some(ref color) = effective_color {
             self.tab_bar.set_color(tab_id, Some(color));
             if let Some(tab) = self.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
-                tab.color = tab_color;
+                tab.color = effective_color;
             }
         }
     }
@@ -2426,11 +2439,20 @@ fn spawn_daemon_tab(
                             sid,
                         );
 
-                        // Store color in tab entry
+                        // Store color in tab entry and send metadata to daemon
                         if color.is_some() {
                             if let Some(tab) = tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id)
                             {
                                 tab.color = color.clone();
+                            }
+                        }
+                        // Persist tab metadata to daemon
+                        if let Some(tab) = tabs.borrow().iter().find(|t| t.id == tab_id) {
+                            if let Some(ref c) = color {
+                                tab.terminal.set_tab_color_on_daemon(c);
+                            }
+                            if !title.is_empty() {
+                                tab.terminal.set_template_name_on_daemon(&title);
                             }
                         }
                     }

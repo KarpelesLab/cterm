@@ -116,6 +116,8 @@ fn reconstruct_windows(app: &gtk4::Application, state: UpgradeState) {
                         handle,
                         title: tab_state.title.clone(),
                         custom_title: tab_state.custom_title.clone().unwrap_or_default(),
+                        tab_color: tab_state.color.clone().unwrap_or_default(),
+                        template_name: tab_state.template_name.clone().unwrap_or_default(),
                         screen,
                     });
                 }

@@ -38,6 +38,12 @@ pub struct SessionState {
 
     /// User-set custom title (overrides OSC title for display)
     custom_title: RwLock<String>,
+
+    /// Tab color override (CSS hex, e.g. "#ff0000")
+    tab_color: RwLock<String>,
+
+    /// Template name used to create this session
+    template_name: RwLock<String>,
 }
 
 impl SessionState {
@@ -81,6 +87,8 @@ impl SessionState {
             event_tx,
             attached_clients: AtomicU32::new(0),
             custom_title: RwLock::new(String::new()),
+            tab_color: RwLock::new(String::new()),
+            template_name: RwLock::new(String::new()),
         });
 
         Ok(state)
@@ -91,6 +99,7 @@ impl SessionState {
     /// # Safety
     /// The caller must ensure `fd` is a valid PTY master FD and `child_pid` is correct.
     #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn from_raw_fd(
         id: String,
         fd: i32,
@@ -98,6 +107,8 @@ impl SessionState {
         cols: usize,
         rows: usize,
         custom_title: String,
+        tab_color: String,
+        template_name: String,
         scrollback_lines: usize,
     ) -> Result<Arc<Self>> {
         let pty = Pty::from_raw_fd(fd, child_pid);
@@ -115,6 +126,8 @@ impl SessionState {
             event_tx,
             attached_clients: AtomicU32::new(0),
             custom_title: RwLock::new(custom_title),
+            tab_color: RwLock::new(tab_color),
+            template_name: RwLock::new(template_name),
         });
 
         Ok(state)
@@ -170,6 +183,26 @@ impl SessionState {
     /// Set a custom title (empty string to clear)
     pub fn set_custom_title(&self, title: String) {
         *self.custom_title.write() = title;
+    }
+
+    /// Get the tab color override
+    pub fn tab_color(&self) -> String {
+        self.tab_color.read().clone()
+    }
+
+    /// Set the tab color override (empty string to clear)
+    pub fn set_tab_color(&self, color: String) {
+        *self.tab_color.write() = color;
+    }
+
+    /// Get the template name
+    pub fn template_name(&self) -> String {
+        self.template_name.read().clone()
+    }
+
+    /// Set the template name
+    pub fn set_template_name(&self, name: String) {
+        *self.template_name.write() = name;
     }
 
     /// Check if the terminal is still running

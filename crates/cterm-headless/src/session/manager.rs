@@ -124,6 +124,8 @@ impl SessionManager {
         cols: usize,
         rows: usize,
         custom_title: String,
+        tab_color: String,
+        template_name: String,
         scrollback_lines: usize,
     ) -> Result<Arc<SessionState>> {
         let state = SessionState::from_raw_fd(
@@ -133,6 +135,8 @@ impl SessionManager {
             cols,
             rows,
             custom_title,
+            tab_color,
+            template_name,
             scrollback_lines,
         )?;
 

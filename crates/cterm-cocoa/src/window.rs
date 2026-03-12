@@ -440,7 +440,12 @@ impl CtermWindow {
         } else {
             "Terminal".to_string()
         };
-        let this = Self::init_window(mtm, config, theme, &title, None);
+        let tab_color = if recon.tab_color.is_empty() {
+            None
+        } else {
+            Some(recon.tab_color.clone())
+        };
+        let this = Self::init_window(mtm, config, theme, &title, tab_color);
         let terminal_view = TerminalView::from_daemon_with_screen(mtm, config, theme, recon);
         if has_custom_title {
             terminal_view.set_title_locked(true);
@@ -549,6 +554,7 @@ impl CtermWindow {
                         if let Some(tv) = new_window.active_terminal() {
                             if let Some(ref name) = template_name {
                                 tv.set_template_name(Some(name.clone()));
+                                tv.set_template_name_on_daemon(name);
                             }
                             if let Some(ref bg) = background_color {
                                 tv.set_background_override(Some(bg));
@@ -780,6 +786,11 @@ impl CtermWindow {
     pub fn set_tab_color(&self, color: Option<&str>) {
         // Store the color for later if needed
         *self.ivars().pending_tab_color.borrow_mut() = color.map(|s| s.to_string());
+
+        // Persist to daemon
+        if let Some(ref tv) = *self.ivars().active_terminal.borrow() {
+            tv.set_tab_color_on_daemon(color.unwrap_or(""));
+        }
 
         unsafe {
             // Get the window's tab object

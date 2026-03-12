@@ -72,6 +72,8 @@ pub async fn run_server(
                             s.cols,
                             s.rows,
                             s.custom_title.clone(),
+                            s.tab_color.clone(),
+                            s.template_name.clone(),
                             s.scrollback_lines,
                         )
                     } {

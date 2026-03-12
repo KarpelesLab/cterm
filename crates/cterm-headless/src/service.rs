@@ -117,6 +117,8 @@ impl TerminalService for TerminalServiceImpl {
                     child_pid: s.child_pid().unwrap_or(0),
                     attached_clients: s.attached_clients(),
                     custom_title: s.custom_title(),
+                    tab_color: s.tab_color(),
+                    template_name: s.template_name(),
                 }
             })
             .collect();
@@ -146,6 +148,8 @@ impl TerminalService for TerminalServiceImpl {
             child_pid: session.child_pid().unwrap_or(0),
             attached_clients: session.attached_clients(),
             custom_title: session.custom_title(),
+            tab_color: session.tab_color(),
+            template_name: session.template_name(),
         };
 
         Ok(Response::new(GetSessionResponse {
@@ -182,6 +186,30 @@ impl TerminalService for TerminalServiceImpl {
         session.set_custom_title(req.custom_title);
 
         Ok(Response::new(SetSessionTitleResponse { success: true }))
+    }
+
+    async fn set_session_metadata(
+        &self,
+        request: Request<SetSessionMetadataRequest>,
+    ) -> Result<Response<SetSessionMetadataResponse>, Status> {
+        let req = request.into_inner();
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .map_err(Status::from)?;
+
+        let mask = req.fields_mask;
+        if mask & 1 != 0 {
+            session.set_custom_title(req.custom_title);
+        }
+        if mask & 2 != 0 {
+            session.set_tab_color(req.tab_color);
+        }
+        if mask & 4 != 0 {
+            session.set_template_name(req.template_name);
+        }
+
+        Ok(Response::new(SetSessionMetadataResponse { success: true }))
     }
 
     // ========================================================================
@@ -505,6 +533,8 @@ impl TerminalService for TerminalServiceImpl {
             child_pid: session.child_pid().unwrap_or(0),
             attached_clients: session.attached_clients(),
             custom_title: session.custom_title(),
+            tab_color: session.tab_color(),
+            template_name: session.template_name(),
         };
 
         let initial_screen = if req.want_screen_snapshot {

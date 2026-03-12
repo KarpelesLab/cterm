@@ -19,6 +19,7 @@ service TerminalService {
 
   // Session Metadata
   rpc SetSessionTitle(SetSessionTitleRequest) returns (SetSessionTitleResponse);
+  rpc SetSessionMetadata(SetSessionMetadataRequest) returns (SetSessionMetadataResponse);
 
   // Input
   rpc WriteInput(WriteInputRequest) returns (WriteInputResponse);
@@ -123,6 +124,10 @@ message SessionInfo {
   uint32 attached_clients = 7;
   // User-set custom title (overrides OSC title for display)
   string custom_title = 8;
+  // Tab color override (CSS hex, e.g. "#ff0000")
+  string tab_color = 9;
+  // Template name used to create this session
+  string template_name = 10;
 }
 
 message GetSessionRequest {
@@ -184,6 +189,21 @@ message SetSessionTitleRequest {
 }
 
 message SetSessionTitleResponse {
+  bool success = 1;
+}
+
+message SetSessionMetadataRequest {
+  string session_id = 1;
+  // Fields to update (only non-empty values are applied)
+  string custom_title = 2;
+  string tab_color = 3;
+  string template_name = 4;
+  // Bitmask of which fields to actually set (allows clearing to empty string)
+  // bit 0 = custom_title, bit 1 = tab_color, bit 2 = template_name
+  uint32 fields_mask = 5;
+}
+
+message SetSessionMetadataResponse {
   bool success = 1;
 }
 

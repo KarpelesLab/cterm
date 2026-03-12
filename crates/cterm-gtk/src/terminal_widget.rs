@@ -88,6 +88,20 @@ impl TerminalWidget {
         }
     }
 
+    /// Set the tab color on the daemon (persists across reconnects)
+    pub fn set_tab_color_on_daemon(&self, color: &str) {
+        if let Some(ref tx) = self.daemon_cmd_tx {
+            let _ = tx.send(DaemonCommand::SetTabColor(color.to_string()));
+        }
+    }
+
+    /// Set the template name on the daemon (persists across reconnects)
+    pub fn set_template_name_on_daemon(&self, name: &str) {
+        if let Some(ref tx) = self.daemon_cmd_tx {
+            let _ = tx.send(DaemonCommand::SetTemplateName(name.to_string()));
+        }
+    }
+
     /// Set callback for when the terminal process exits
     pub fn set_on_exit<F: Fn() + 'static>(&self, callback: F) {
         *self.on_exit.borrow_mut() = Some(Box::new(callback));
@@ -1109,6 +1123,20 @@ impl TerminalWidget {
                                     log::error!("Failed to set custom title: {}", e);
                                 }
                             }
+                            DaemonCommand::SetTabColor(color) => {
+                                if let Err(e) =
+                                    cmd_session.set_metadata(None, Some(&color), None).await
+                                {
+                                    log::error!("Failed to set tab color: {}", e);
+                                }
+                            }
+                            DaemonCommand::SetTemplateName(name) => {
+                                if let Err(e) =
+                                    cmd_session.set_metadata(None, None, Some(&name)).await
+                                {
+                                    log::error!("Failed to set template name: {}", e);
+                                }
+                            }
                         }
                     }
                 });
@@ -1312,6 +1340,8 @@ enum DaemonCommand {
     Resize(u32, u32),
     Destroy,
     SetTitle(String),
+    SetTabColor(String),
+    SetTemplateName(String),
 }
 
 /// Rendering parameters for draw_terminal

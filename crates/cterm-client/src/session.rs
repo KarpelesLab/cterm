@@ -236,6 +236,47 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Set session metadata (tab color, template name, etc.)
+    ///
+    /// Only fields with `Some` values are updated; `None` fields are left unchanged.
+    pub async fn set_metadata(
+        &self,
+        custom_title: Option<&str>,
+        tab_color: Option<&str>,
+        template_name: Option<&str>,
+    ) -> Result<()> {
+        let mut mask = 0u32;
+        let mut title_val = String::new();
+        let mut color_val = String::new();
+        let mut tmpl_val = String::new();
+
+        if let Some(t) = custom_title {
+            mask |= 1;
+            title_val = t.to_string();
+        }
+        if let Some(c) = tab_color {
+            mask |= 2;
+            color_val = c.to_string();
+        }
+        if let Some(n) = template_name {
+            mask |= 4;
+            tmpl_val = n.to_string();
+        }
+
+        self.client
+            .lock()
+            .await
+            .set_session_metadata(SetSessionMetadataRequest {
+                session_id: self.session_id.clone(),
+                custom_title: title_val,
+                tab_color: color_val,
+                template_name: tmpl_val,
+                fields_mask: mask,
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Get session info
     pub async fn info(&self) -> Result<SessionInfo> {
         let response = self

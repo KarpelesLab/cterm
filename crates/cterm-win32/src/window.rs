@@ -43,6 +43,9 @@ pub const WM_APP_BELL: u32 = WM_APP + 4;
 pub enum DaemonCmd {
     Write(Vec<u8>),
     Resize(u32, u32),
+    SetTitle(String),
+    SetTabColor(String),
+    SetTemplateName(String),
 }
 
 /// Tab entry
@@ -531,6 +534,15 @@ impl WindowState {
 
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.reader_handle = Some(reader_handle);
+            // Send metadata to daemon (queued until session is created)
+            if let Some(ref tx) = tab.daemon_cmd_tx {
+                if !title.is_empty() {
+                    let _ = tx.send(DaemonCmd::SetTemplateName(title));
+                }
+                if let Some(ref c) = color {
+                    let _ = tx.send(DaemonCmd::SetTabColor(c.clone()));
+                }
+            }
         }
 
         self.invalidate();
@@ -1309,6 +1321,10 @@ impl WindowState {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.title = new_title.clone();
                     tab.title_locked = true;
+                    // Persist to daemon
+                    if let Some(ref tx) = tab.daemon_cmd_tx {
+                        let _ = tx.send(DaemonCmd::SetTitle(new_title.clone()));
+                    }
                     self.tab_bar.set_title(tab_id, &new_title);
                     self.invalidate();
                 }
@@ -1324,6 +1340,12 @@ impl WindowState {
             {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.color = color_result.clone();
+                    // Persist to daemon
+                    if let Some(ref tx) = tab.daemon_cmd_tx {
+                        let _ = tx.send(DaemonCmd::SetTabColor(
+                            color_result.as_deref().unwrap_or("").to_string(),
+                        ));
+                    }
                     // Parse color to Rgb
                     let rgb = color_result.and_then(|c| parse_hex_color(&c));
                     self.tab_bar.set_color(tab_id, rgb);
@@ -1705,6 +1727,10 @@ impl WindowState {
         ) {
             // Update tab title
             if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                // Persist to daemon
+                if let Some(ref tx) = tab.daemon_cmd_tx {
+                    let _ = tx.send(DaemonCmd::SetTitle(new_title.clone()));
+                }
                 tab.title = new_title.clone();
             }
             self.tab_bar.set_title(tab_id, &new_title);
@@ -1719,6 +1745,12 @@ impl WindowState {
             // Update tab color
             let rgb = color_opt.as_ref().and_then(|hex| parse_hex_color(hex));
             if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                // Persist to daemon
+                if let Some(ref tx) = tab.daemon_cmd_tx {
+                    let _ = tx.send(DaemonCmd::SetTabColor(
+                        color_opt.as_deref().unwrap_or("").to_string(),
+                    ));
+                }
                 tab.color = color_opt;
             }
             self.tab_bar.set_color(tab_id, rgb);
@@ -2115,6 +2147,21 @@ async fn run_daemon_io_loop(
                 DaemonCmd::Resize(c, r) => {
                     if let Err(e) = cmd_session.resize(c, r).await {
                         log::error!("Failed to resize daemon session: {}", e);
+                    }
+                }
+                DaemonCmd::SetTitle(title) => {
+                    if let Err(e) = cmd_session.set_custom_title(&title).await {
+                        log::error!("Failed to set custom title: {}", e);
+                    }
+                }
+                DaemonCmd::SetTabColor(color) => {
+                    if let Err(e) = cmd_session.set_metadata(None, Some(&color), None).await {
+                        log::error!("Failed to set tab color: {}", e);
+                    }
+                }
+                DaemonCmd::SetTemplateName(name) => {
+                    if let Err(e) = cmd_session.set_metadata(None, None, Some(&name)).await {
+                        log::error!("Failed to set template name: {}", e);
                     }
                 }
             }

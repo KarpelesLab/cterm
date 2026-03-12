@@ -31,6 +31,12 @@ pub struct RelaunchSessionState {
     pub rows: usize,
     /// User-set custom title
     pub custom_title: String,
+    /// Tab color override
+    #[serde(default)]
+    pub tab_color: String,
+    /// Template name
+    #[serde(default)]
+    pub template_name: String,
     /// Scrollback lines setting
     pub scrollback_lines: usize,
 }
@@ -104,6 +110,8 @@ pub fn collect_and_write_relaunch_state(
 
         let (cols, rows) = session.dimensions();
         let custom_title = session.custom_title();
+        let tab_color = session.tab_color();
+        let template_name = session.template_name();
 
         session_states.push(RelaunchSessionState {
             session_id: session.id.clone(),
@@ -112,6 +120,8 @@ pub fn collect_and_write_relaunch_state(
             cols,
             rows,
             custom_title,
+            tab_color,
+            template_name,
             scrollback_lines,
         });
     }

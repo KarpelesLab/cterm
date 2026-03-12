@@ -67,6 +67,8 @@ enum DaemonCommand {
     Resize(u32, u32),
     Destroy,
     SetTitle(String),
+    SetTabColor(String),
+    SetTemplateName(String),
 }
 
 /// Terminal view state
@@ -1538,6 +1540,18 @@ impl TerminalView {
                                 log::error!("Failed to set custom title: {}", e);
                             }
                         }
+                        DaemonCommand::SetTabColor(color) => {
+                            if let Err(e) = cmd_session.set_metadata(None, Some(&color), None).await
+                            {
+                                log::error!("Failed to set tab color: {}", e);
+                            }
+                        }
+                        DaemonCommand::SetTemplateName(name) => {
+                            if let Err(e) = cmd_session.set_metadata(None, None, Some(&name)).await
+                            {
+                                log::error!("Failed to set template name: {}", e);
+                            }
+                        }
                     }
                 }
             });
@@ -2026,6 +2040,20 @@ impl TerminalView {
     /// Set the daemon session ID
     pub fn set_session_id(&self, id: Option<String>) {
         *self.ivars().session_id.borrow_mut() = id;
+    }
+
+    /// Set the tab color on the daemon (persists across reconnects)
+    pub fn set_tab_color_on_daemon(&self, color: &str) {
+        if let Some(ref tx) = *self.ivars().daemon_cmd_tx.borrow() {
+            let _ = tx.send(DaemonCommand::SetTabColor(color.to_string()));
+        }
+    }
+
+    /// Set the template name on the daemon (persists across reconnects)
+    pub fn set_template_name_on_daemon(&self, name: &str) {
+        if let Some(ref tx) = *self.ivars().daemon_cmd_tx.borrow() {
+            let _ = tx.send(DaemonCommand::SetTemplateName(name.to_string()));
+        }
     }
 
     /// Setup the notification bar

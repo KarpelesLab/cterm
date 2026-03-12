@@ -14,6 +14,8 @@ pub struct DaemonSessionInfo {
     pub session_id: String,
     pub title: String,
     pub custom_title: String,
+    pub tab_color: String,
+    pub template_name: String,
     pub cols: u32,
     pub rows: u32,
     pub running: bool,
@@ -50,6 +52,8 @@ pub async fn check_daemon_sessions() -> ReconnectCheck {
                     session_id: s.session_id,
                     title: s.title,
                     custom_title: s.custom_title,
+                    tab_color: s.tab_color,
+                    template_name: s.template_name,
                     cols: s.cols,
                     rows: s.rows,
                     running: s.running,
@@ -68,6 +72,10 @@ pub struct ReconnectedSession {
     pub title: String,
     /// User-set custom title (empty if none)
     pub custom_title: String,
+    /// Tab color override (empty if none)
+    pub tab_color: String,
+    /// Template name (empty if none)
+    pub template_name: String,
     /// Initial screen snapshot (if available)
     pub screen: Option<GetScreenResponse>,
 }
@@ -103,6 +111,8 @@ pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientE
         }
         let title = session_info.title.clone();
         let custom_title = session_info.custom_title.clone();
+        let tab_color = session_info.tab_color.clone();
+        let template_name = session_info.template_name.clone();
         match conn
             .attach_session(
                 &session_info.session_id,
@@ -116,6 +126,8 @@ pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientE
                     handle,
                     title,
                     custom_title,
+                    tab_color,
+                    template_name,
                     screen,
                 });
             }
