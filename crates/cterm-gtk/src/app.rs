@@ -97,10 +97,18 @@ fn apply_css(_theme: &Theme) {
             padding: 2px 8px;
             margin: 1px;
             min-height: 0;
+            opacity: 0.6;
+        }
+
+        .tab-bar button.active {
+            opacity: 1.0;
+            background: alpha(currentColor, 0.1);
+            box-shadow: inset 0 -2px 0 currentColor;
         }
 
         .tab-bar button.has-unread {
             font-weight: bold;
+            opacity: 0.9;
         }
 
         .tab-close-button {
