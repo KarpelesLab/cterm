@@ -13,7 +13,7 @@ use tonic::transport::Channel;
 
 /// GitHub repository for downloading ctermd releases
 #[cfg(unix)]
-const GITHUB_REPO: &str = "KarpelesLab/cterm";
+const GITHUB_REPO: &str = "unixshells/cterm";
 
 /// Generate a shell script that finds ctermd on the remote host, installs it
 /// if needed, starts the daemon, and prints the socket path on stdout.

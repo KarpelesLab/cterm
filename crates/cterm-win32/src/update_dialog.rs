@@ -28,7 +28,7 @@ const IDC_CLOSE_BTN: i32 = 1005;
 const IDC_STATUS_LABEL: i32 = 1006;
 
 /// GitHub repository for update checks
-const GITHUB_REPO: &str = "KarpelesLab/cterm";
+const GITHUB_REPO: &str = "unixshells/cterm";
 
 /// Update check result passed via window message
 enum UpdateResult {

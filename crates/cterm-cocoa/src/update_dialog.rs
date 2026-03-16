@@ -17,7 +17,7 @@ use cterm_app::upgrade::{UpdateError, UpdateInfo, Updater};
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// GitHub repository for updates
-const GITHUB_REPO: &str = "KarpelesLab/cterm";
+const GITHUB_REPO: &str = "unixshells/cterm";
 
 /// Check for updates synchronously and show result
 ///

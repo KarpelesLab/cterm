@@ -18,7 +18,7 @@ use std::rc::Rc;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// GitHub repository for updates
-const GITHUB_REPO: &str = "KarpelesLab/cterm";
+const GITHUB_REPO: &str = "unixshells/cterm";
 
 /// State of the update process
 #[derive(Debug, Clone)]
