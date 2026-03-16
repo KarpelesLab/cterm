@@ -73,72 +73,136 @@ fn get_theme(config: &Config) -> Theme {
     cterm_app::resolve_theme(config)
 }
 
+/// Format an Rgb color as a CSS rgb() value
+fn rgb_css(c: &cterm_core::color::Rgb) -> String {
+    format!("rgb({},{},{})", c.r, c.g, c.b)
+}
+
 /// Apply CSS styling to the application
-/// Only styles terminal-specific elements, leaving system defaults for dialogs, menus, etc.
-fn apply_css(_theme: &Theme) {
+/// Uses theme colors for terminal-specific elements, leaving system defaults for dialogs, menus, etc.
+fn apply_css(theme: &Theme) {
     let provider = CssProvider::new();
+    let ui = &theme.ui;
 
-    // Only style terminal-specific elements
-    // Menu bar, dialogs, and preferences use system defaults
-    let css = r#"
+    let tab_bar_bg = rgb_css(&ui.tab_bar_background);
+    let tab_active_bg = rgb_css(&ui.tab_active_background);
+    let tab_active_text = rgb_css(&ui.tab_active_text);
+    let tab_inactive_text = rgb_css(&ui.tab_inactive_text);
+    let border = rgb_css(&ui.border);
+
+    let css = format!(
+        r#"
         /* Terminal drawing area - background handled by Cairo drawing */
-        .terminal {
+        .terminal {{
             padding: 0;
-        }
+        }}
 
-        /* Tab bar styling - compact height */
-        .tab-bar {
-            padding: 1px 2px;
-        }
+        /* Tab bar styling */
+        .tab-bar {{
+            background-color: {tab_bar_bg};
+            padding: 4px 4px 0 4px;
+            border-bottom: 1px solid {border};
+        }}
 
-        .tab-bar button {
+        .tab-bar button {{
             border: none;
-            border-radius: 3px;
-            padding: 2px 8px;
-            margin: 1px;
+            border-radius: 6px 6px 2px 2px;
+            padding: 4px 12px;
+            margin: 0 1px;
             min-height: 0;
-            opacity: 0.6;
-        }
+            background-color: transparent;
+            color: {tab_inactive_text};
+            transition: background-color 150ms ease-in-out,
+                        color 150ms ease-in-out;
+        }}
 
-        .tab-bar button.active {
-            opacity: 1.0;
-            background: alpha(currentColor, 0.1);
-            box-shadow: inset 0 -2px 0 currentColor;
-        }
+        .tab-bar button:hover {{
+            background-color: alpha({tab_active_bg}, 0.5);
+            color: {tab_active_text};
+        }}
 
-        .tab-bar button.has-unread {
+        .tab-bar button.active {{
+            background-color: {tab_active_bg};
+            color: {tab_active_text};
+        }}
+
+        .tab-bar button.active:hover {{
+            background-color: {tab_active_bg};
+        }}
+
+        .tab-bar button.has-unread {{
             font-weight: bold;
-            opacity: 0.9;
-        }
+            color: {tab_active_text};
+        }}
 
-        .tab-close-button {
-            padding: 0px 2px;
-            min-width: 14px;
-            min-height: 14px;
-            border-radius: 50%;
-        }
+        .tab-close-button {{
+            padding: 0 2px;
+            min-width: 16px;
+            min-height: 16px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity 150ms ease-in-out,
+                        background-color 150ms ease-in-out;
+        }}
 
-        .tab-close-button:hover {
-            background: alpha(red, 0.2);
-        }
+        .tab-bar button:hover .tab-close-button {{
+            opacity: 0.7;
+        }}
+
+        .tab-bar button.active .tab-close-button {{
+            opacity: 0.7;
+        }}
+
+        .tab-close-button:hover {{
+            background-color: alpha(rgb(255,80,80), 0.3);
+            opacity: 1.0;
+        }}
 
         /* New tab button */
-        .new-tab-button {
-            padding: 2px 6px;
-            border-radius: 3px;
+        .new-tab-button {{
+            padding: 4px 8px;
+            border-radius: 4px;
             min-height: 0;
-        }
+            margin: 0 2px 4px 2px;
+            color: {tab_inactive_text};
+            background-color: transparent;
+            transition: background-color 150ms ease-in-out,
+                        color 150ms ease-in-out;
+        }}
+
+        .new-tab-button:hover {{
+            color: {tab_active_text};
+            background-color: alpha({tab_active_bg}, 0.5);
+        }}
+
+        /* Notification bar */
+        .notification-bar {{
+            background-color: {tab_bar_bg};
+            border-bottom: 1px solid {border};
+            padding: 4px 8px;
+        }}
+
+        .notification-bar label {{
+            color: {tab_active_text};
+        }}
+
+        .notification-bar button {{
+            min-height: 0;
+            padding: 2px 12px;
+            border-radius: 4px;
+        }}
 
         /* Remove popover shadow - alpha compositing is unreliable on X11 */
-        popover {
+        popover {{
             margin: 0;
-        }
-        popover > contents {
+        }}
+        popover > contents {{
             box-shadow: none;
-        }
-        "#;
+        }}
+        "#
+    );
 
-    provider.load_from_data(css);
+    provider.load_from_data(&css);
 
     // Apply to the default display
     if let Some(display) = gdk::Display::default() {

@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use cterm_ui::format_size;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, CssProvider, Label, Orientation};
+use gtk4::{Box as GtkBox, Button, Label, Orientation};
 
 /// Notification bar height in pixels
 pub const NOTIFICATION_BAR_HEIGHT: i32 = 32;
@@ -54,26 +54,7 @@ impl NotificationBar {
         container.set_height_request(NOTIFICATION_BAR_HEIGHT);
         container.add_css_class("notification-bar");
 
-        // Apply dark semi-transparent styling
-        let provider = CssProvider::new();
-        provider.load_from_data(
-            r#"
-            .notification-bar {
-                background-color: rgba(40, 40, 40, 0.95);
-                padding: 4px 8px;
-            }
-            .notification-bar label {
-                color: white;
-            }
-            .notification-bar button {
-                min-height: 0;
-                padding: 2px 12px;
-            }
-        "#,
-        );
-        container
-            .style_context()
-            .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        // Styling is applied globally via app.rs CSS
 
         // Create label
         let label = Label::new(None);

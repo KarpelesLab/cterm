@@ -60,6 +60,7 @@ impl TabBar {
 
         let new_tab_button = Button::builder().label("+").focusable(false).build();
         new_tab_button.add_css_class("new-tab-button");
+        new_tab_button.add_css_class("flat");
 
         container.append(&tabs_box);
         container.append(&new_tab_button);
@@ -104,15 +105,19 @@ impl TabBar {
         bell_icon.add_css_class("tab-bell-icon");
 
         let label = Label::new(Some(title));
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_max_width_chars(30);
 
         let close_button = Button::builder().label("×").focusable(false).build();
         close_button.add_css_class("tab-close-button");
+        close_button.add_css_class("flat");
 
         tab_box.append(&bell_icon);
         tab_box.append(&label);
         tab_box.append(&close_button);
 
         let button = Button::builder().child(&tab_box).focusable(false).build();
+        button.add_css_class("flat");
 
         // Set up close button
         let close_callbacks = Rc::clone(&self.on_close_callbacks);
