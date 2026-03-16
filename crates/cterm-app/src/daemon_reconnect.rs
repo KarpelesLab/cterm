@@ -101,7 +101,16 @@ impl ReconnectedSession {
 pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientError> {
     let socket_path = cterm_client::default_socket_path();
     let conn = DaemonConnection::connect_unix(&socket_path, false).await?;
+    reconnect_all_sessions_on(&conn).await
+}
 
+/// Reconnect to all running sessions on an existing daemon connection.
+///
+/// Works with any `DaemonConnection` (local or SSH-tunneled).
+/// Returns a list of ReconnectedSessions including screen snapshots.
+pub async fn reconnect_all_sessions_on(
+    conn: &DaemonConnection,
+) -> Result<Vec<ReconnectedSession>, ClientError> {
     let sessions = conn.list_sessions().await?;
     let mut results = Vec::new();
 

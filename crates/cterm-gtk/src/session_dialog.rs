@@ -244,11 +244,12 @@ fn create_session_row(session: &SessionEntry) -> ListBoxRow {
 
 /// Show the SSH connection dialog.
 ///
-/// Prompts the user for a hostname (user@host), connects via SSH, creates a
-/// session on the remote daemon, and calls the callback with the SessionHandle.
+/// Prompts the user for a hostname (user@host), connects via SSH, attaches to
+/// all existing sessions on the remote daemon, and creates one new session.
+/// The callback receives a list of reconnected sessions (existing + new).
 pub fn show_ssh_dialog<F>(parent: &impl IsA<Window>, callback: F)
 where
-    F: Fn(cterm_client::SessionHandle) + 'static,
+    F: Fn(Vec<cterm_app::daemon_reconnect::ReconnectedSession>) + 'static,
 {
     let callback = Rc::new(callback);
     let dialog = Dialog::builder()
@@ -296,7 +297,6 @@ where
             return;
         }
 
-        // Disable buttons while connecting
         status_label.set_text("Connecting...");
 
         let (tx, rx) = std::sync::mpsc::channel::<SshConnectResult>();
@@ -310,15 +310,31 @@ where
             let result = match rt {
                 Ok(rt) => rt.block_on(async {
                     let conn = cterm_client::DaemonConnection::connect_ssh(&host_bg).await?;
-                    // Create a default session on the remote daemon
-                    let session = conn
-                        .create_session(cterm_client::CreateSessionOpts {
-                            cols: 80,
-                            rows: 24,
-                            ..Default::default()
-                        })
-                        .await?;
-                    Ok(session)
+
+                    // Attach to all existing running sessions
+                    let mut sessions =
+                        cterm_app::daemon_reconnect::reconnect_all_sessions_on(&conn).await?;
+
+                    // If no sessions exist, create one
+                    if sessions.is_empty() {
+                        let handle = conn
+                            .create_session(cterm_client::CreateSessionOpts {
+                                cols: 80,
+                                rows: 24,
+                                ..Default::default()
+                            })
+                            .await?;
+                        sessions.push(cterm_app::daemon_reconnect::ReconnectedSession {
+                            handle,
+                            title: String::new(),
+                            custom_title: String::new(),
+                            tab_color: String::new(),
+                            template_name: String::new(),
+                            screen: None,
+                        });
+                    }
+
+                    Ok(sessions)
                 }),
                 Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
             };
@@ -332,8 +348,8 @@ where
             match rx.try_recv() {
                 Ok(result) => {
                     match result {
-                        Ok(session) => {
-                            callback(session);
+                        Ok(sessions) => {
+                            callback(sessions);
                             if let Some(dialog) = dialog_weak.upgrade() {
                                 dialog.close();
                             }
@@ -341,7 +357,6 @@ where
                         Err(e) => {
                             if let Some(dialog) = dialog_weak.upgrade() {
                                 let content = dialog.content_area();
-                                // Find status label (last label in content area)
                                 let mut child = content.first_child();
                                 let mut last_label = None;
                                 while let Some(widget) = child {
@@ -369,4 +384,7 @@ where
     dialog.present();
 }
 
-type SshConnectResult = std::result::Result<cterm_client::SessionHandle, cterm_client::ClientError>;
+type SshConnectResult = std::result::Result<
+    Vec<cterm_app::daemon_reconnect::ReconnectedSession>,
+    cterm_client::ClientError,
+>;

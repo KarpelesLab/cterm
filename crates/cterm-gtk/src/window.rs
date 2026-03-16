@@ -34,6 +34,8 @@ struct TabEntry {
     color: Option<String>,
     /// Daemon session ID (for upgrade state preservation)
     session_id: Option<String>,
+    /// Daemon socket path (None = local daemon, Some = remote/SSH-tunneled)
+    daemon_socket: Option<std::path::PathBuf>,
 }
 
 /// Main window container
@@ -286,20 +288,21 @@ impl CtermWindow {
             let notification_bar = self.notification_bar.clone();
             let action = gio::SimpleAction::new("new-tab", None);
             action.connect_activate(move |_, _| {
-                // Get the current working directory from the active terminal
-                #[cfg(unix)]
-                let cwd = {
+                // Get info from the active terminal
+                let (cwd, daemon_socket) = {
                     let tabs_borrow = tabs.borrow();
                     if let Some(page_idx) = notebook.current_page() {
-                        tabs_borrow
-                            .get(page_idx as usize)
-                            .and_then(|entry| entry.terminal.foreground_cwd())
+                        let entry = tabs_borrow.get(page_idx as usize);
+                        #[cfg(unix)]
+                        let cwd = entry.and_then(|e| e.terminal.foreground_cwd());
+                        #[cfg(not(unix))]
+                        let cwd: Option<String> = None;
+                        let socket = entry.and_then(|e| e.daemon_socket.clone());
+                        (cwd, socket)
                     } else {
-                        None
+                        (None, None)
                     }
                 };
-                #[cfg(not(unix))]
-                let cwd: Option<String> = None;
 
                 create_new_tab(
                     &notebook,
@@ -313,6 +316,7 @@ impl CtermWindow {
                     &file_manager,
                     &notification_bar,
                     cwd,
+                    daemon_socket,
                 );
             });
             window.add_action(&action);
@@ -511,33 +515,68 @@ impl CtermWindow {
                 let file_manager = Rc::clone(&file_manager);
                 let notification_bar = notification_bar.clone();
 
-                crate::session_dialog::show_ssh_dialog(&window_clone, move |session| {
-                    let sid = Some(session.session_id().to_string());
-                    let cfg = config.borrow();
-                    let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
+                crate::session_dialog::show_ssh_dialog(&window_clone, move |sessions| {
+                    for recon in sessions {
+                        let sid = recon.handle.session_id().to_string();
+                        let daemon_socket = recon.handle.socket_path().map(|p| p.to_owned());
+                        let (title, title_locked) = if !recon.custom_title.is_empty() {
+                            (recon.custom_title.clone(), true)
+                        } else if !recon.title.is_empty() {
+                            (recon.title.clone(), false)
+                        } else {
+                            ("SSH".to_string(), false)
+                        };
 
-                    let tab_id = generate_tab_id(&next_tab_id);
-                    let page_num = notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
-                    let title = "SSH".to_string();
-                    tab_bar.add_tab(tab_id, &title);
+                        let tab_color = if recon.tab_color.is_empty() {
+                            None
+                        } else {
+                            Some(recon.tab_color.clone())
+                        };
 
-                    setup_tab_callbacks(
-                        &notebook,
-                        &tabs,
-                        &config,
-                        &tab_bar,
-                        &window_inner,
-                        &has_bell,
-                        &file_manager,
-                        &notification_bar,
-                        &terminal,
-                        tab_id,
-                        false,
-                    );
+                        let cfg = config.borrow();
+                        let terminal = TerminalWidget::from_daemon_with_screen(recon, &cfg, &theme);
+                        drop(cfg);
 
-                    finalize_new_tab(
-                        &notebook, &tabs, &tab_bar, tab_id, page_num, title, terminal, false, sid,
-                    );
+                        let tab_id = generate_tab_id(&next_tab_id);
+                        let page_num =
+                            notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
+                        tab_bar.add_tab(tab_id, &title);
+
+                        setup_tab_callbacks(
+                            &notebook,
+                            &tabs,
+                            &config,
+                            &tab_bar,
+                            &window_inner,
+                            &has_bell,
+                            &file_manager,
+                            &notification_bar,
+                            &terminal,
+                            tab_id,
+                            false,
+                        );
+
+                        finalize_new_tab(
+                            &notebook,
+                            &tabs,
+                            &tab_bar,
+                            tab_id,
+                            page_num,
+                            title,
+                            terminal,
+                            title_locked,
+                            Some(sid),
+                            daemon_socket,
+                        );
+
+                        if let Some(ref color) = tab_color {
+                            tab_bar.set_color(tab_id, Some(color));
+                            if let Some(tab) = tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id)
+                            {
+                                tab.color = tab_color;
+                            }
+                        }
+                    }
                 });
             });
             window.add_action(&action);
@@ -1277,20 +1316,20 @@ impl CtermWindow {
                 if let Some(action) = shortcuts.match_event(key, modifiers) {
                     match action {
                         Action::NewTab => {
-                            // Get the current working directory from the active terminal
-                            #[cfg(unix)]
-                            let cwd = {
+                            let (cwd, daemon_socket) = {
                                 let tabs_borrow = tabs.borrow();
                                 if let Some(page_idx) = notebook.current_page() {
-                                    tabs_borrow
-                                        .get(page_idx as usize)
-                                        .and_then(|entry| entry.terminal.foreground_cwd())
+                                    let entry = tabs_borrow.get(page_idx as usize);
+                                    #[cfg(unix)]
+                                    let cwd = entry.and_then(|e| e.terminal.foreground_cwd());
+                                    #[cfg(not(unix))]
+                                    let cwd: Option<String> = None;
+                                    let socket = entry.and_then(|e| e.daemon_socket.clone());
+                                    (cwd, socket)
                                 } else {
-                                    None
+                                    (None, None)
                                 }
                             };
-                            #[cfg(not(unix))]
-                            let cwd: Option<String> = None;
 
                             create_new_tab(
                                 &notebook,
@@ -1304,6 +1343,7 @@ impl CtermWindow {
                                 &file_manager,
                                 &notification_bar,
                                 cwd,
+                                daemon_socket,
                             );
                             return glib::Propagation::Stop;
                         }
@@ -1742,20 +1782,21 @@ impl CtermWindow {
 
         // New tab button
         self.tab_bar.set_on_new_tab(move || {
-            // Get the current working directory from the active terminal
-            #[cfg(unix)]
-            let cwd = {
+            // Get info from the active terminal
+            let (cwd, daemon_socket) = {
                 let tabs_borrow = tabs.borrow();
                 if let Some(page_idx) = notebook.current_page() {
-                    tabs_borrow
-                        .get(page_idx as usize)
-                        .and_then(|entry| entry.terminal.foreground_cwd())
+                    let entry = tabs_borrow.get(page_idx as usize);
+                    #[cfg(unix)]
+                    let cwd = entry.and_then(|e| e.terminal.foreground_cwd());
+                    #[cfg(not(unix))]
+                    let cwd: Option<String> = None;
+                    let socket = entry.and_then(|e| e.daemon_socket.clone());
+                    (cwd, socket)
                 } else {
-                    None
+                    (None, None)
                 }
             };
-            #[cfg(not(unix))]
-            let cwd: Option<String> = None;
 
             create_new_tab(
                 &notebook,
@@ -1769,6 +1810,7 @@ impl CtermWindow {
                 &file_manager,
                 &notification_bar,
                 cwd,
+                daemon_socket,
             );
         });
 
@@ -1862,20 +1904,6 @@ impl CtermWindow {
 
     /// Create a new tab
     pub fn new_tab(&self) {
-        // Get the current working directory from the active terminal
-        #[cfg(unix)]
-        let cwd = {
-            let tabs = self.tabs.borrow();
-            if let Some(page_idx) = self.notebook.current_page() {
-                tabs.get(page_idx as usize)
-                    .and_then(|entry| entry.terminal.foreground_cwd())
-            } else {
-                None
-            }
-        };
-        #[cfg(not(unix))]
-        let cwd: Option<String> = None;
-
         create_new_tab(
             &self.notebook,
             &self.tabs,
@@ -1887,7 +1915,8 @@ impl CtermWindow {
             &self.has_bell,
             &self.file_manager,
             &self.notification_bar,
-            cwd,
+            None,
+            None,
         );
     }
 
@@ -1900,6 +1929,7 @@ impl CtermWindow {
         tab_color: Option<String>,
     ) {
         let sid = recon.handle.session_id().to_string();
+        let daemon_socket = recon.handle.socket_path().map(|p| p.to_owned());
         // Prefer custom_title (user-set), then daemon title, then fallback
         let (title, title_locked) = if !recon.custom_title.is_empty() {
             (recon.custom_title.clone(), true)
@@ -1952,6 +1982,7 @@ impl CtermWindow {
             terminal,
             title_locked,
             Some(sid),
+            daemon_socket,
         );
 
         // Restore tab color if available
@@ -2204,6 +2235,7 @@ fn finalize_new_tab(
     terminal: TerminalWidget,
     title_locked: bool,
     session_id: Option<String>,
+    daemon_socket: Option<std::path::PathBuf>,
 ) {
     tabs.borrow_mut().push(TabEntry {
         id: tab_id,
@@ -2212,6 +2244,7 @@ fn finalize_new_tab(
         title_locked,
         color: None,
         session_id,
+        daemon_socket,
     });
 
     tab_bar.update_visibility();
@@ -2224,6 +2257,9 @@ fn finalize_new_tab(
 }
 
 /// Create a new terminal tab (daemon-backed via ctermd)
+///
+/// If `daemon_socket` is Some, creates the session on that specific daemon
+/// (e.g. an SSH-tunneled remote). Otherwise uses the local daemon.
 #[allow(clippy::too_many_arguments)]
 fn create_new_tab(
     notebook: &Notebook,
@@ -2237,6 +2273,7 @@ fn create_new_tab(
     file_manager: &Rc<RefCell<PendingFileManager>>,
     notification_bar: &NotificationBar,
     cwd: Option<String>,
+    daemon_socket: Option<std::path::PathBuf>,
 ) {
     let cfg = config.borrow();
 
@@ -2252,14 +2289,22 @@ fn create_new_tab(
         .unwrap_or("Terminal")
         .to_string();
 
-    // Build daemon session options
-    let opts = cterm_client::CreateSessionOpts {
-        cols: 80,
-        rows: 24,
-        shell: cfg.general.default_shell.clone(),
-        args: cfg.general.shell_args.clone(),
-        cwd,
-        ..Default::default()
+    // Build daemon session options — for remote daemons, don't pass local shell/args
+    let opts = if daemon_socket.is_some() {
+        cterm_client::CreateSessionOpts {
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        }
+    } else {
+        cterm_client::CreateSessionOpts {
+            cols: 80,
+            rows: 24,
+            shell: cfg.general.default_shell.clone(),
+            args: cfg.general.shell_args.clone(),
+            cwd,
+            ..Default::default()
+        }
     };
     drop(cfg);
 
@@ -2280,6 +2325,7 @@ fn create_new_tab(
         None,
         false,
         None,
+        daemon_socket,
     );
 }
 
@@ -2325,10 +2371,16 @@ fn create_docker_tab(
         None,
         false,
         None,
+        None,
     );
 }
 
 /// Spawn a new daemon-backed tab: connects to ctermd, creates session, and wires up the tab
+///
+/// Connection priority:
+/// 1. `daemon_socket` — connect to a specific socket (e.g. SSH-tunneled remote)
+/// 2. `remote` — connect via RemoteManager (template-based remotes)
+/// 3. Neither — connect to local daemon
 #[allow(clippy::too_many_arguments)]
 fn spawn_daemon_tab(
     notebook: &Notebook,
@@ -2347,6 +2399,7 @@ fn spawn_daemon_tab(
     background_color: Option<String>,
     keep_open: bool,
     remote: Option<(cterm_client::RemoteManager, String, String)>,
+    daemon_socket: Option<std::path::PathBuf>,
 ) {
     let notebook = notebook.clone();
     let tabs = Rc::clone(tabs);
@@ -2368,7 +2421,9 @@ fn spawn_daemon_tab(
 
         let result = match rt {
             Ok(rt) => rt.block_on(async {
-                let conn = if let Some((ref mgr, ref name, ref host)) = remote {
+                let conn = if let Some(ref path) = daemon_socket {
+                    cterm_client::DaemonConnection::connect_unix(path, false).await?
+                } else if let Some((ref mgr, ref name, ref host)) = remote {
                     mgr.get_or_connect(name, host).await?
                 } else {
                     cterm_client::DaemonConnection::connect_local().await?
@@ -2388,6 +2443,7 @@ fn spawn_daemon_tab(
                 match result {
                     Ok(session) => {
                         let sid = Some(session.session_id().to_string());
+                        let daemon_socket = session.socket_path().map(|p| p.to_owned());
                         let cfg = config.borrow();
                         let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
                         drop(cfg);
@@ -2430,6 +2486,7 @@ fn spawn_daemon_tab(
                             terminal,
                             false,
                             sid,
+                            daemon_socket,
                         );
 
                         // Store color in tab entry and send metadata to daemon
@@ -2559,6 +2616,7 @@ fn create_daemon_tab(
                             terminal,
                             false,
                             Some(sid),
+                            None,
                         );
                     }
                     Err(e) => {
@@ -2654,6 +2712,7 @@ fn create_tab_from_template(
         template.background_color.clone(),
         template.keep_open,
         remote,
+        None,
     );
 }
 
