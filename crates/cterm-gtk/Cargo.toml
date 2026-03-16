@@ -15,6 +15,7 @@ adwaita = ["dep:libadwaita"]
 [dependencies]
 cterm-core.workspace = true
 cterm-client.workspace = true
+cterm-proto.workspace = true
 cterm-ui.workspace = true
 cterm-app.workspace = true
 gtk4.workspace = true

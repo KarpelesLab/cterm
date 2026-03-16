@@ -1141,6 +1141,32 @@ impl TerminalWidget {
                     }
                 });
 
+                // Subscribe to event stream (process exit, etc.)
+                let tx_events = tx.clone();
+                let event_session = session.clone();
+                tokio::spawn(async move {
+                    match event_session.stream_events().await {
+                        Ok(mut stream) => {
+                            use tokio_stream::StreamExt;
+                            while let Some(result) = stream.next().await {
+                                if let Ok(event) = result {
+                                    if let Some(
+                                        cterm_proto::proto::terminal_event::Event::ProcessExited(_),
+                                    ) = event.event
+                                    {
+                                        log::info!("Daemon reports process exited");
+                                        let _ = tx_events.send(PtyMessage::Exited);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to start daemon event stream: {}", e);
+                        }
+                    }
+                });
+
                 // Read output stream
                 match session.stream_output().await {
                     Ok(mut stream) => {

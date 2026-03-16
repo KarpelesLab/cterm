@@ -142,7 +142,13 @@ impl SessionState {
             // Spawn the reader task - it will run until the PTY closes
             tokio::spawn(async move {
                 let pty_reader = PtyReader::new(reader);
-                pty_reader.run(state).await;
+                pty_reader.run(Arc::clone(&state)).await;
+                // Notify subscribers that the process has exited
+                log::debug!(
+                    "PTY closed for session {}, broadcasting ProcessExited",
+                    state.id
+                );
+                state.broadcast_event(TerminalEvent::ProcessExited(0));
             });
         }
 
