@@ -1357,6 +1357,7 @@ impl CtermWindow {
                                 let current = notebook.current_page().unwrap_or(0);
                                 notebook.set_current_page(Some((current + 1) % n));
                                 sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                focus_current_terminal(&notebook);
                             }
                             return glib::Propagation::Stop;
                         }
@@ -1367,6 +1368,7 @@ impl CtermWindow {
                                 let prev = if current == 0 { n - 1 } else { current - 1 };
                                 notebook.set_current_page(Some(prev));
                                 sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                focus_current_terminal(&notebook);
                             }
                             return glib::Propagation::Stop;
                         }
@@ -1382,6 +1384,7 @@ impl CtermWindow {
                                             drop(tabs_ref);
                                             notebook.set_current_page(Some(idx as u32));
                                             sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                            focus_current_terminal(&notebook);
                                             break;
                                         }
                                     }
@@ -1394,6 +1397,7 @@ impl CtermWindow {
                             if idx < notebook.n_pages() {
                                 notebook.set_current_page(Some(idx));
                                 sync_tab_bar_active(&tab_bar, &tabs, &notebook);
+                                focus_current_terminal(&notebook);
                             }
                             return glib::Propagation::Stop;
                         }
@@ -2901,6 +2905,15 @@ fn close_other_tabs(
 }
 
 /// Sync tab bar active state with notebook
+/// Focus the terminal widget in the currently visible notebook page
+fn focus_current_terminal(notebook: &Notebook) {
+    if let Some(page) = notebook.current_page() {
+        if let Some(widget) = notebook.nth_page(Some(page)) {
+            widget.grab_focus();
+        }
+    }
+}
+
 fn sync_tab_bar_active(tab_bar: &TabBar, tabs: &Rc<RefCell<Vec<TabEntry>>>, notebook: &Notebook) {
     if let Some(page_idx) = notebook.current_page() {
         let tabs = tabs.borrow();
@@ -2991,8 +3004,8 @@ fn keyval_to_keycode(keyval: gdk::Key) -> Option<KeyCode> {
         Key::Right => KeyCode::Right,
         Key::Home => KeyCode::Home,
         Key::End => KeyCode::End,
-        Key::Page_Up => KeyCode::PageUp,
-        Key::Page_Down => KeyCode::PageDown,
+        Key::Page_Up | Key::KP_Page_Up => KeyCode::PageUp,
+        Key::Page_Down | Key::KP_Page_Down => KeyCode::PageDown,
         Key::Insert => KeyCode::Insert,
         Key::Delete => KeyCode::Delete,
         Key::BackSpace => KeyCode::Backspace,
