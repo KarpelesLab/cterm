@@ -104,7 +104,7 @@ fn apply_css(theme: &Theme) {
             border-bottom: 1px solid {border};
         }}
 
-        .tab-bar button {{
+        .tab-item {{
             border: none;
             border-radius: 6px 6px 2px 2px;
             padding: 4px 12px;
@@ -116,21 +116,21 @@ fn apply_css(theme: &Theme) {
                         color 150ms ease-in-out;
         }}
 
-        .tab-bar button:hover {{
+        .tab-item:hover {{
             background-color: alpha({tab_active_bg}, 0.5);
             color: {tab_active_text};
         }}
 
-        .tab-bar button.active {{
+        .tab-item.active {{
             background-color: {tab_active_bg};
             color: {tab_active_text};
         }}
 
-        .tab-bar button.active:hover {{
+        .tab-item.active:hover {{
             background-color: {tab_active_bg};
         }}
 
-        .tab-bar button.has-unread {{
+        .tab-item.has-unread {{
             font-weight: bold;
             color: {tab_active_text};
         }}
@@ -145,11 +145,11 @@ fn apply_css(theme: &Theme) {
                         background-color 150ms ease-in-out;
         }}
 
-        .tab-bar button:hover .tab-close-button {{
+        .tab-item:hover .tab-close-button {{
             opacity: 0.7;
         }}
 
-        .tab-bar button.active .tab-close-button {{
+        .tab-item.active .tab-close-button {{
             opacity: 0.7;
         }}
 

@@ -35,7 +35,7 @@ pub struct TabBar {
 
 struct TabInfo {
     id: u64,
-    button: Button,
+    widget: GtkBox,
     label: Label,
     bell_icon: Label,
     #[allow(dead_code)] // Kept to prevent button from being dropped
@@ -97,7 +97,11 @@ impl TabBar {
 
     /// Add a new tab
     pub fn add_tab(&self, id: u64, title: &str) {
-        let tab_box = GtkBox::new(Orientation::Horizontal, 4);
+        // Use a GtkBox (not a Button) as the tab container so the close button
+        // inside can receive click events independently.
+        let tab_widget = GtkBox::new(Orientation::Horizontal, 4);
+        tab_widget.add_css_class("tab-item");
+        tab_widget.set_focusable(false);
 
         // Bell icon (hidden by default)
         let bell_icon = Label::new(Some("🔔"));
@@ -112,12 +116,9 @@ impl TabBar {
         close_button.add_css_class("tab-close-button");
         close_button.add_css_class("flat");
 
-        tab_box.append(&bell_icon);
-        tab_box.append(&label);
-        tab_box.append(&close_button);
-
-        let button = Button::builder().child(&tab_box).focusable(false).build();
-        button.add_css_class("flat");
+        tab_widget.append(&bell_icon);
+        tab_widget.append(&label);
+        tab_widget.append(&close_button);
 
         // Set up close button
         let close_callbacks = Rc::clone(&self.on_close_callbacks);
@@ -128,22 +129,27 @@ impl TabBar {
             }
         });
 
-        // Set up tab button click
+        // Set up tab click via GestureClick (left button)
+        let click_gesture = GestureClick::new();
+        click_gesture.set_button(1);
         let click_callbacks = Rc::clone(&self.on_click_callbacks);
         let active_tab = Rc::clone(&self.active_tab);
         let tabs = Rc::clone(&self.tabs);
-        button.connect_clicked(move |btn| {
+        let tab_widget_click = tab_widget.clone();
+        click_gesture.connect_released(move |gesture, _, _, _| {
             // Update active state visually
             for tab in tabs.borrow().iter() {
-                tab.button.remove_css_class("active");
+                tab.widget.remove_css_class("active");
             }
-            btn.add_css_class("active");
+            tab_widget_click.add_css_class("active");
             *active_tab.borrow_mut() = Some(tab_id);
 
             if let Some(callback) = click_callbacks.borrow().get(&tab_id) {
                 callback();
             }
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
         });
+        tab_widget.add_controller(click_gesture);
 
         // Set up right-click context menu
         let context_menu_tab_id = Rc::clone(&self.context_menu_tab_id);
@@ -177,7 +183,7 @@ impl TabBar {
         });
         action_group.add_action(&color_action);
 
-        button.insert_action_group("tab", Some(&action_group));
+        tab_widget.insert_action_group("tab", Some(&action_group));
 
         // Create context menu
         let menu = Menu::new();
@@ -185,7 +191,7 @@ impl TabBar {
         menu.append(Some("Set Tab Color..."), Some("tab.set-color"));
 
         let popover = PopoverMenu::from_model(Some(&menu));
-        popover.set_parent(&button);
+        popover.set_parent(&tab_widget);
         popover.set_has_arrow(false);
 
         // Right-click gesture
@@ -201,13 +207,13 @@ impl TabBar {
             popover_clone.popup();
             gesture.set_state(gtk4::EventSequenceState::Claimed);
         });
-        button.add_controller(gesture);
+        tab_widget.add_controller(gesture);
 
-        self.tabs_box.append(&button);
+        self.tabs_box.append(&tab_widget);
 
         self.tabs.borrow_mut().push(TabInfo {
             id,
-            button,
+            widget: tab_widget,
             label,
             bell_icon,
             close_button,
@@ -226,7 +232,7 @@ impl TabBar {
         if let Some(idx) = tabs.iter().position(|t| t.id == id) {
             let tab = tabs.remove(idx);
             tab.context_popover.unparent();
-            self.tabs_box.remove(&tab.button);
+            self.tabs_box.remove(&tab.widget);
         }
 
         // Remove callbacks
@@ -240,9 +246,9 @@ impl TabBar {
 
         for tab in self.tabs.borrow().iter() {
             if tab.id == id {
-                tab.button.add_css_class("active");
+                tab.widget.add_css_class("active");
             } else {
-                tab.button.remove_css_class("active");
+                tab.widget.remove_css_class("active");
             }
         }
     }
@@ -263,28 +269,25 @@ impl TabBar {
             if tab.id == id {
                 if let Some(color) = color {
                     // Apply inline style using CSS provider
-                    let css = format!(
-                        "button.colored-tab-{} {{ background-color: {}; }}",
-                        id, color
-                    );
+                    let css = format!("box.colored-tab-{} {{ background-color: {}; }}", id, color);
                     let provider = gtk4::CssProvider::new();
                     provider.load_from_data(&css);
 
                     // Remove old colored-tab class if any
                     let classes: Vec<_> = tab
-                        .button
+                        .widget
                         .css_classes()
                         .iter()
                         .filter(|c| c.starts_with("colored-tab"))
                         .map(|c| c.to_string())
                         .collect();
                     for class in classes {
-                        tab.button.remove_css_class(&class);
+                        tab.widget.remove_css_class(&class);
                     }
 
                     // Add new class and style
                     let class_name = format!("colored-tab-{}", id);
-                    tab.button.add_css_class(&class_name);
+                    tab.widget.add_css_class(&class_name);
 
                     if let Some(display) = gtk4::gdk::Display::default() {
                         gtk4::style_context_add_provider_for_display(
@@ -296,14 +299,14 @@ impl TabBar {
                 } else {
                     // Remove any colored-tab class
                     let classes: Vec<_> = tab
-                        .button
+                        .widget
                         .css_classes()
                         .iter()
                         .filter(|c| c.starts_with("colored-tab"))
                         .map(|c| c.to_string())
                         .collect();
                     for class in classes {
-                        tab.button.remove_css_class(&class);
+                        tab.widget.remove_css_class(&class);
                     }
                 }
                 break;
@@ -317,9 +320,9 @@ impl TabBar {
         for tab in self.tabs.borrow().iter() {
             if tab.id == id {
                 if unread {
-                    tab.button.add_css_class("has-unread");
+                    tab.widget.add_css_class("has-unread");
                 } else {
-                    tab.button.remove_css_class("has-unread");
+                    tab.widget.remove_css_class("has-unread");
                 }
                 break;
             }

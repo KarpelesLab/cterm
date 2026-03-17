@@ -1151,9 +1151,13 @@ impl TerminalWidget {
                     }
                 });
 
+                // Notify used to cancel the output stream when process exits
+                let exit_notify = Arc::new(tokio::sync::Notify::new());
+
                 // Subscribe to event stream (process exit, etc.)
                 let tx_events = tx.clone();
                 let event_session = session.clone();
+                let exit_notify_event = Arc::clone(&exit_notify);
                 tokio::spawn(async move {
                     match event_session.stream_events().await {
                         Ok(mut stream) => {
@@ -1165,6 +1169,7 @@ impl TerminalWidget {
                                     ) = event.event
                                     {
                                         log::info!("Daemon reports process exited");
+                                        exit_notify_event.notify_one();
                                         let _ = tx_events.send(PtyMessage::Exited);
                                         break;
                                     }
@@ -1177,31 +1182,36 @@ impl TerminalWidget {
                     }
                 });
 
-                // Read output stream
-                match session.stream_output().await {
-                    Ok(mut stream) => {
-                        use tokio_stream::StreamExt;
-                        while let Some(result) = stream.next().await {
-                            match result {
-                                Ok(chunk) => {
-                                    if tx.send(PtyMessage::Data(chunk.data)).is_err() {
-                                        break;
+                // Read output stream, cancellable by process exit notification
+                tokio::select! {
+                    _ = exit_notify.notified() => {
+                        log::info!("Process exited, stopping output stream");
+                    }
+                    _ = async {
+                        match session.stream_output().await {
+                            Ok(mut stream) => {
+                                use tokio_stream::StreamExt;
+                                while let Some(result) = stream.next().await {
+                                    match result {
+                                        Ok(chunk) => {
+                                            if tx.send(PtyMessage::Data(chunk.data)).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Daemon stream error: {}", e);
+                                            break;
+                                        }
                                     }
                                 }
-                                Err(e) => {
-                                    log::error!("Daemon stream error: {}", e);
-                                    let _ = tx.send(PtyMessage::Exited);
-                                    break;
-                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to start daemon output stream: {}", e);
                             }
                         }
-                        let _ = tx.send(PtyMessage::Exited);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to start daemon output stream: {}", e);
-                        let _ = tx.send(PtyMessage::Exited);
-                    }
+                    } => {}
                 }
+                let _ = tx.send(PtyMessage::Exited);
             });
         });
 
