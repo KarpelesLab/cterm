@@ -721,25 +721,113 @@ define_class!(
 
             log::info!("SSH connect to: {}", host);
 
-            // Create a session on the remote daemon
-            let opts = cterm_client::CreateSessionOpts {
-                cols: 80,
-                rows: 24,
-                ..Default::default()
-            };
-
             let app = NSApplication::sharedApplication(mtm);
-            if let Some(key_window) = app.keyWindow() {
-                let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
-                let cterm_window: &CtermWindow = unsafe { &*window_ptr };
-                cterm_window.spawn_daemon_tab(
-                    opts,
-                    Some(host.clone()),
-                    Some("#22c55e".into()), // Green for remote
-                    None,
-                    Some((remote_manager, host.clone(), host)),
-                );
-            }
+            let key_window = app.keyWindow();
+            let window_ptr = key_window
+                .as_ref()
+                .map(|w| Retained::as_ptr(w) as *const CtermWindow as usize);
+
+            // Connect to remote daemon in background, attach to all existing sessions
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+
+                let result = match rt {
+                    Ok(rt) => rt.block_on(async {
+                        let conn =
+                            cterm_client::DaemonConnection::connect_ssh(&host).await?;
+
+                        // Attach to all existing running sessions
+                        let mut sessions =
+                            cterm_app::daemon_reconnect::reconnect_all_sessions_on(&conn)
+                                .await?;
+
+                        // If no sessions exist, create one
+                        if sessions.is_empty() {
+                            let handle = conn
+                                .create_session(cterm_client::CreateSessionOpts {
+                                    cols: 80,
+                                    rows: 24,
+                                    ..Default::default()
+                                })
+                                .await?;
+                            sessions.push(cterm_app::daemon_reconnect::ReconnectedSession {
+                                handle,
+                                title: String::new(),
+                                custom_title: String::new(),
+                                tab_color: String::new(),
+                                template_name: String::new(),
+                                screen: None,
+                            });
+                        }
+
+                        Ok::<_, cterm_client::ClientError>(sessions)
+                    }),
+                    Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
+                };
+
+                match result {
+                    Ok(sessions) => {
+                        let session_count = sessions.len();
+                        dispatch2::Queue::main().exec_async(move || {
+                            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+                            for recon in sessions {
+                                let title = if !recon.custom_title.is_empty() {
+                                    recon.custom_title.clone()
+                                } else if !recon.title.is_empty() {
+                                    recon.title.clone()
+                                } else {
+                                    host.clone()
+                                };
+
+                                let tab_color = if recon.tab_color.is_empty() {
+                                    Some("#22c55e".to_string()) // Green for remote
+                                } else {
+                                    Some(recon.tab_color.clone())
+                                };
+
+                                let window = CtermWindow::from_daemon_with_screen(
+                                    mtm, &config, &theme, recon,
+                                );
+                                window.setTitle(&NSString::from_str(&title));
+
+                                if let Some(ref c) = tab_color {
+                                    window.set_tab_color(Some(c));
+                                }
+
+                                // Add as tab to the current key window
+                                if let Some(ptr) = window_ptr {
+                                    let parent: &CtermWindow =
+                                        unsafe { &*(ptr as *const CtermWindow) };
+                                    parent.addTabbedWindow_ordered(
+                                        &window,
+                                        objc2_app_kit::NSWindowOrderingMode::Above,
+                                    );
+                                }
+                                window.makeKeyAndOrderFront(None);
+
+                                let app = NSApplication::sharedApplication(mtm);
+                                if let Some(delegate) = app.delegate() {
+                                    let _: () = unsafe {
+                                        msg_send![&*delegate, registerWindow: &*window]
+                                    };
+                                }
+                            }
+
+                            log::info!(
+                                "SSH connected to {}: attached {} session(s)",
+                                host,
+                                session_count
+                            );
+                        });
+                    }
+                    Err(e) => {
+                        log::error!("Failed to connect via SSH: {}", e);
+                    }
+                }
+            });
         }
 
         /// Show remotes management dialog
