@@ -454,6 +454,19 @@ impl CtermWindow {
         this
     }
 
+    /// Create a window connected to a mosh session
+    pub fn from_mosh(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        session: cterm_mosh::MoshSession,
+    ) -> Retained<Self> {
+        let this = Self::init_window(mtm, config, theme, "Mosh", None);
+        let terminal_view = TerminalView::from_mosh(mtm, config, theme, session);
+        this.attach_terminal_view(terminal_view);
+        this
+    }
+
     /// Create a new tab connected to a daemon session (using native macOS window tabbing)
     pub fn create_daemon_tab(&self, session: cterm_client::SessionHandle) {
         let mtm = MainThreadMarker::from(self);
@@ -582,6 +595,79 @@ impl CtermWindow {
                 }
                 Err(e) => {
                     log::error!("Failed to create daemon session: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Spawn a new tab backed by a mosh session.
+    ///
+    /// Launches mosh-server via SSH in a background thread, then creates the
+    /// terminal view on the main thread when the connection is established.
+    pub fn spawn_mosh_tab(
+        &self,
+        mosh_config: cterm_mosh::MoshConfig,
+        template_name: Option<String>,
+        color: Option<String>,
+        background_color: Option<String>,
+    ) {
+        let config = self.ivars().config.clone();
+        let theme = self.ivars().theme.clone();
+        let window_ptr = self as *const Self as usize;
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+
+            let result = match rt {
+                Ok(rt) => {
+                    rt.block_on(async { cterm_mosh::MoshSession::connect(mosh_config).await })
+                }
+                Err(e) => Err(cterm_mosh::MoshError::SshFailed(e.to_string())),
+            };
+
+            match result {
+                Ok(session) => {
+                    dispatch2::Queue::main().exec_async(move || {
+                        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                        let window: &CtermWindow = unsafe { &*(window_ptr as *const CtermWindow) };
+
+                        let title = template_name.clone().unwrap_or_else(|| "Mosh".to_string());
+
+                        let new_window = CtermWindow::from_mosh(mtm, &config, &theme, session);
+                        new_window.setTitle(&NSString::from_str(&title));
+
+                        if let Some(tv) = new_window.active_terminal() {
+                            if let Some(ref name) = template_name {
+                                tv.set_template_name(Some(name.clone()));
+                            }
+                            if let Some(ref bg) = background_color {
+                                tv.set_background_override(Some(bg));
+                            }
+                        }
+
+                        let app = NSApplication::sharedApplication(mtm);
+                        if let Some(delegate) = app.delegate() {
+                            let _: () =
+                                unsafe { msg_send![&*delegate, registerWindow: &*new_window] };
+                        }
+
+                        window.addTabbedWindow_ordered(
+                            &new_window,
+                            objc2_app_kit::NSWindowOrderingMode::Above,
+                        );
+                        new_window.makeKeyAndOrderFront(None);
+
+                        if let Some(ref c) = color {
+                            new_window.set_tab_color(Some(c));
+                        }
+
+                        log::info!("Created mosh tab: {}", title);
+                    });
+                }
+                Err(e) => {
+                    log::error!("Failed to create mosh session: {}", e);
                 }
             }
         });

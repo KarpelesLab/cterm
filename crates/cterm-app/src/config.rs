@@ -46,16 +46,30 @@ pub struct Config {
     pub sticky_tabs: Vec<StickyTabConfig>,
 }
 
-/// A named remote host for daemon-backed sessions.
+/// Connection method for remote sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionMethod {
+    /// Connect via ctermd daemon (sessions survive disconnects)
+    #[default]
+    Daemon,
+    /// Connect via mosh protocol (encrypted UDP, tolerates roaming)
+    Mosh,
+}
+
+/// A named remote host for daemon-backed or mosh sessions.
 ///
 /// Templates can reference a remote by name. When launched, cterm connects
 /// to the remote's ctermd via SSH (auto-installing if needed), and the
 /// session runs on the remote daemon — surviving SSH disconnects.
+/// Alternatively, with `method = "mosh"`, the session uses the mosh protocol.
 ///
 /// ```toml
 /// [[remotes]]
 /// name = "dev-server"
 /// host = "user@dev.example.com"
+/// method = "daemon"  # or "mosh"
+/// proxy_jump = "relay.example.com"  # optional, for NAT traversal
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
@@ -63,6 +77,12 @@ pub struct RemoteConfig {
     pub name: String,
     /// SSH destination (user@hostname or just hostname)
     pub host: String,
+    /// Connection method (defaults to "daemon")
+    #[serde(default)]
+    pub method: ConnectionMethod,
+    /// SSH ProxyJump host for relay/NAT traversal
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
 }
 
 impl Config {

@@ -1,0 +1,20 @@
+[package]
+name = "cterm-mosh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Mosh protocol implementation for cterm"
+
+[dependencies]
+aes = { workspace = true }
+ocb3 = { workspace = true }
+aead = { workspace = true }
+tokio = { workspace = true }
+flate2 = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

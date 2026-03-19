@@ -14,7 +14,7 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
-use cterm_app::config::{save_config, Config, RemoteConfig};
+use cterm_app::config::{save_config, Config, ConnectionMethod, RemoteConfig};
 use std::cell::RefCell;
 
 pub struct RemotesDialogIvars {
@@ -22,6 +22,8 @@ pub struct RemotesDialogIvars {
     list_popup: RefCell<Option<Retained<objc2_app_kit::NSPopUpButton>>>,
     name_field: RefCell<Option<Retained<NSTextField>>>,
     host_field: RefCell<Option<Retained<NSTextField>>>,
+    method_popup: RefCell<Option<Retained<objc2_app_kit::NSPopUpButton>>>,
+    proxy_field: RefCell<Option<Retained<NSTextField>>>,
 }
 
 define_class!(
@@ -51,6 +53,8 @@ define_class!(
             config.remotes.push(RemoteConfig {
                 name,
                 host: String::new(),
+                method: Default::default(),
+                proxy_jump: None,
             });
             let new_idx = config.remotes.len() - 1;
             drop(config);
@@ -83,6 +87,11 @@ define_class!(
         #[unsafe(method(remoteSelected:))]
         fn action_selected(&self, _sender: Option<&AnyObject>) {
             self.load_selected();
+        }
+
+        #[unsafe(method(methodChanged:))]
+        fn action_method_changed(&self, _sender: Option<&AnyObject>) {
+            self.save_current_to_config();
         }
 
         #[unsafe(method(saveAndClose:))]
@@ -135,6 +144,18 @@ impl RemotesDialog {
                 if let Some(f) = self.ivars().host_field.borrow().as_ref() {
                     f.setStringValue(&NSString::from_str(&remote.host));
                 }
+                if let Some(p) = self.ivars().method_popup.borrow().as_ref() {
+                    let idx = match remote.method {
+                        ConnectionMethod::Daemon => 0,
+                        ConnectionMethod::Mosh => 1,
+                    };
+                    p.selectItemAtIndex(idx);
+                }
+                if let Some(f) = self.ivars().proxy_field.borrow().as_ref() {
+                    f.setStringValue(&NSString::from_str(
+                        remote.proxy_jump.as_deref().unwrap_or(""),
+                    ));
+                }
                 return;
             }
         }
@@ -144,6 +165,12 @@ impl RemotesDialog {
             f.setStringValue(&empty);
         }
         if let Some(f) = self.ivars().host_field.borrow().as_ref() {
+            f.setStringValue(&empty);
+        }
+        if let Some(p) = self.ivars().method_popup.borrow().as_ref() {
+            p.selectItemAtIndex(0);
+        }
+        if let Some(f) = self.ivars().proxy_field.borrow().as_ref() {
             f.setStringValue(&empty);
         }
     }
@@ -164,6 +191,16 @@ impl RemotesDialog {
                 if let Some(f) = self.ivars().host_field.borrow().as_ref() {
                     remote.host = f.stringValue().to_string();
                 }
+                if let Some(p) = self.ivars().method_popup.borrow().as_ref() {
+                    remote.method = match p.indexOfSelectedItem() {
+                        1 => ConnectionMethod::Mosh,
+                        _ => ConnectionMethod::Daemon,
+                    };
+                }
+                if let Some(f) = self.ivars().proxy_field.borrow().as_ref() {
+                    let val = f.stringValue().to_string();
+                    remote.proxy_jump = if val.is_empty() { None } else { Some(val) };
+                }
             }
             drop(config);
             // Update popup title to reflect name change
@@ -176,7 +213,7 @@ impl RemotesDialog {
 }
 
 pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
-    let content_rect = NSRect::new(NSPoint::new(300.0, 300.0), NSSize::new(420.0, 260.0));
+    let content_rect = NSRect::new(NSPoint::new(300.0, 300.0), NSSize::new(420.0, 330.0));
     let style_mask =
         NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
 
@@ -186,6 +223,8 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
         list_popup: RefCell::new(None),
         name_field: RefCell::new(None),
         host_field: RefCell::new(None),
+        method_popup: RefCell::new(None),
+        proxy_field: RefCell::new(None),
     });
 
     let this: Retained<RemotesDialog> = unsafe {
@@ -285,6 +324,44 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
     host_row.addView_inGravity(&host_field, NSStackViewGravity::Leading);
     main_stack.addView_inGravity(&host_row, NSStackViewGravity::Top);
 
+    // Method popup
+    let method_row = unsafe { NSStackView::new(mtm) };
+    method_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    method_row.setSpacing(8.0);
+    let method_label = unsafe { NSTextField::labelWithString(&NSString::from_str("Method:"), mtm) };
+    unsafe {
+        let _: () = msg_send![&*method_label, setPreferredMaxLayoutWidth: 60.0f64];
+    }
+    let method_popup = unsafe {
+        let p = objc2_app_kit::NSPopUpButton::new(mtm);
+        p.addItemWithTitle(&NSString::from_str("ctermd"));
+        p.addItemWithTitle(&NSString::from_str("Mosh"));
+        p.setTarget(Some(&*this));
+        p.setAction(Some(sel!(methodChanged:)));
+        p
+    };
+    method_row.addView_inGravity(&method_label, NSStackViewGravity::Leading);
+    method_row.addView_inGravity(&method_popup, NSStackViewGravity::Leading);
+    main_stack.addView_inGravity(&method_row, NSStackViewGravity::Top);
+
+    // Proxy Jump field
+    let proxy_row = unsafe { NSStackView::new(mtm) };
+    proxy_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    proxy_row.setSpacing(8.0);
+    let proxy_label = unsafe { NSTextField::labelWithString(&NSString::from_str("Proxy:"), mtm) };
+    unsafe {
+        let _: () = msg_send![&*proxy_label, setPreferredMaxLayoutWidth: 60.0f64];
+    }
+    let proxy_field = unsafe {
+        let f = NSTextField::new(mtm);
+        f.setPlaceholderString(Some(&NSString::from_str("relay.example.com")));
+        f.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*this)));
+        f
+    };
+    proxy_row.addView_inGravity(&proxy_label, NSStackViewGravity::Leading);
+    proxy_row.addView_inGravity(&proxy_field, NSStackViewGravity::Leading);
+    main_stack.addView_inGravity(&proxy_row, NSStackViewGravity::Top);
+
     // Bottom row: Cancel / Save
     let bottom_row = unsafe { NSStackView::new(mtm) };
     bottom_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -315,6 +392,8 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
     *this.ivars().list_popup.borrow_mut() = Some(popup);
     *this.ivars().name_field.borrow_mut() = Some(name_field);
     *this.ivars().host_field.borrow_mut() = Some(host_field);
+    *this.ivars().method_popup.borrow_mut() = Some(method_popup);
+    *this.ivars().proxy_field.borrow_mut() = Some(proxy_field);
 
     // Populate list
     this.refresh_list();

@@ -14,6 +14,7 @@ cterm-ui.workspace = true
 cterm-app.workspace = true
 cterm-client.workspace = true
 cterm-proto.workspace = true
+cterm-mosh.workspace = true
 
 # Windows GUI
 native-windows-gui = "1.0"

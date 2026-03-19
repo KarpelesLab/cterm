@@ -29,6 +29,7 @@ members = [
     "crates/cterm-app",
     "crates/cterm-proto",
     "crates/cterm-client",
+    "crates/cterm-mosh",
     "crates/cterm-gtk",
     "crates/cterm-cocoa",
     "crates/cterm-win32",
@@ -89,6 +90,11 @@ clap = { version = "4", features = ["derive"] }
 tar = "0.4"
 flate2 = "1"
 
+# Mosh crypto
+aes = "0.8"
+ocb3 = "0.1"
+aead = { version = "0.5", features = ["std"] }
+
 # gRPC
 tower = "0.4"
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -124,6 +130,7 @@ cterm-ui = { path = "crates/cterm-ui" }
 cterm-app = { path = "crates/cterm-app" }
 cterm-proto = { path = "crates/cterm-proto" }
 cterm-client = { path = "crates/cterm-client" }
+cterm-mosh = { path = "crates/cterm-mosh" }
 cterm-headless = { path = "crates/cterm-headless" }
 
 [profile.release]

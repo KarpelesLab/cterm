@@ -1471,6 +1471,144 @@ impl TerminalView {
         this
     }
 
+    /// Create a terminal view backed by a mosh session.
+    ///
+    /// Similar to `from_daemon`, but uses mosh protocol instead of gRPC.
+    /// The `DaemonCommand` channel is reused: Write and Resize are forwarded
+    /// to the mosh session, other commands are ignored.
+    pub fn from_mosh(
+        mtm: MainThreadMarker,
+        config: &Config,
+        theme: &Theme,
+        mosh_session: cterm_mosh::MoshSession,
+    ) -> Retained<Self> {
+        let renderer = CGRenderer::new(
+            mtm,
+            &config.appearance.font.family,
+            config.appearance.font.size,
+            theme,
+            config.appearance.bold_is_bright,
+        );
+        let (cell_width, cell_height) = renderer.cell_size();
+
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        terminal.screen_mut().set_cell_height_hint(cell_height);
+        terminal.screen_mut().set_cell_width_hint(cell_width);
+
+        // Reuse the DaemonCommand channel — the mosh reader thread translates to mosh commands
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCommand>();
+
+        let write_tx = cmd_tx.clone();
+        terminal.set_write_fn(Box::new(move |data: &[u8]| {
+            let _ = write_tx.send(DaemonCommand::Write(data.to_vec()));
+            Ok(())
+        }));
+
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        let (this, state) = Self::init_view(
+            mtm,
+            renderer,
+            terminal.clone(),
+            theme,
+            ViewInitOptions::default(),
+        );
+
+        // Store command channel for resize notifications (same as daemon path)
+        *this.ivars().daemon_cmd_tx.borrow_mut() = Some(cmd_tx);
+
+        let view_ptr = &*this as *const _ as usize;
+
+        // Spawn mosh reader thread
+        let state_clone = state.clone();
+        std::thread::spawn(move || {
+            Self::read_mosh_loop(mosh_session, terminal, state_clone, cmd_rx);
+        });
+
+        this.schedule_redraw_check(view_ptr, state);
+        this
+    }
+
+    /// Background thread to read output from a mosh session.
+    ///
+    /// Creates a local tokio runtime, receives MoshEvents, and translates
+    /// DaemonCommands to mosh operations — same pattern as read_daemon_loop.
+    fn read_mosh_loop(
+        mut session: cterm_mosh::MoshSession,
+        terminal: Arc<Mutex<Terminal>>,
+        state: Arc<ViewState>,
+        mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<DaemonCommand>,
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime for mosh reader");
+
+        rt.block_on(async move {
+            loop {
+                tokio::select! {
+                    // Receive events from mosh session
+                    event = session.recv() => {
+                        match event {
+                            Some(cterm_mosh::MoshEvent::Output(data)) => {
+                                let mut term = terminal.lock();
+                                let events = term.process(&data);
+
+                                for event in events {
+                                    match event {
+                                        TerminalEvent::TitleChanged(ref title) => {
+                                            if let Ok(mut current_title) = state.title.write() {
+                                                *current_title = title.clone();
+                                            }
+                                            state.title_changed.store(true, Ordering::Relaxed);
+                                        }
+                                        TerminalEvent::Bell => {
+                                            state.bell_changed.store(true, Ordering::Relaxed);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                drop(term);
+                                state.needs_redraw.store(true, Ordering::Relaxed);
+                            }
+                            Some(cterm_mosh::MoshEvent::Closed(err)) => {
+                                if let Some(e) = err {
+                                    log::error!("Mosh session closed with error: {}", e);
+                                }
+                                state.pty_closed.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                            None => {
+                                state.pty_closed.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                        }
+                    }
+
+                    // Forward DaemonCommands to mosh session
+                    cmd = cmd_rx.recv() => {
+                        match cmd {
+                            Some(DaemonCommand::Write(data)) => {
+                                session.write(&data);
+                            }
+                            Some(DaemonCommand::Resize(cols, rows)) => {
+                                session.resize(cols as u16, rows as u16);
+                            }
+                            Some(DaemonCommand::Destroy) | None => {
+                                session.shutdown();
+                                state.pty_closed.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                            // SetTitle, SetTabColor, SetTemplateName not applicable for mosh
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Background thread to read output from a daemon session.
     ///
     /// Creates a local tokio runtime with its own daemon connection,

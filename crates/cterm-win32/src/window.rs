@@ -215,20 +215,48 @@ impl WindowState {
         &mut self,
         template: &cterm_app::config::StickyTabConfig,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        // If the template specifies a remote, use daemon-backed tab
+        // If the template specifies a remote, use daemon-backed or mosh tab
         if let Some(ref remote_name) = template.remote {
-            let remote = self
+            let remote_cfg = self
                 .config
                 .remotes
                 .iter()
                 .find(|r| r.name == *remote_name)
-                .map(|r| (self.remote_manager.clone(), r.name.clone(), r.host.clone()));
-            if remote.is_none() {
+                .cloned();
+            if remote_cfg.is_none() {
                 log::error!(
                     "Remote '{}' not found in config, creating locally",
                     remote_name
                 );
             }
+
+            let is_mosh = remote_cfg
+                .as_ref()
+                .is_some_and(|r| r.method == cterm_app::config::ConnectionMethod::Mosh);
+
+            if is_mosh {
+                let remote = remote_cfg.unwrap();
+                let (cols, rows) = self.terminal_size();
+                let mosh_config = cterm_mosh::MoshConfig {
+                    host: remote.host.clone(),
+                    proxy_jump: remote.proxy_jump.clone(),
+                    cols: cols as u16,
+                    rows: rows as u16,
+                    locale: Some("en_US.UTF-8".to_string()),
+                    term: Some("xterm-256color".to_string()),
+                    ssh_args: Vec::new(),
+                };
+                let tab_id = self.spawn_mosh_tab(
+                    mosh_config,
+                    template.name.clone(),
+                    template.color.clone(),
+                    template.background_color.clone(),
+                );
+                return Ok(tab_id);
+            }
+
+            let remote =
+                remote_cfg.map(|r| (self.remote_manager.clone(), r.name.clone(), r.host.clone()));
             let (cols, rows) = self.terminal_size();
             let opts = cterm_client::CreateSessionOpts {
                 cols: cols as u32,
@@ -543,6 +571,71 @@ impl WindowState {
                     let _ = tx.send(DaemonCmd::SetTabColor(c.clone()));
                 }
             }
+        }
+
+        self.invalidate();
+        tab_id
+    }
+
+    /// Spawn a new tab backed by a mosh session.
+    pub fn spawn_mosh_tab(
+        &mut self,
+        mosh_config: cterm_mosh::MoshConfig,
+        title: String,
+        color: Option<String>,
+        background_color: Option<String>,
+    ) -> u64 {
+        let tab_id = self.next_tab_id.fetch_add(1, Ordering::SeqCst);
+        let (cols, rows) = self.terminal_size();
+
+        let screen_config = ScreenConfig {
+            scrollback_lines: self.config.general.scrollback_lines,
+        };
+        let mut terminal = Terminal::new(cols, rows, screen_config);
+
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCmd>();
+        let write_tx = cmd_tx.clone();
+        terminal.set_write_fn(Box::new(move |data: &[u8]| {
+            let _ = write_tx.send(DaemonCmd::Write(data.to_vec()));
+            Ok(())
+        }));
+
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        let entry = TabEntry {
+            id: tab_id,
+            title: title.clone(),
+            terminal: Arc::clone(&terminal),
+            color: color.clone(),
+            background_color: background_color.clone(),
+            has_bell: false,
+            title_locked: true,
+            reader_handle: None,
+            session_id: None,
+            daemon_cmd_tx: Some(cmd_tx),
+        };
+
+        self.tabs.push(entry);
+        self.active_tab_index = self.tabs.len() - 1;
+        self.tab_bar.add_tab(tab_id, &title);
+        self.tab_bar.set_active(tab_id);
+
+        if let Some(ref color_hex) = color {
+            let rgb = parse_hex_color(color_hex);
+            self.tab_bar.set_color(tab_id, rgb);
+        }
+
+        if let Some(ref bg) = background_color {
+            if let Some(ref mut renderer) = self.renderer {
+                renderer.set_background_override(Some(bg));
+            }
+        }
+
+        let hwnd = self.hwnd.0 as usize;
+        let reader_handle = start_mosh_thread(hwnd, tab_id, terminal, mosh_config, cmd_rx);
+
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.reader_handle = Some(reader_handle);
         }
 
         self.invalidate();
@@ -2075,6 +2168,98 @@ fn start_daemon_create_thread(
             };
 
             run_daemon_io_loop(hwnd, tab_id, terminal, session, cmd_rx).await;
+        });
+    })
+}
+
+/// Start a background thread for a mosh session.
+///
+/// Launches mosh-server via SSH, then runs the mosh event loop,
+/// translating DaemonCmd to mosh operations.
+fn start_mosh_thread(
+    hwnd: usize,
+    tab_id: u64,
+    terminal: Arc<Mutex<Terminal>>,
+    mosh_config: cterm_mosh::MoshConfig,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<DaemonCmd>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::error!("Failed to create tokio runtime for mosh: {}", e);
+                post_tab_exit(hwnd, tab_id);
+                return;
+            }
+        };
+
+        rt.block_on(async move {
+            let mut session = match cterm_mosh::MoshSession::connect(mosh_config).await {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to connect mosh session: {}", e);
+                    post_tab_exit(hwnd, tab_id);
+                    return;
+                }
+            };
+
+            let mut cmd_rx = cmd_rx;
+
+            loop {
+                tokio::select! {
+                    event = session.recv() => {
+                        match event {
+                            Some(cterm_mosh::MoshEvent::Output(data)) => {
+                                {
+                                    let mut term = terminal.lock().unwrap();
+                                    let events = term.process(&data);
+                                    for event in events {
+                                        match event {
+                                            TerminalEvent::TitleChanged(_) => {
+                                                post_message(hwnd, WM_APP_TITLE_CHANGED, tab_id);
+                                            }
+                                            TerminalEvent::Bell => {
+                                                post_message(hwnd, WM_APP_BELL, tab_id);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                post_message(hwnd, WM_APP_PTY_DATA, tab_id);
+                            }
+                            Some(cterm_mosh::MoshEvent::Closed(err)) => {
+                                if let Some(e) = err {
+                                    log::error!("Mosh session closed: {}", e);
+                                }
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+
+                    cmd = cmd_rx.recv() => {
+                        match cmd {
+                            Some(DaemonCmd::Write(data)) => {
+                                session.write(&data);
+                            }
+                            Some(DaemonCmd::Resize(cols, rows)) => {
+                                session.resize(cols as u16, rows as u16);
+                            }
+                            None => {
+                                session.shutdown();
+                                break;
+                            }
+                            // SetTitle, SetTabColor, SetTemplateName not applicable for mosh
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            post_tab_exit(hwnd, tab_id);
         });
     })
 }

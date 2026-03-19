@@ -1108,48 +1108,128 @@ impl AppDelegate {
         let template_bg_color = template.background_color.clone();
 
         // Resolve remote connection info if template targets a remote host
-        let remote = template.remote.as_ref().and_then(|remote_name| {
-            if let Some(remote_cfg) = config.find_remote(remote_name) {
-                Some((
-                    self.ivars().remote_manager.clone(),
-                    remote_name.clone(),
-                    remote_cfg.host.clone(),
-                ))
-            } else {
+        let remote_cfg = template
+            .remote
+            .as_ref()
+            .and_then(|name| config.find_remote(name).cloned());
+
+        if let Some(ref remote_name) = template.remote {
+            if remote_cfg.is_none() {
                 log::error!(
                     "Template '{}' references unknown remote '{}'",
                     template.name,
                     remote_name
                 );
-                None
             }
-        });
+        }
 
-        // If there's a key window, add as a tab; otherwise create standalone
+        // Check if this is a mosh connection
+        let is_mosh = remote_cfg
+            .as_ref()
+            .is_some_and(|r| r.method == cterm_app::config::ConnectionMethod::Mosh);
+
         let app = NSApplication::sharedApplication(mtm);
-        if let Some(key_window) = app.keyWindow() {
-            let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
-            let cterm_window: &CtermWindow = unsafe { &*window_ptr };
-            cterm_window.spawn_daemon_tab(
-                opts,
-                Some(template_name),
-                template_color,
-                template_bg_color,
-                remote,
-            );
+
+        if is_mosh {
+            let remote = remote_cfg.unwrap();
+            let mosh_config = cterm_mosh::MoshConfig {
+                host: remote.host.clone(),
+                proxy_jump: remote.proxy_jump.clone(),
+                cols: 80,
+                rows: 24,
+                locale: Some("en_US.UTF-8".to_string()),
+                term: Some("xterm-256color".to_string()),
+                ssh_args: Vec::new(),
+            };
+
+            if let Some(key_window) = app.keyWindow() {
+                let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
+                let cterm_window: &CtermWindow = unsafe { &*window_ptr };
+                cterm_window.spawn_mosh_tab(
+                    mosh_config,
+                    Some(template_name),
+                    template_color,
+                    template_bg_color,
+                );
+            } else {
+                // Spawn mosh in background, create window on completion
+                let config_clone = config.clone();
+                let theme_clone = theme.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    let result = match rt {
+                        Ok(rt) => rt.block_on(async {
+                            cterm_mosh::MoshSession::connect(mosh_config).await
+                        }),
+                        Err(e) => Err(cterm_mosh::MoshError::SshFailed(e.to_string())),
+                    };
+                    match result {
+                        Ok(session) => {
+                            dispatch2::Queue::main().exec_async(move || {
+                                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                                let window = CtermWindow::from_mosh(
+                                    mtm,
+                                    &config_clone,
+                                    &theme_clone,
+                                    session,
+                                );
+                                window.setTitle(&NSString::from_str(&template_name));
+                                if let Some(ref c) = template_color {
+                                    window.set_tab_color(Some(c));
+                                }
+                                window.makeKeyAndOrderFront(None);
+
+                                let app = NSApplication::sharedApplication(mtm);
+                                if let Some(delegate) = app.delegate() {
+                                    let _: () =
+                                        unsafe { msg_send![&*delegate, registerWindow: &*window] };
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create mosh session: {}", e);
+                        }
+                    }
+                });
+            }
         } else {
-            // No key window — create a new standalone daemon-backed window
-            let window = CtermWindow::new_daemon(
-                mtm,
-                &config,
-                &theme,
-                opts,
-                template_name,
-                template_color,
-                template_bg_color,
-            );
-            self.ivars().windows.borrow_mut().push(window.clone());
-            window.makeKeyAndOrderFront(None);
+            // Daemon connection (original path)
+            let remote = remote_cfg.and_then(|rc| {
+                template.remote.as_ref().map(|name| {
+                    (
+                        self.ivars().remote_manager.clone(),
+                        name.clone(),
+                        rc.host.clone(),
+                    )
+                })
+            });
+
+            if let Some(key_window) = app.keyWindow() {
+                let window_ptr = Retained::as_ptr(&key_window) as *const CtermWindow;
+                let cterm_window: &CtermWindow = unsafe { &*window_ptr };
+                cterm_window.spawn_daemon_tab(
+                    opts,
+                    Some(template_name),
+                    template_color,
+                    template_bg_color,
+                    remote,
+                );
+            } else {
+                // No key window — create a new standalone daemon-backed window
+                let window = CtermWindow::new_daemon(
+                    mtm,
+                    &config,
+                    &theme,
+                    opts,
+                    template_name,
+                    template_color,
+                    template_bg_color,
+                );
+                self.ivars().windows.borrow_mut().push(window.clone());
+                window.makeKeyAndOrderFront(None);
+            }
         }
     }
 

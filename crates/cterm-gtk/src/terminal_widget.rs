@@ -1307,6 +1307,192 @@ impl TerminalWidget {
             glib::ControlFlow::Continue
         });
     }
+
+    /// Create a terminal widget backed by a mosh session.
+    ///
+    /// Similar to `from_daemon`, but uses mosh protocol instead of gRPC.
+    /// Reuses DaemonCommand channel: Write and Resize are forwarded to mosh.
+    pub fn from_mosh(session: cterm_mosh::MoshSession, config: &Config, theme: &Theme) -> Self {
+        let font_family = config.appearance.font.family.clone();
+        let font_size = config.appearance.font.size;
+        let cell_dims = calculate_cell_dimensions(&font_family, font_size);
+
+        let drawing_area = DrawingArea::new();
+        drawing_area.set_can_focus(true);
+        drawing_area.set_focusable(true);
+        drawing_area.add_css_class("terminal");
+        drawing_area.set_vexpand(true);
+        drawing_area.set_hexpand(true);
+
+        let min_width = (cell_dims.width * 80.0).ceil() as i32;
+        let min_height = (cell_dims.height * 24.0).ceil() as i32;
+        drawing_area.set_size_request(min_width, min_height);
+
+        // Reuse DaemonCommand channel for mosh
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCommand>();
+
+        let mut terminal = Terminal::new(80, 24, ScreenConfig::default());
+        let write_tx = cmd_tx.clone();
+        terminal.set_write_fn(Box::new(move |data: &[u8]| {
+            let _ = write_tx.send(DaemonCommand::Write(data.to_vec()));
+            Ok(())
+        }));
+
+        let terminal = Arc::new(Mutex::new(terminal));
+        let cell_dims = Rc::new(RefCell::new(cell_dims));
+
+        let widget = Self {
+            drawing_area: drawing_area.clone(),
+            terminal: Arc::clone(&terminal),
+            theme: theme.clone(),
+            font_family,
+            font_size: Rc::new(RefCell::new(font_size)),
+            default_font_size: font_size,
+            cell_dims,
+            background_override: Rc::new(RefCell::new(None)),
+            on_exit: Rc::new(RefCell::new(None)),
+            on_bell: Rc::new(RefCell::new(None)),
+            on_title_change: Rc::new(RefCell::new(None)),
+            preedit: Rc::new(RefCell::new(PreeditState::default())),
+            on_file_transfer: Rc::new(RefCell::new(None)),
+            daemon_cmd_tx: Some(cmd_tx.clone()),
+        };
+
+        widget.setup_drawing();
+        widget.setup_input();
+        widget.setup_drop();
+        widget.setup_mosh_reader(session, cmd_rx);
+        widget.setup_daemon_resize(cmd_tx);
+
+        widget
+    }
+
+    /// Background thread to read output from a mosh session.
+    ///
+    /// Creates a local tokio runtime, translates DaemonCommands to mosh operations,
+    /// and forwards MoshEvents as PtyMessages — same pattern as `setup_daemon_reader`.
+    fn setup_mosh_reader(
+        &self,
+        session: cterm_mosh::MoshSession,
+        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<DaemonCommand>,
+    ) {
+        let drawing_area = self.drawing_area.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<PtyMessage>();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime for mosh reader");
+
+            rt.block_on(async move {
+                let mut session = session;
+                let mut cmd_rx = cmd_rx;
+
+                loop {
+                    tokio::select! {
+                        event = session.recv() => {
+                            match event {
+                                Some(cterm_mosh::MoshEvent::Output(data)) => {
+                                    if tx.send(PtyMessage::Data(data)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(cterm_mosh::MoshEvent::Closed(err)) => {
+                                    if let Some(e) = err {
+                                        log::error!("Mosh session closed with error: {}", e);
+                                    }
+                                    let _ = tx.send(PtyMessage::Exited);
+                                    break;
+                                }
+                                None => {
+                                    let _ = tx.send(PtyMessage::Exited);
+                                    break;
+                                }
+                            }
+                        }
+
+                        cmd = cmd_rx.recv() => {
+                            match cmd {
+                                Some(DaemonCommand::Write(data)) => {
+                                    session.write(&data);
+                                }
+                                Some(DaemonCommand::Resize(cols, rows)) => {
+                                    session.resize(cols as u16, rows as u16);
+                                }
+                                Some(DaemonCommand::Destroy) | None => {
+                                    session.shutdown();
+                                    let _ = tx.send(PtyMessage::Exited);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            });
+        });
+
+        // Process messages on main thread — same glib loop as daemon reader
+        let terminal_main = Arc::clone(&self.terminal);
+        let on_exit = Rc::clone(&self.on_exit);
+        let on_bell = Rc::clone(&self.on_bell);
+        let on_title_change = Rc::clone(&self.on_title_change);
+        let on_file_transfer = Rc::clone(&self.on_file_transfer);
+        glib::timeout_add_local(Duration::from_millis(10), move || {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    PtyMessage::Data(data) => {
+                        let mut term = terminal_main.lock();
+                        let events = term.process(&data);
+
+                        for event in events {
+                            match event {
+                                TerminalEvent::Bell => {
+                                    if let Some(ref callback) = *on_bell.borrow() {
+                                        callback();
+                                    }
+                                }
+                                TerminalEvent::TitleChanged(ref title) => {
+                                    if let Some(ref callback) = *on_title_change.borrow() {
+                                        callback(title);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if term.screen().bell {
+                            term.screen_mut().bell = false;
+                            if let Some(ref callback) = *on_bell.borrow() {
+                                callback();
+                            }
+                        }
+
+                        let transfers = term.screen_mut().take_file_transfers();
+                        drop(term);
+
+                        for transfer in transfers {
+                            if let Some(ref callback) = *on_file_transfer.borrow() {
+                                callback(transfer);
+                            }
+                        }
+
+                        terminal_main.lock().screen_mut().dirty = false;
+                        drawing_area.queue_draw();
+                    }
+                    PtyMessage::Exited => {
+                        log::info!("Mosh session ended");
+                        if let Some(ref callback) = *on_exit.borrow() {
+                            callback();
+                        }
+                        return glib::ControlFlow::Break;
+                    }
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
 }
 
 /// Calculate cell dimensions using Pango font metrics
