@@ -2083,6 +2083,7 @@ fn start_daemon_create_thread(
 ///
 /// `daemon_socket` specifies which socket to connect to. For remote (SSH-tunneled)
 /// sessions this is the local forwarded socket; for local sessions it's None.
+#[allow(clippy::too_many_arguments)]
 fn start_daemon_attach_thread(
     hwnd: usize,
     tab_id: u64,

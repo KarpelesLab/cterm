@@ -313,6 +313,25 @@ impl CGRenderer {
         unsafe {
             let cg_context: *mut std::ffi::c_void = msg_send![&context, CGContext];
 
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct CGPoint {
+                x: f64,
+                y: f64,
+            }
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct CGSize {
+                width: f64,
+                height: f64,
+            }
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct CGRect {
+                origin: CGPoint,
+                size: CGSize,
+            }
+
             type CGPathRef = *const std::ffi::c_void;
 
             extern "C" {
@@ -323,13 +342,13 @@ impl CGRenderer {
                     b: f64,
                     a: f64,
                 );
-                fn CGContextFillRect(c: *mut std::ffi::c_void, rect: [f64; 4]);
+                fn CGContextFillRect(c: *mut std::ffi::c_void, rect: CGRect);
                 fn CGContextSaveGState(c: *mut std::ffi::c_void);
                 fn CGContextRestoreGState(c: *mut std::ffi::c_void);
                 fn CGContextAddPath(c: *mut std::ffi::c_void, path: CGPathRef);
                 fn CGContextClip(c: *mut std::ffi::c_void);
                 fn CGPathCreateWithRoundedRect(
-                    rect: [f64; 4],
+                    rect: CGRect,
                     corner_width: f64,
                     corner_height: f64,
                     transform: *const std::ffi::c_void,
@@ -338,7 +357,16 @@ impl CGRenderer {
             }
 
             if !cg_context.is_null() {
-                let rect = [bar_x, thumb_y, bar_width, thumb_height];
+                let rect = CGRect {
+                    origin: CGPoint {
+                        x: bar_x,
+                        y: thumb_y,
+                    },
+                    size: CGSize {
+                        width: bar_width,
+                        height: thumb_height,
+                    },
+                };
                 let radius = bar_width / 2.0;
                 let path = CGPathCreateWithRoundedRect(rect, radius, radius, std::ptr::null());
                 CGContextSaveGState(cg_context);
