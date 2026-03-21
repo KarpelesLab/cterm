@@ -2109,6 +2109,42 @@ impl TerminalView {
         self.ivars().terminal.lock().foreground_process_name()
     }
 
+    /// Query the daemon for the foreground process name (blocking).
+    ///
+    /// For daemon-backed sessions, the local Terminal has no PTY, so we ask the
+    /// daemon which owns the real PTY. Returns `None` if only the shell is
+    /// running or if the query fails.
+    pub fn daemon_foreground_process_name(&self) -> Option<String> {
+        let session_id = self.ivars().session_id.borrow().clone()?;
+        let daemon_socket = self.ivars().daemon_socket.borrow().clone();
+
+        // Run a quick blocking query on a temporary tokio runtime (separate thread
+        // to avoid nesting runtimes)
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(async {
+                    let conn = if let Some(ref path) = daemon_socket {
+                        cterm_client::DaemonConnection::connect_unix(path, false).await.ok()?
+                    } else {
+                        cterm_client::DaemonConnection::connect_local().await.ok()?
+                    };
+                    let info = conn.get_session(&session_id).await.ok()?;
+                    if info.foreground_process_name.is_empty() {
+                        None
+                    } else {
+                        Some(info.foreground_process_name)
+                    }
+                })
+            })
+            .join()
+            .ok()?
+        })
+    }
+
     /// Get the current working directory of the foreground process (if any)
     #[cfg(unix)]
     pub fn foreground_cwd(&self) -> Option<String> {

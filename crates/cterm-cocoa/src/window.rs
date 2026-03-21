@@ -87,16 +87,23 @@ define_class!(
                 return objc2::runtime::Bool::YES;
             }
 
-            // Check if there's a foreground process running
-            #[cfg(unix)]
             if let Some(terminal) = self.ivars().active_terminal.borrow().as_ref() {
+                // For local PTY sessions: check directly
+                #[cfg(unix)]
                 if terminal.has_foreground_process() {
                     let process_name = terminal
                         .foreground_process_name()
                         .unwrap_or_else(|| "a process".to_string());
-
-                    // Show confirmation dialog
                     return objc2::runtime::Bool::new(self.show_close_confirmation(&process_name));
+                }
+
+                // For daemon-backed sessions: query the daemon
+                if terminal.session_id().is_some() {
+                    if let Some(process_name) = terminal.daemon_foreground_process_name() {
+                        return objc2::runtime::Bool::new(
+                            self.show_close_confirmation(&process_name),
+                        );
+                    }
                 }
             }
             objc2::runtime::Bool::YES

@@ -221,6 +221,23 @@ impl SessionState {
         self.terminal.read().child_pid()
     }
 
+    /// Get the name of the foreground process, if one is running (not just the shell).
+    #[cfg(unix)]
+    pub fn foreground_process_name(&self) -> Option<String> {
+        let term = self.terminal.read();
+        if term.has_foreground_process() {
+            term.foreground_process_name()
+        } else {
+            None
+        }
+    }
+
+    /// Get the name of the foreground process (stub for non-Unix).
+    #[cfg(not(unix))]
+    pub fn foreground_process_name(&self) -> Option<String> {
+        None
+    }
+
     /// Write input to the terminal
     pub fn write_input(&self, data: &[u8]) -> Result<usize> {
         let mut term = self.terminal.write();

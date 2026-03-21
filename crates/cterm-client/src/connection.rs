@@ -500,6 +500,23 @@ impl DaemonConnection {
         Ok(response.into_inner().sessions)
     }
 
+    /// Get info about a specific session
+    pub async fn get_session(&self, session_id: &str) -> Result<SessionInfo> {
+        let response = self
+            .client
+            .lock()
+            .await
+            .get_session(GetSessionRequest {
+                session_id: session_id.to_string(),
+            })
+            .await?;
+
+        response
+            .into_inner()
+            .session
+            .ok_or_else(|| crate::error::ClientError::SessionNotFound(session_id.to_string()))
+    }
+
     /// Attach to an existing session by ID
     pub async fn attach_session(
         &self,

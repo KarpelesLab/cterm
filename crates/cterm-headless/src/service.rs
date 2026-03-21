@@ -119,6 +119,9 @@ impl TerminalService for TerminalServiceImpl {
                     custom_title: s.custom_title(),
                     tab_color: s.tab_color(),
                     template_name: s.template_name(),
+                    foreground_process_name: s
+                        .foreground_process_name()
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -150,6 +153,9 @@ impl TerminalService for TerminalServiceImpl {
             custom_title: session.custom_title(),
             tab_color: session.tab_color(),
             template_name: session.template_name(),
+            foreground_process_name: session
+                .foreground_process_name()
+                .unwrap_or_default(),
         };
 
         Ok(Response::new(GetSessionResponse {
@@ -535,6 +541,9 @@ impl TerminalService for TerminalServiceImpl {
             custom_title: session.custom_title(),
             tab_color: session.tab_color(),
             template_name: session.template_name(),
+            foreground_process_name: session
+                .foreground_process_name()
+                .unwrap_or_default(),
         };
 
         let initial_screen = if req.want_screen_snapshot {
