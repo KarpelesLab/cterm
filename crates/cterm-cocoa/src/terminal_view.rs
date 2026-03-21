@@ -1705,44 +1705,80 @@ impl TerminalView {
                 }
             });
 
-            // Read output stream
-            match session.stream_output().await {
-                Ok(mut stream) => {
-                    use tokio_stream::StreamExt;
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(chunk) => {
-                                let mut term = terminal.lock();
-                                let events = term.process(&chunk.data);
+            // Notify used to cancel the output stream when process exits
+            let exit_notify = Arc::new(tokio::sync::Notify::new());
 
-                                for event in events {
-                                    match event {
-                                        TerminalEvent::TitleChanged(ref title) => {
-                                            if let Ok(mut current_title) = state.title.write() {
-                                                *current_title = title.clone();
-                                            }
-                                            state.title_changed.store(true, Ordering::Relaxed);
-                                        }
-                                        TerminalEvent::Bell => {
-                                            state.bell_changed.store(true, Ordering::Relaxed);
-                                        }
-                                        _ => {}
-                                    }
+            // Subscribe to event stream (process exit, etc.)
+            let event_session = session.clone();
+            let exit_notify_event = Arc::clone(&exit_notify);
+            tokio::spawn(async move {
+                match event_session.stream_events().await {
+                    Ok(mut stream) => {
+                        use tokio_stream::StreamExt;
+                        while let Some(result) = stream.next().await {
+                            if let Ok(event) = result {
+                                if let Some(
+                                    cterm_proto::proto::terminal_event::Event::ProcessExited(_),
+                                ) = event.event
+                                {
+                                    log::info!("Daemon reports process exited");
+                                    exit_notify_event.notify_one();
+                                    break;
                                 }
-
-                                drop(term);
-                                state.needs_redraw.store(true, Ordering::Relaxed);
-                            }
-                            Err(e) => {
-                                log::error!("Daemon stream error: {}", e);
-                                break;
                             }
                         }
                     }
+                    Err(e) => {
+                        log::warn!("Failed to start daemon event stream: {}", e);
+                    }
                 }
-                Err(e) => {
-                    log::error!("Failed to start daemon output stream: {}", e);
+            });
+
+            // Read output stream, cancellable by process exit notification
+            tokio::select! {
+                _ = exit_notify.notified() => {
+                    log::info!("Process exited, stopping output stream");
                 }
+                _ = async {
+                    match session.stream_output().await {
+                        Ok(mut stream) => {
+                            use tokio_stream::StreamExt;
+                            while let Some(result) = stream.next().await {
+                                match result {
+                                    Ok(chunk) => {
+                                        let mut term = terminal.lock();
+                                        let events = term.process(&chunk.data);
+
+                                        for event in events {
+                                            match event {
+                                                TerminalEvent::TitleChanged(ref title) => {
+                                                    if let Ok(mut current_title) = state.title.write() {
+                                                        *current_title = title.clone();
+                                                    }
+                                                    state.title_changed.store(true, Ordering::Relaxed);
+                                                }
+                                                TerminalEvent::Bell => {
+                                                    state.bell_changed.store(true, Ordering::Relaxed);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+
+                                        drop(term);
+                                        state.needs_redraw.store(true, Ordering::Relaxed);
+                                    }
+                                    Err(e) => {
+                                        log::error!("Daemon stream error: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to start daemon output stream: {}", e);
+                        }
+                    }
+                } => {}
             }
 
             // Signal that the stream has ended

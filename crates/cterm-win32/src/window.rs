@@ -2355,44 +2355,76 @@ async fn run_daemon_io_loop(
         }
     });
 
-    // Stream output
-    match session.stream_output().await {
-        Ok(mut stream) => {
-            use futures::StreamExt;
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(chunk) => {
+    // Notify used to cancel the output stream when process exits
+    let exit_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    // Subscribe to event stream (process exit, etc.)
+    let event_session = session.clone();
+    let exit_notify_event = std::sync::Arc::clone(&exit_notify);
+    tokio::spawn(async move {
+        match event_session.stream_events().await {
+            Ok(mut stream) => {
+                use futures::StreamExt;
+                while let Some(result) = stream.next().await {
+                    if let Ok(event) = result {
+                        if let Some(
+                            cterm_proto::proto::terminal_event::Event::ProcessExited(_),
+                        ) = event.event
                         {
-                            let mut term = terminal.lock().unwrap();
-                            let events = term.process(&chunk.data);
-                            for event in events {
-                                match event {
-                                    TerminalEvent::TitleChanged(_) => {
-                                        post_message(hwnd, WM_APP_TITLE_CHANGED, tab_id);
-                                    }
-                                    TerminalEvent::Bell => {
-                                        post_message(hwnd, WM_APP_BELL, tab_id);
-                                    }
-                                    TerminalEvent::ProcessExited(_) => {
-                                        post_tab_exit(hwnd, tab_id);
-                                        return;
-                                    }
-                                    _ => {}
-                                }
-                            }
+                            log::info!("Daemon reports process exited");
+                            exit_notify_event.notify_one();
+                            break;
                         }
-                        post_message(hwnd, WM_APP_PTY_DATA, tab_id);
-                    }
-                    Err(e) => {
-                        log::error!("Daemon output stream error: {}", e);
-                        break;
                     }
                 }
             }
+            Err(e) => {
+                log::warn!("Failed to start daemon event stream: {}", e);
+            }
         }
-        Err(e) => {
-            log::error!("Failed to start daemon output stream: {}", e);
+    });
+
+    // Read output stream, cancellable by process exit notification
+    tokio::select! {
+        _ = exit_notify.notified() => {
+            log::info!("Process exited, stopping daemon output stream");
         }
+        _ = async {
+            match session.stream_output().await {
+                Ok(mut stream) => {
+                    use futures::StreamExt;
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(chunk) => {
+                                {
+                                    let mut term = terminal.lock().unwrap();
+                                    let events = term.process(&chunk.data);
+                                    for event in events {
+                                        match event {
+                                            TerminalEvent::TitleChanged(_) => {
+                                                post_message(hwnd, WM_APP_TITLE_CHANGED, tab_id);
+                                            }
+                                            TerminalEvent::Bell => {
+                                                post_message(hwnd, WM_APP_BELL, tab_id);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                post_message(hwnd, WM_APP_PTY_DATA, tab_id);
+                            }
+                            Err(e) => {
+                                log::error!("Daemon output stream error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to start daemon output stream: {}", e);
+                }
+            }
+        } => {}
     }
 
     post_tab_exit(hwnd, tab_id);

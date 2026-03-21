@@ -479,6 +479,7 @@ dependencies = [
  "cterm-client",
  "cterm-core",
  "cterm-mosh",
+ "cterm-proto",
  "cterm-ui",
  "dispatch2",
  "env_logger",
