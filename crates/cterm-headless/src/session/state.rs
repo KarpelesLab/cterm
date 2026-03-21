@@ -221,15 +221,15 @@ impl SessionState {
         self.terminal.read().child_pid()
     }
 
-    /// Get the name of the foreground process, if one is running (not just the shell).
+    /// Check if a non-shell foreground process is running (PID-based).
+    pub fn has_foreground_process(&self) -> bool {
+        self.terminal.read().has_foreground_process()
+    }
+
+    /// Get the name of the foreground process (for display only).
     #[cfg(unix)]
     pub fn foreground_process_name(&self) -> Option<String> {
-        let term = self.terminal.read();
-        if term.has_foreground_process() {
-            term.foreground_process_name()
-        } else {
-            None
-        }
+        self.terminal.read().foreground_process_name()
     }
 
     /// Get the name of the foreground process (stub for non-Unix).

@@ -128,8 +128,10 @@ message SessionInfo {
   string tab_color = 9;
   // Template name used to create this session
   string template_name = 10;
-  // Name of the foreground process (empty if only the shell is running)
-  string foreground_process_name = 11;
+  // Whether a non-shell foreground process is running in this session
+  bool has_foreground_process = 11;
+  // Name of the foreground process (only meaningful when has_foreground_process is true)
+  string foreground_process_name = 12;
 }
 
 message GetSessionRequest {

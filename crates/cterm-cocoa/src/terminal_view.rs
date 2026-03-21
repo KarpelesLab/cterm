@@ -2112,8 +2112,9 @@ impl TerminalView {
     /// Query the daemon for the foreground process name (blocking).
     ///
     /// For daemon-backed sessions, the local Terminal has no PTY, so we ask the
-    /// daemon which owns the real PTY. Returns `None` if only the shell is
-    /// running or if the query fails.
+    /// daemon which owns the real PTY. The daemon checks whether the foreground
+    /// process group PID differs from the shell PID. Returns `None` if only the
+    /// shell is running or if the query fails.
     pub fn daemon_foreground_process_name(&self) -> Option<String> {
         let session_id = self.ivars().session_id.borrow().clone()?;
         let daemon_socket = self.ivars().daemon_socket.borrow().clone();
@@ -2133,10 +2134,14 @@ impl TerminalView {
                         cterm_client::DaemonConnection::connect_local().await.ok()?
                     };
                     let info = conn.get_session(&session_id).await.ok()?;
-                    if info.foreground_process_name.is_empty() {
-                        None
+                    if info.has_foreground_process {
+                        Some(if info.foreground_process_name.is_empty() {
+                            "a process".to_string()
+                        } else {
+                            info.foreground_process_name
+                        })
                     } else {
-                        Some(info.foreground_process_name)
+                        None
                     }
                 })
             })
