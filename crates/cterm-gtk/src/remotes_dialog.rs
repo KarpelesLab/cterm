@@ -236,23 +236,23 @@ where
     // Combo changed → load selected
     {
         let config = Rc::clone(&config);
-        let fields = Rc::clone(&fields);
+        let fields_cb = Rc::clone(&fields);
         fields
             .remote_combo
-            .connect_changed(move |_| fields.load(&config));
+            .connect_changed(move |_| fields_cb.load(&config));
     }
 
     // Field changes → save and refresh combo
     {
         let config = Rc::clone(&config);
-        let fields = Rc::clone(&fields);
+        let fields_up = Rc::clone(&fields);
         let update = move || {
-            fields.save(&config);
-            let idx = fields.remote_combo.active();
+            fields_up.save(&config);
+            let idx = fields_up.remote_combo.active();
             let cfg = config.borrow();
-            populate_combo(&fields.remote_combo, &cfg.remotes);
+            populate_combo(&fields_up.remote_combo, &cfg.remotes);
             if let Some(idx) = idx {
-                fields.remote_combo.set_active(Some(idx));
+                fields_up.remote_combo.set_active(Some(idx));
             }
         };
         let update = Rc::new(update);
