@@ -2367,9 +2367,8 @@ async fn run_daemon_io_loop(
                 use futures::StreamExt;
                 while let Some(result) = stream.next().await {
                     if let Ok(event) = result {
-                        if let Some(
-                            cterm_proto::proto::terminal_event::Event::ProcessExited(_),
-                        ) = event.event
+                        if let Some(cterm_proto::proto::terminal_event::Event::ProcessExited(_)) =
+                            event.event
                         {
                             log::info!("Daemon reports process exited");
                             exit_notify_event.notify_one();

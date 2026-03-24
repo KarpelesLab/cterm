@@ -120,9 +120,7 @@ impl TerminalService for TerminalServiceImpl {
                     tab_color: s.tab_color(),
                     template_name: s.template_name(),
                     has_foreground_process: s.has_foreground_process(),
-                    foreground_process_name: s
-                        .foreground_process_name()
-                        .unwrap_or_default(),
+                    foreground_process_name: s.foreground_process_name().unwrap_or_default(),
                 }
             })
             .collect();
@@ -155,9 +153,7 @@ impl TerminalService for TerminalServiceImpl {
             tab_color: session.tab_color(),
             template_name: session.template_name(),
             has_foreground_process: session.has_foreground_process(),
-            foreground_process_name: session
-                .foreground_process_name()
-                .unwrap_or_default(),
+            foreground_process_name: session.foreground_process_name().unwrap_or_default(),
         };
 
         Ok(Response::new(GetSessionResponse {
@@ -544,9 +540,7 @@ impl TerminalService for TerminalServiceImpl {
             tab_color: session.tab_color(),
             template_name: session.template_name(),
             has_foreground_process: session.has_foreground_process(),
-            foreground_process_name: session
-                .foreground_process_name()
-                .unwrap_or_default(),
+            foreground_process_name: session.foreground_process_name().unwrap_or_default(),
         };
 
         let initial_screen = if req.want_screen_snapshot {

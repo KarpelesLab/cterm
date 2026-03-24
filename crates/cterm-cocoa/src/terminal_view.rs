@@ -2129,7 +2129,9 @@ impl TerminalView {
                     .ok()?;
                 rt.block_on(async {
                     let conn = if let Some(ref path) = daemon_socket {
-                        cterm_client::DaemonConnection::connect_unix(path, false).await.ok()?
+                        cterm_client::DaemonConnection::connect_unix(path, false)
+                            .await
+                            .ok()?
                     } else {
                         cterm_client::DaemonConnection::connect_local().await.ok()?
                     };

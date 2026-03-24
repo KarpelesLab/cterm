@@ -222,8 +222,15 @@ impl SessionState {
     }
 
     /// Check if a non-shell foreground process is running (PID-based).
+    #[cfg(unix)]
     pub fn has_foreground_process(&self) -> bool {
         self.terminal.read().has_foreground_process()
+    }
+
+    /// Check if a non-shell foreground process is running (stub for non-Unix).
+    #[cfg(not(unix))]
+    pub fn has_foreground_process(&self) -> bool {
+        false
     }
 
     /// Get the name of the foreground process (for display only).
