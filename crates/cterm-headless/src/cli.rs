@@ -71,6 +71,44 @@ impl Cli {
     }
 }
 
+/// Get the cterm config directory path.
+pub fn config_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut path = PathBuf::from(home);
+            path.push("Library/Application Support/com.cterm.terminal");
+            std::fs::create_dir_all(&path).ok();
+            return path;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(config_dir) = std::env::var("XDG_CONFIG_HOME") {
+            let path = PathBuf::from(config_dir).join("cterm");
+            std::fs::create_dir_all(&path).ok();
+            return path;
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let path = PathBuf::from(home).join(".config/cterm");
+            std::fs::create_dir_all(&path).ok();
+            return path;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let path = PathBuf::from(appdata).join("cterm");
+            std::fs::create_dir_all(&path).ok();
+            return path;
+        }
+    }
+
+    PathBuf::from("/tmp")
+}
+
 /// Get the default Unix socket path for ctermd.
 ///
 /// This matches the path used by cterm-client for auto-discovery.

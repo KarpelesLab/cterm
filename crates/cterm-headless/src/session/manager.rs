@@ -11,6 +11,8 @@ use std::sync::Arc;
 /// Thread-safe manager for terminal sessions
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<SessionState>>>,
+    /// Human-readable name → session ID index (for latch named sessions)
+    named_sessions: RwLock<HashMap<String, String>>,
     /// Default scrollback lines for new sessions
     scrollback_lines: usize,
     /// Whether at least one session has ever been created
@@ -27,6 +29,7 @@ impl SessionManager {
     pub fn with_scrollback(scrollback_lines: usize) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            named_sessions: RwLock::new(HashMap::new()),
             scrollback_lines,
             had_sessions: AtomicBool::new(false),
         }
@@ -97,6 +100,9 @@ impl SessionManager {
             .remove(id)
             .ok_or_else(|| HeadlessError::SessionNotFound(id.to_string()))?;
 
+        // Clean up named session mapping
+        self.named_sessions.write().retain(|_, v| v != id);
+
         // Send signal to terminate the process
         #[cfg(unix)]
         let sig = signal.unwrap_or(libc::SIGHUP);
@@ -158,6 +164,55 @@ impl SessionManager {
         Ok(state)
     }
 
+    /// Get or create a session by human-readable name.
+    ///
+    /// If a running session with this name exists, returns it.
+    /// Otherwise creates a new session and registers the name mapping.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_or_create_named_session(
+        &self,
+        name: &str,
+        cols: usize,
+        rows: usize,
+        shell: Option<String>,
+        env: Vec<(String, String)>,
+        term: Option<String>,
+    ) -> Result<Arc<SessionState>> {
+        // Check for existing named session
+        {
+            let named = self.named_sessions.read();
+            if let Some(id) = named.get(name) {
+                let sessions = self.sessions.read();
+                if let Some(session) = sessions.get(id) {
+                    if session.is_running() {
+                        log::info!("Attaching to existing session '{}' ({})", name, id);
+                        return Ok(Arc::clone(session));
+                    }
+                }
+            }
+        }
+
+        // Create new session
+        let session = self.create_session(cols, rows, shell, Vec::new(), None, env, term)?;
+
+        // Register the name
+        session.set_session_name(Some(name.to_string()));
+        self.named_sessions
+            .write()
+            .insert(name.to_string(), session.id.clone());
+
+        log::info!("Created named session '{}' ({})", name, session.id);
+        Ok(session)
+    }
+
+    /// Look up a session by human-readable name.
+    pub fn get_session_by_name(&self, name: &str) -> Option<Arc<SessionState>> {
+        let named = self.named_sessions.read();
+        let id = named.get(name)?;
+        let sessions = self.sessions.read();
+        sessions.get(id).cloned()
+    }
+
     /// Get the number of active sessions
     pub fn session_count(&self) -> usize {
         self.sessions.read().len()
@@ -178,9 +233,14 @@ impl SessionManager {
             .collect();
 
         let count = dead_ids.len();
-        for id in dead_ids {
-            sessions.remove(&id);
-            log::info!("Cleaned up dead session {}", id);
+        if count > 0 {
+            let mut named = self.named_sessions.write();
+            for id in &dead_ids {
+                sessions.remove(id);
+                // Clean up named session mapping
+                named.retain(|_, v| v != id);
+                log::info!("Cleaned up dead session {}", id);
+            }
         }
         count
     }

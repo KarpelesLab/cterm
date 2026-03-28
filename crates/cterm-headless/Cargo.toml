@@ -8,6 +8,23 @@ description = "Headless terminal daemon with gRPC API for cterm"
 name = "ctermd"
 path = "src/main.rs"
 
+[features]
+default = []
+latch = [
+    "russh",
+    "ssh-key",
+    "rand",
+    "cterm-mosh",
+    "cterm-app",
+    "tokio-tungstenite",
+    "rcgen",
+    "rust-embed",
+    "quinn",
+    "rustls",
+    "rustls-pemfile",
+    "toml",
+]
+
 [dependencies]
 cterm-core.workspace = true
 cterm-proto.workspace = true
@@ -25,6 +42,20 @@ clap.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# Latch optional dependencies
+russh = { workspace = true, optional = true }
+ssh-key = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+cterm-mosh = { workspace = true, optional = true }
+cterm-app = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+rust-embed = { workspace = true, optional = true }
+quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

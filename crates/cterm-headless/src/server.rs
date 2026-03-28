@@ -121,6 +121,24 @@ pub async fn run_server(
         log::warn!("Relaunch state is only supported on Unix, ignoring");
     }
 
+    // Start latch server if enabled
+    #[cfg(feature = "latch")]
+    let _latch_handle = {
+        let latch_config = load_latch_config();
+        if latch_config.enabled {
+            Some(
+                crate::latch::start_latch(latch_config, session_manager.clone())
+                    .await
+                    .map_err(|e| {
+                        log::error!("Failed to start latch server: {}", e);
+                        e
+                    })?,
+            )
+        } else {
+            None
+        }
+    };
+
     let shutdown_notify = Arc::new(Notify::new());
     let mut service =
         TerminalServiceImpl::new(session_manager.clone(), Arc::clone(&shutdown_notify));
@@ -299,6 +317,22 @@ fn is_socket_stale(socket_path: &Path) -> bool {
 
     // No PID file or process is gone — try to connect to confirm
     std::os::unix::net::UnixStream::connect(socket_path).is_err()
+}
+
+/// Load latch configuration from the config file.
+#[cfg(feature = "latch")]
+fn load_latch_config() -> cterm_app::config::LatchConfig {
+    let config_path = crate::cli::config_dir().join("config.toml");
+    if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => match toml::from_str::<cterm_app::config::Config>(&content) {
+                Ok(config) => return config.latch,
+                Err(e) => log::warn!("Failed to parse config.toml: {}", e),
+            },
+            Err(e) => log::warn!("Failed to read config.toml: {}", e),
+        }
+    }
+    cterm_app::config::LatchConfig::default()
 }
 
 #[cfg(test)]

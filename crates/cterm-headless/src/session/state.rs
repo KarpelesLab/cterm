@@ -44,6 +44,9 @@ pub struct SessionState {
 
     /// Template name used to create this session
     template_name: RwLock<String>,
+
+    /// Human-readable session name (for latch named sessions)
+    session_name: RwLock<Option<String>>,
 }
 
 impl SessionState {
@@ -89,6 +92,7 @@ impl SessionState {
             custom_title: RwLock::new(String::new()),
             tab_color: RwLock::new(String::new()),
             template_name: RwLock::new(String::new()),
+            session_name: RwLock::new(None),
         });
 
         Ok(state)
@@ -128,6 +132,7 @@ impl SessionState {
             custom_title: RwLock::new(custom_title),
             tab_color: RwLock::new(tab_color),
             template_name: RwLock::new(template_name),
+            session_name: RwLock::new(None),
         });
 
         Ok(state)
@@ -209,6 +214,16 @@ impl SessionState {
     /// Set the template name
     pub fn set_template_name(&self, name: String) {
         *self.template_name.write() = name;
+    }
+
+    /// Get the human-readable session name (for latch)
+    pub fn session_name(&self) -> Option<String> {
+        self.session_name.read().clone()
+    }
+
+    /// Set the human-readable session name
+    pub fn set_session_name(&self, name: Option<String>) {
+        *self.session_name.write() = name;
     }
 
     /// Check if the terminal is still running

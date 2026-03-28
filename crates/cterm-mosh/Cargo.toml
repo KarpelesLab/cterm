@@ -15,6 +15,7 @@ flate2 = { workspace = true }
 base64 = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+getrandom = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

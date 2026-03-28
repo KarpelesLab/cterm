@@ -67,8 +67,8 @@ impl ShortcutManager {
             Action::NextTab,
         );
         self.bind(Shortcut::ctrl_shift(KeyCode::Tab), Action::PrevTab);
-        self.bind(Shortcut::ctrl(KeyCode::PageDown), Action::NextTab);
-        self.bind(Shortcut::ctrl(KeyCode::PageUp), Action::PrevTab);
+        self.bind_extra(Shortcut::ctrl(KeyCode::PageDown), Action::NextTab);
+        self.bind_extra(Shortcut::ctrl(KeyCode::PageUp), Action::PrevTab);
 
         // Tab number shortcuts (Ctrl+1-9)
         self.bind(Shortcut::ctrl(KeyCode::Key1), Action::Tab(1));
@@ -124,7 +124,7 @@ impl ShortcutManager {
         self.bind(Shortcut::ctrl_shift(KeyCode::G), Action::QuickOpenTemplate);
     }
 
-    /// Bind a shortcut to an action
+    /// Bind a shortcut to an action (replaces any previous shortcut for this action)
     pub fn bind(&mut self, shortcut: Shortcut, action: Action) {
         // Remove old binding for this action
         if let Some(old_shortcut) = self.actions.remove(&action) {
@@ -138,6 +138,17 @@ impl ShortcutManager {
 
         self.shortcuts.insert(shortcut.clone(), action.clone());
         self.actions.insert(action, shortcut);
+    }
+
+    /// Bind an additional shortcut to an action without removing existing bindings
+    pub fn bind_extra(&mut self, shortcut: Shortcut, action: Action) {
+        // Remove old action for this shortcut (if any other action was using it)
+        if let Some(old_action) = self.shortcuts.remove(&shortcut) {
+            self.actions.remove(&old_action);
+        }
+
+        self.shortcuts.insert(shortcut, action);
+        // Don't update actions map — keep the primary shortcut for display
     }
 
     /// Bind a shortcut from a string description
