@@ -434,6 +434,7 @@ unsafe fn handle_remotes_command(hwnd: HWND, id: i32, code: u16) {
                         relay_username: None,
                         relay_device: None,
                         session_name: None,
+                        ssh_compression: true,
                     });
                     state.current_index = Some(state.remotes.len() - 1);
                 }
@@ -526,6 +527,7 @@ mod tests {
                 relay_username: None,
                 relay_device: None,
                 session_name: None,
+                ssh_compression: true,
             }],
             current_index: Some(0),
             updating: false,
