@@ -23,6 +23,11 @@ latch = [
     "rustls",
     "rustls-pemfile",
     "toml",
+    "futures-util",
+    "tokio-rustls",
+    "tokio-util",
+    "hostname",
+    "webpki-roots",
 ]
 
 [dependencies]
@@ -56,6 +61,11 @@ quinn = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
+hostname = { version = "0.4", optional = true }
+webpki-roots = { version = "0.26", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

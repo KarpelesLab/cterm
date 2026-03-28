@@ -10,8 +10,10 @@ pub mod auth;
 pub mod bridge;
 pub mod handler;
 pub mod host_key;
+pub mod relay;
 pub mod renderer;
 pub mod ssh_server;
+pub mod web_server;
 
 use crate::session::SessionManager;
 use cterm_app::config::LatchConfig;
@@ -48,7 +50,28 @@ pub async fn start_latch(
     .await?;
     handles.push(ssh_handle);
 
-    log::info!("Latch server started (SSH on {})", config.ssh_listen);
+    log::info!("Latch SSH server started on {}", config.ssh_listen);
+
+    // Start web terminal server if enabled
+    if config.web_enabled {
+        let web_handle =
+            web_server::start_web_server(&config, authorized_keys.clone(), session_manager.clone())
+                .await?;
+        handles.push(web_handle);
+        log::info!(
+            "Latch web terminal started on https://{}",
+            config.web_listen
+        );
+    }
+
+    // Start relay client if enabled
+    if config.relay_enabled {
+        let relay_handle =
+            relay::start_relay_client(&config, authorized_keys.clone(), session_manager.clone())
+                .await?;
+        handles.push(relay_handle);
+        log::info!("Latch relay client connecting to {}", config.relay_host);
+    }
 
     Ok(LatchHandle { _handles: handles })
 }

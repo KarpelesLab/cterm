@@ -345,6 +345,19 @@ struct PreferencesWidgets {
     git_branch_label: Label,
     git_last_sync_label: Label,
     git_changes_label: Label,
+    // Latch
+    latch_enabled_switch: Switch,
+    latch_ssh_listen_entry: Entry,
+    latch_mosh_switch: Switch,
+    latch_mosh_port_start_spin: SpinButton,
+    latch_mosh_port_end_spin: SpinButton,
+    latch_web_switch: Switch,
+    latch_web_listen_entry: Entry,
+    latch_relay_switch: Switch,
+    latch_relay_host_entry: Entry,
+    latch_relay_username_entry: Entry,
+    latch_relay_device_entry: Entry,
+    latch_max_sessions_spin: SpinButton,
     on_save_callback: SaveCallback,
     base_config: Rc<RefCell<Config>>,
 }
@@ -509,6 +522,30 @@ impl PreferencesWidgets {
         };
         config.tabs.show_close_button = self.close_switch.is_active();
 
+        // Latch
+        config.latch.enabled = self.latch_enabled_switch.is_active();
+        config.latch.ssh_listen = self.latch_ssh_listen_entry.text().to_string();
+        config.latch.mosh_enabled = self.latch_mosh_switch.is_active();
+        config.latch.mosh_port_start = self.latch_mosh_port_start_spin.value() as u16;
+        config.latch.mosh_port_end = self.latch_mosh_port_end_spin.value() as u16;
+        config.latch.web_enabled = self.latch_web_switch.is_active();
+        config.latch.web_listen = self.latch_web_listen_entry.text().to_string();
+        config.latch.relay_enabled = self.latch_relay_switch.is_active();
+        config.latch.relay_host = self.latch_relay_host_entry.text().to_string();
+        let relay_user = self.latch_relay_username_entry.text().to_string();
+        config.latch.relay_username = if relay_user.is_empty() {
+            None
+        } else {
+            Some(relay_user)
+        };
+        let relay_dev = self.latch_relay_device_entry.text().to_string();
+        config.latch.relay_device = if relay_dev.is_empty() {
+            None
+        } else {
+            Some(relay_dev)
+        };
+        config.latch.max_sessions = self.latch_max_sessions_spin.value() as usize;
+
         // Shortcuts
         for (name, entry) in &self.shortcut_entries {
             let value = entry.text().to_string();
@@ -604,6 +641,24 @@ pub fn show_preferences_dialog(
     ) = create_git_sync_preferences();
     notebook.append_page(&git_sync_page, Some(&Label::new(Some("Git Sync"))));
 
+    // Latch tab
+    let (
+        latch_page,
+        latch_enabled_switch,
+        latch_ssh_listen_entry,
+        latch_mosh_switch,
+        latch_mosh_port_start_spin,
+        latch_mosh_port_end_spin,
+        latch_web_switch,
+        latch_web_listen_entry,
+        latch_relay_switch,
+        latch_relay_host_entry,
+        latch_relay_username_entry,
+        latch_relay_device_entry,
+        latch_max_sessions_spin,
+    ) = create_latch_preferences(config);
+    notebook.append_page(&latch_page, Some(&Label::new(Some("Latch"))));
+
     let on_save_callback: SaveCallback = Rc::new(RefCell::new(Some(Box::new(on_save))));
     let base_config = Rc::new(RefCell::new(config.clone()));
 
@@ -629,6 +684,18 @@ pub fn show_preferences_dialog(
         git_branch_label,
         git_last_sync_label,
         git_changes_label,
+        latch_enabled_switch,
+        latch_ssh_listen_entry,
+        latch_mosh_switch,
+        latch_mosh_port_start_spin,
+        latch_mosh_port_end_spin,
+        latch_web_switch,
+        latch_web_listen_entry,
+        latch_relay_switch,
+        latch_relay_host_entry,
+        latch_relay_username_entry,
+        latch_relay_device_entry,
+        latch_max_sessions_spin,
         on_save_callback: Rc::clone(&on_save_callback),
         base_config: Rc::clone(&base_config),
     });
@@ -1308,6 +1375,184 @@ fn create_git_sync_preferences() -> (GtkBox, Entry, Label, Label, Label, Label, 
         git_last_sync_label,
         git_changes_label,
         sync_button,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+fn create_latch_preferences(
+    config: &Config,
+) -> (
+    GtkBox,
+    Switch,
+    Entry,
+    Switch,
+    SpinButton,
+    SpinButton,
+    Switch,
+    Entry,
+    Switch,
+    Entry,
+    Entry,
+    Entry,
+    SpinButton,
+) {
+    let page = GtkBox::new(Orientation::Vertical, 12);
+    page.set_margin_top(12);
+    page.set_margin_bottom(12);
+    page.set_margin_start(12);
+    page.set_margin_end(12);
+
+    let grid = Grid::new();
+    grid.set_row_spacing(8);
+    grid.set_column_spacing(12);
+    let mut row = 0;
+
+    // Enable switch
+    let enable_label = Label::new(Some("Enable remote access:"));
+    enable_label.set_halign(Align::End);
+    grid.attach(&enable_label, 0, row, 1, 1);
+    let enabled_switch = Switch::new();
+    enabled_switch.set_active(config.latch.enabled);
+    enabled_switch.set_halign(Align::Start);
+    grid.attach(&enabled_switch, 1, row, 1, 1);
+    row += 1;
+
+    // SSH section header
+    let ssh_header = Label::new(Some("SSH Server"));
+    ssh_header.set_markup("<b>SSH Server</b>");
+    ssh_header.set_halign(Align::Start);
+    grid.attach(&ssh_header, 0, row, 2, 1);
+    row += 1;
+
+    let ssh_label = Label::new(Some("Listen address:"));
+    ssh_label.set_halign(Align::End);
+    grid.attach(&ssh_label, 0, row, 1, 1);
+    let ssh_entry = Entry::new();
+    ssh_entry.set_text(&config.latch.ssh_listen);
+    ssh_entry.set_hexpand(true);
+    grid.attach(&ssh_entry, 1, row, 1, 1);
+    row += 1;
+
+    // Mosh section
+    let mosh_header = Label::new(None);
+    mosh_header.set_markup("<b>Mosh</b>");
+    mosh_header.set_halign(Align::Start);
+    grid.attach(&mosh_header, 0, row, 2, 1);
+    row += 1;
+
+    let mosh_label = Label::new(Some("Enable mosh:"));
+    mosh_label.set_halign(Align::End);
+    grid.attach(&mosh_label, 0, row, 1, 1);
+    let mosh_switch = Switch::new();
+    mosh_switch.set_active(config.latch.mosh_enabled);
+    mosh_switch.set_halign(Align::Start);
+    grid.attach(&mosh_switch, 1, row, 1, 1);
+    row += 1;
+
+    let port_label = Label::new(Some("Port range:"));
+    port_label.set_halign(Align::End);
+    grid.attach(&port_label, 0, row, 1, 1);
+    let port_box = GtkBox::new(Orientation::Horizontal, 4);
+    let port_start = SpinButton::with_range(1024.0, 65535.0, 1.0);
+    port_start.set_value(config.latch.mosh_port_start as f64);
+    let port_sep = Label::new(Some(" - "));
+    let port_end = SpinButton::with_range(1024.0, 65535.0, 1.0);
+    port_end.set_value(config.latch.mosh_port_end as f64);
+    port_box.append(&port_start);
+    port_box.append(&port_sep);
+    port_box.append(&port_end);
+    grid.attach(&port_box, 1, row, 1, 1);
+    row += 1;
+
+    // Web section
+    let web_header = Label::new(None);
+    web_header.set_markup("<b>Web Terminal</b>");
+    web_header.set_halign(Align::Start);
+    grid.attach(&web_header, 0, row, 2, 1);
+    row += 1;
+
+    let web_label = Label::new(Some("Enable web terminal:"));
+    web_label.set_halign(Align::End);
+    grid.attach(&web_label, 0, row, 1, 1);
+    let web_switch = Switch::new();
+    web_switch.set_active(config.latch.web_enabled);
+    web_switch.set_halign(Align::Start);
+    grid.attach(&web_switch, 1, row, 1, 1);
+    row += 1;
+
+    let web_addr_label = Label::new(Some("Listen address:"));
+    web_addr_label.set_halign(Align::End);
+    grid.attach(&web_addr_label, 0, row, 1, 1);
+    let web_entry = Entry::new();
+    web_entry.set_text(&config.latch.web_listen);
+    web_entry.set_hexpand(true);
+    grid.attach(&web_entry, 1, row, 1, 1);
+    row += 1;
+
+    // Relay section
+    let relay_header = Label::new(None);
+    relay_header.set_markup("<b>Relay (NAT Traversal)</b>");
+    relay_header.set_halign(Align::Start);
+    grid.attach(&relay_header, 0, row, 2, 1);
+    row += 1;
+
+    let relay_label = Label::new(Some("Enable relay:"));
+    relay_label.set_halign(Align::End);
+    grid.attach(&relay_label, 0, row, 1, 1);
+    let relay_switch = Switch::new();
+    relay_switch.set_active(config.latch.relay_enabled);
+    relay_switch.set_halign(Align::Start);
+    grid.attach(&relay_switch, 1, row, 1, 1);
+    row += 1;
+
+    let relay_host_label = Label::new(Some("Relay host:"));
+    relay_host_label.set_halign(Align::End);
+    grid.attach(&relay_host_label, 0, row, 1, 1);
+    let relay_host_entry = Entry::new();
+    relay_host_entry.set_text(&config.latch.relay_host);
+    grid.attach(&relay_host_entry, 1, row, 1, 1);
+    row += 1;
+
+    let relay_user_label = Label::new(Some("Username:"));
+    relay_user_label.set_halign(Align::End);
+    grid.attach(&relay_user_label, 0, row, 1, 1);
+    let relay_user_entry = Entry::new();
+    relay_user_entry.set_text(config.latch.relay_username.as_deref().unwrap_or(""));
+    grid.attach(&relay_user_entry, 1, row, 1, 1);
+    row += 1;
+
+    let relay_dev_label = Label::new(Some("Device name:"));
+    relay_dev_label.set_halign(Align::End);
+    grid.attach(&relay_dev_label, 0, row, 1, 1);
+    let relay_dev_entry = Entry::new();
+    relay_dev_entry.set_text(config.latch.relay_device.as_deref().unwrap_or(""));
+    grid.attach(&relay_dev_entry, 1, row, 1, 1);
+    row += 1;
+
+    // Max sessions
+    let max_label = Label::new(Some("Max sessions:"));
+    max_label.set_halign(Align::End);
+    grid.attach(&max_label, 0, row, 1, 1);
+    let max_spin = SpinButton::with_range(1.0, 256.0, 1.0);
+    max_spin.set_value(config.latch.max_sessions as f64);
+    grid.attach(&max_spin, 1, row, 1, 1);
+
+    page.append(&grid);
+
+    (
+        page,
+        enabled_switch,
+        ssh_entry,
+        mosh_switch,
+        port_start,
+        port_end,
+        web_switch,
+        web_entry,
+        relay_switch,
+        relay_host_entry,
+        relay_user_entry,
+        relay_dev_entry,
+        max_spin,
     )
 }
 

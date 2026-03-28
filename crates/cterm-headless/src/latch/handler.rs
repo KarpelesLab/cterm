@@ -72,6 +72,141 @@ impl SshSessionHandler {
             let _ = handle.close(channel_id).await;
         })
     }
+
+    /// Handle `mosh-server new` exec request.
+    ///
+    /// Generates a key, allocates a UDP port, creates a named session,
+    /// starts a MoshServerSession, writes "MOSH CONNECT <port> <key>"
+    /// to the SSH channel, then closes it.
+    async fn handle_mosh_exec(
+        &mut self,
+        channel: ChannelId,
+        command: &str,
+        session: &mut Session,
+    ) -> Result<(), anyhow::Error> {
+        // Parse environment variables from -l flags
+        let mut env = Vec::new();
+        let mut term = None;
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        let mut i = 0;
+        while i < parts.len() {
+            if parts[i] == "-l" {
+                if let Some(val) = parts.get(i + 1) {
+                    if let Some((k, v)) = val.split_once('=') {
+                        if k == "TERM" {
+                            term = Some(v.to_string());
+                        } else {
+                            env.push((k.to_string(), v.to_string()));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        let session_name = self
+            .username
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        let (cols, rows) = self.pending_pty.unwrap_or((80, 24));
+
+        // Generate mosh key and find a free port
+        let key = cterm_mosh::server_session::generate_mosh_key();
+        let port = cterm_mosh::server_session::find_free_port(
+            self.config.mosh_port_start,
+            self.config.mosh_port_end,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to allocate mosh port: {}", e))?;
+
+        // Create or attach to named session
+        let terminal_session = self.session_manager.get_or_create_named_session(
+            &session_name,
+            cols as usize,
+            rows as usize,
+            None,
+            env,
+            term,
+        )?;
+
+        // Start mosh server session
+        let mosh_config = cterm_mosh::server_session::MoshServerConfig {
+            key: key.clone(),
+            port,
+            bind_addr: "0.0.0.0".to_string(),
+        };
+
+        let mosh_session = cterm_mosh::server_session::MoshServerSession::start(mosh_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start mosh server: {}", e))?;
+
+        // Spawn a task to bridge mosh events to the terminal session
+        let bridge_session = terminal_session.clone();
+        let coalesce_ms = self.config.render_coalesce_ms;
+        let mosh_cmd_tx = mosh_session.cmd_tx.clone();
+        let mut mosh_event_rx = mosh_session.event_rx;
+
+        tokio::spawn(async move {
+            // Start the render bridge for mosh output
+            let (cmd_tx, mut output_rx) = bridge::spawn_bridge(bridge_session.clone(), coalesce_ms);
+
+            // Forward rendered output to mosh server
+            let mosh_out = mosh_cmd_tx.clone();
+            tokio::spawn(async move {
+                while let Some(data) = output_rx.recv().await {
+                    if mosh_out
+                        .send(cterm_mosh::server_session::MoshServerCommand::Output(data))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+
+            // Forward mosh client events to the bridge
+            while let Some(event) = mosh_event_rx.recv().await {
+                match event {
+                    cterm_mosh::server_session::MoshServerEvent::Input(data) => {
+                        if cmd_tx.send(BridgeCommand::Input(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    cterm_mosh::server_session::MoshServerEvent::Resize(cols, rows) => {
+                        if cmd_tx
+                            .send(BridgeCommand::Resize(cols as u32, rows as u32))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    cterm_mosh::server_session::MoshServerEvent::Closed(_) => {
+                        break;
+                    }
+                }
+            }
+            let _ = cmd_tx.send(BridgeCommand::Disconnect).await;
+        });
+
+        // Write MOSH CONNECT response to SSH channel
+        let connect_msg = format!("\r\nMOSH CONNECT {} {}\r\n", port, key);
+        let handle = session.handle();
+        session.channel_success(channel)?;
+        let _ = handle.data(channel, connect_msg.into_bytes()).await;
+        let _ = handle.eof(channel).await;
+        let _ = handle.close(channel).await;
+
+        log::info!(
+            "Mosh server started for session '{}' on port {}",
+            session_name,
+            port
+        );
+        Ok(())
+    }
 }
 
 impl Drop for SshSessionHandler {
@@ -191,13 +326,10 @@ impl russh::server::Handler for SshSessionHandler {
 
         // Check if this is a mosh-server request
         if command.contains("mosh-server") {
-            // TODO: Phase 3 — mosh server handoff
-            log::warn!("Mosh server exec not yet implemented");
-            session.channel_failure(channel)?;
-            return Ok(());
+            return self.handle_mosh_exec(channel, &command, session).await;
         }
 
-        // For now, reject other exec requests
+        // Reject other exec requests
         session.channel_failure(channel)?;
         Ok(())
     }
