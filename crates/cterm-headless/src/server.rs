@@ -220,7 +220,9 @@ async fn run_tcp_server(
     };
 
     Server::builder()
-        .add_service(TerminalServiceServer::new(service))
+        .add_service(
+            TerminalServiceServer::new(service).max_encoding_message_size(64 * 1024 * 1024),
+        )
         .serve_with_shutdown(addr, shutdown)
         .await?;
 
@@ -284,7 +286,9 @@ async fn run_unix_socket_server(
     let incoming = UnixListenerStream::new(listener);
 
     Server::builder()
-        .add_service(TerminalServiceServer::new(service))
+        .add_service(
+            TerminalServiceServer::new(service).max_encoding_message_size(64 * 1024 * 1024),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await?;
 

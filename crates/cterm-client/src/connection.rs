@@ -373,7 +373,8 @@ impl DaemonConnection {
 
     /// Perform the initial handshake with the daemon
     async fn handshake(channel: Channel, socket_path: Option<PathBuf>) -> Result<Self> {
-        let mut client = TerminalServiceClient::new(channel);
+        let mut client =
+            TerminalServiceClient::new(channel).max_decoding_message_size(64 * 1024 * 1024);
 
         let response = client
             .handshake(HandshakeRequest {
