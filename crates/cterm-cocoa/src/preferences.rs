@@ -206,6 +206,18 @@ impl PreferencesWindow {
             git_branch_label: RefCell::new(None),
             git_last_sync_label: RefCell::new(None),
             git_changes_label: RefCell::new(None),
+            latch_enabled_checkbox: RefCell::new(None),
+            latch_ssh_listen_field: RefCell::new(None),
+            latch_mosh_checkbox: RefCell::new(None),
+            latch_mosh_port_start_field: RefCell::new(None),
+            latch_mosh_port_end_field: RefCell::new(None),
+            latch_web_checkbox: RefCell::new(None),
+            latch_web_listen_field: RefCell::new(None),
+            latch_relay_checkbox: RefCell::new(None),
+            latch_relay_host_field: RefCell::new(None),
+            latch_relay_username_field: RefCell::new(None),
+            latch_relay_device_field: RefCell::new(None),
+            latch_max_sessions_field: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
