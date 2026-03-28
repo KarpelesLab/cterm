@@ -55,6 +55,20 @@ const IDC_GIT_LAST_SYNC: i32 = 1053;
 const IDC_GIT_CHANGES: i32 = 1054;
 const IDC_GIT_SYNC_NOW: i32 = 1055;
 
+// Control IDs - Latch tab
+const IDC_LATCH_ENABLED: i32 = 1060;
+const IDC_LATCH_SSH_LISTEN: i32 = 1061;
+const IDC_LATCH_MOSH_ENABLED: i32 = 1062;
+const IDC_LATCH_MOSH_PORT_START: i32 = 1063;
+const IDC_LATCH_MOSH_PORT_END: i32 = 1064;
+const IDC_LATCH_WEB_ENABLED: i32 = 1065;
+const IDC_LATCH_WEB_LISTEN: i32 = 1066;
+const IDC_LATCH_RELAY_ENABLED: i32 = 1067;
+const IDC_LATCH_RELAY_HOST: i32 = 1068;
+const IDC_LATCH_RELAY_USER: i32 = 1069;
+const IDC_LATCH_RELAY_DEVICE: i32 = 1070;
+const IDC_LATCH_MAX_SESSIONS: i32 = 1071;
+
 // Button IDs
 const IDC_APPLY: i32 = 1099;
 
@@ -64,6 +78,7 @@ const TAB_APPEARANCE: i32 = 1;
 const TAB_TABS: i32 = 2;
 const TAB_SHORTCUTS: i32 = 3;
 const TAB_GIT_SYNC: i32 = 4;
+const TAB_LATCH: i32 = 5;
 
 /// Dialog state
 struct DialogState {
@@ -75,6 +90,7 @@ struct DialogState {
     tabs_controls: Vec<HWND>,
     shortcuts_controls: Vec<HWND>,
     git_sync_controls: Vec<HWND>,
+    latch_controls: Vec<HWND>,
 }
 
 // Thread-local storage for dialog state
@@ -98,6 +114,7 @@ pub fn show_preferences_dialog(parent: HWND) -> bool {
             tabs_controls: Vec::new(),
             shortcuts_controls: Vec::new(),
             git_sync_controls: Vec::new(),
+            latch_controls: Vec::new(),
         });
     });
 
@@ -236,6 +253,7 @@ unsafe fn init_dialog(hwnd: HWND) {
     add_tab(tab_ctrl, TAB_TABS, "Tabs");
     add_tab(tab_ctrl, TAB_SHORTCUTS, "Shortcuts");
     add_tab(tab_ctrl, TAB_GIT_SYNC, "Git Sync");
+    add_tab(tab_ctrl, TAB_LATCH, "Latch");
 
     // Content area
     let content_top = margin + tab_height + 5;
@@ -271,6 +289,13 @@ unsafe fn init_dialog(hwnd: HWND) {
         content_height,
     );
     create_git_sync_controls(
+        hwnd,
+        margin,
+        content_top,
+        dlg_width - margin * 2,
+        content_height,
+    );
+    create_latch_controls(
         hwnd,
         margin,
         content_top,
@@ -827,6 +852,209 @@ unsafe fn create_git_sync_controls(hwnd: HWND, x: i32, y: i32, _w: i32, _h: i32)
     });
 }
 
+/// Create controls for the Latch tab
+unsafe fn create_latch_controls(hwnd: HWND, x: i32, y: i32, _w: i32, _h: i32) {
+    let mut controls = Vec::new();
+    let row_height = 26;
+    let label_width = 120;
+    let control_width = 180;
+    let mut cy = y;
+
+    // Enable remote access
+    controls.push(create_checkbox(
+        hwnd,
+        IDC_LATCH_ENABLED,
+        "Enable remote access",
+        x,
+        cy,
+        label_width + control_width,
+        20,
+    ));
+    cy += row_height;
+
+    // SSH listen address
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "SSH listen address:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_SSH_LISTEN,
+        x + label_width,
+        cy,
+        control_width,
+        22,
+    ));
+    cy += row_height;
+
+    // Mosh enabled
+    controls.push(create_checkbox(
+        hwnd,
+        IDC_LATCH_MOSH_ENABLED,
+        "Enable mosh transport",
+        x,
+        cy,
+        label_width + control_width,
+        20,
+    ));
+    cy += row_height;
+
+    // Mosh port range
+    controls.push(create_label(hwnd, -1, "Port start:", x, cy + 3, 70, 20));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_MOSH_PORT_START,
+        x + 70,
+        cy,
+        60,
+        22,
+    ));
+    controls.push(create_label(hwnd, -1, "Port end:", x + 140, cy + 3, 60, 20));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_MOSH_PORT_END,
+        x + 200,
+        cy,
+        60,
+        22,
+    ));
+    cy += row_height;
+
+    // Web enabled
+    controls.push(create_checkbox(
+        hwnd,
+        IDC_LATCH_WEB_ENABLED,
+        "Enable web terminal",
+        x,
+        cy,
+        label_width + control_width,
+        20,
+    ));
+    cy += row_height;
+
+    // Web listen address
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "Web listen address:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_WEB_LISTEN,
+        x + label_width,
+        cy,
+        control_width,
+        22,
+    ));
+    cy += row_height;
+
+    // Relay enabled
+    controls.push(create_checkbox(
+        hwnd,
+        IDC_LATCH_RELAY_ENABLED,
+        "Enable relay (NAT traversal)",
+        x,
+        cy,
+        label_width + control_width,
+        20,
+    ));
+    cy += row_height;
+
+    // Relay host
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "Relay host:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_RELAY_HOST,
+        x + label_width,
+        cy,
+        control_width,
+        22,
+    ));
+    cy += row_height;
+
+    // Relay username
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "Username:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_RELAY_USER,
+        x + label_width,
+        cy,
+        control_width,
+        22,
+    ));
+    cy += row_height;
+
+    // Relay device
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "Device name:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_RELAY_DEVICE,
+        x + label_width,
+        cy,
+        control_width,
+        22,
+    ));
+    cy += row_height;
+
+    // Max sessions
+    controls.push(create_label(
+        hwnd,
+        -1,
+        "Max sessions:",
+        x,
+        cy + 3,
+        label_width,
+        20,
+    ));
+    controls.push(create_edit(
+        hwnd,
+        IDC_LATCH_MAX_SESSIONS,
+        x + label_width,
+        cy,
+        60,
+        22,
+    ));
+
+    DIALOG_STATE.with(|s| {
+        if let Some(ref mut state) = *s.borrow_mut() {
+            state.latch_controls = controls;
+        }
+    });
+}
+
 /// Format a Unix timestamp as a human-readable relative time
 fn format_timestamp(ts: i64) -> String {
     let now = SystemTime::now()
@@ -980,6 +1208,9 @@ fn show_tab(tab_index: i32) {
             for hwnd in &state.git_sync_controls {
                 show_control(*hwnd, false);
             }
+            for hwnd in &state.latch_controls {
+                show_control(*hwnd, false);
+            }
 
             // Show the selected tab's controls
             let controls = match tab_index {
@@ -988,6 +1219,7 @@ fn show_tab(tab_index: i32) {
                 TAB_TABS => &state.tabs_controls,
                 TAB_SHORTCUTS => &state.shortcuts_controls,
                 TAB_GIT_SYNC => &state.git_sync_controls,
+                TAB_LATCH => &state.latch_controls,
                 _ => &state.general_controls,
             };
             for hwnd in controls {
@@ -1107,6 +1339,44 @@ fn populate_controls() {
                     set_listview_subitem(listview, idx, 1, shortcut);
                 }
             }
+
+            // Latch tab
+            if let Some(&cb) = state.latch_controls.get(0) {
+                set_checkbox_state(cb, config.latch.enabled);
+            }
+            if let Some(&edit) = state.latch_controls.get(2) {
+                set_edit_text(edit, &config.latch.ssh_listen);
+            }
+            if let Some(&cb) = state.latch_controls.get(3) {
+                set_checkbox_state(cb, config.latch.mosh_enabled);
+            }
+            if let Some(&edit) = state.latch_controls.get(5) {
+                set_edit_text(edit, &config.latch.mosh_port_start.to_string());
+            }
+            if let Some(&edit) = state.latch_controls.get(7) {
+                set_edit_text(edit, &config.latch.mosh_port_end.to_string());
+            }
+            if let Some(&cb) = state.latch_controls.get(8) {
+                set_checkbox_state(cb, config.latch.web_enabled);
+            }
+            if let Some(&edit) = state.latch_controls.get(10) {
+                set_edit_text(edit, &config.latch.web_listen);
+            }
+            if let Some(&cb) = state.latch_controls.get(11) {
+                set_checkbox_state(cb, config.latch.relay_enabled);
+            }
+            if let Some(&edit) = state.latch_controls.get(13) {
+                set_edit_text(edit, &config.latch.relay_host);
+            }
+            if let Some(&edit) = state.latch_controls.get(15) {
+                set_edit_text(edit, config.latch.relay_username.as_deref().unwrap_or(""));
+            }
+            if let Some(&edit) = state.latch_controls.get(17) {
+                set_edit_text(edit, config.latch.relay_device.as_deref().unwrap_or(""));
+            }
+            if let Some(&edit) = state.latch_controls.get(19) {
+                set_edit_text(edit, &config.latch.max_sessions.to_string());
+            }
         }
     });
 }
@@ -1196,6 +1466,52 @@ fn collect_config() -> Config {
             }
             if let Some(&checkbox) = state.tabs_controls.get(6) {
                 config.tabs.show_close_button = get_checkbox_state(checkbox);
+            }
+
+            // Latch tab
+            if let Some(&cb) = state.latch_controls.get(0) {
+                config.latch.enabled = get_checkbox_state(cb);
+            }
+            if let Some(&edit) = state.latch_controls.get(2) {
+                config.latch.ssh_listen = get_edit_text(edit);
+            }
+            if let Some(&cb) = state.latch_controls.get(3) {
+                config.latch.mosh_enabled = get_checkbox_state(cb);
+            }
+            if let Some(&edit) = state.latch_controls.get(5) {
+                if let Ok(v) = get_edit_text(edit).parse::<u16>() {
+                    config.latch.mosh_port_start = v;
+                }
+            }
+            if let Some(&edit) = state.latch_controls.get(7) {
+                if let Ok(v) = get_edit_text(edit).parse::<u16>() {
+                    config.latch.mosh_port_end = v;
+                }
+            }
+            if let Some(&cb) = state.latch_controls.get(8) {
+                config.latch.web_enabled = get_checkbox_state(cb);
+            }
+            if let Some(&edit) = state.latch_controls.get(10) {
+                config.latch.web_listen = get_edit_text(edit);
+            }
+            if let Some(&cb) = state.latch_controls.get(11) {
+                config.latch.relay_enabled = get_checkbox_state(cb);
+            }
+            if let Some(&edit) = state.latch_controls.get(13) {
+                config.latch.relay_host = get_edit_text(edit);
+            }
+            if let Some(&edit) = state.latch_controls.get(15) {
+                let v = get_edit_text(edit);
+                config.latch.relay_username = if v.is_empty() { None } else { Some(v) };
+            }
+            if let Some(&edit) = state.latch_controls.get(17) {
+                let v = get_edit_text(edit);
+                config.latch.relay_device = if v.is_empty() { None } else { Some(v) };
+            }
+            if let Some(&edit) = state.latch_controls.get(19) {
+                if let Ok(v) = get_edit_text(edit).parse::<usize>() {
+                    config.latch.max_sessions = v;
+                }
             }
         }
     });
