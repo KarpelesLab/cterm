@@ -1341,7 +1341,7 @@ fn populate_controls() {
             }
 
             // Latch tab
-            if let Some(&cb) = state.latch_controls.get(0) {
+            if let Some(&cb) = state.latch_controls.first() {
                 set_checkbox_state(cb, config.latch.enabled);
             }
             if let Some(&edit) = state.latch_controls.get(2) {
@@ -1469,7 +1469,7 @@ fn collect_config() -> Config {
             }
 
             // Latch tab
-            if let Some(&cb) = state.latch_controls.get(0) {
+            if let Some(&cb) = state.latch_controls.first() {
                 config.latch.enabled = get_checkbox_state(cb);
             }
             if let Some(&edit) = state.latch_controls.get(2) {
