@@ -124,8 +124,11 @@ impl TabBar {
         let close_callbacks = Rc::clone(&self.on_close_callbacks);
         let tab_id = id;
         close_button.connect_clicked(move |_| {
-            if let Some(callback) = close_callbacks.borrow().get(&tab_id) {
-                callback();
+            // Take the callback out of the map so the borrow is released before
+            // invoking it — the callback calls remove_tab() which needs borrow_mut.
+            let callback = close_callbacks.borrow_mut().remove(&tab_id);
+            if let Some(cb) = callback {
+                cb();
             }
         });
 
