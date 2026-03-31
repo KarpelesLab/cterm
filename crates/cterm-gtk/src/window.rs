@@ -1857,45 +1857,92 @@ impl CtermWindow {
         let window = self.window.clone();
 
         self.window.connect_close_request(move |win| {
-            // Check if we should confirm close with running processes
             let confirm_close = config.borrow().general.confirm_close_with_running;
             if !confirm_close {
                 return glib::Propagation::Proceed;
             }
 
-            // Collect tabs with running processes
-            let running_processes: Vec<(String, String)> = {
+            // Collect session info for daemon queries
+            let tab_infos: Vec<(String, Option<std::path::PathBuf>, String)> = {
                 let tabs = tabs.borrow();
                 tabs.iter()
                     .filter_map(|tab| {
-                        if tab.terminal.has_foreground_process() {
-                            let process_name = tab
-                                .terminal
-                                .foreground_process_name()
-                                .unwrap_or_else(|| "a process".to_string());
-                            Some((tab.title.clone(), process_name))
-                        } else {
-                            None
+                        let sid = tab.session_id.clone()?;
+                        if sid.is_empty() {
+                            return None;
                         }
+                        Some((sid, tab.daemon_socket.clone(), tab.title.clone()))
                     })
                     .collect()
             };
 
-            if running_processes.is_empty() {
-                // No running processes, allow close
+            if tab_infos.is_empty() {
                 return glib::Propagation::Proceed;
             }
 
-            // Show confirmation dialog
+            // Query the daemon asynchronously for each session's foreground process
             let window_clone = window.clone();
-            dialogs::show_close_confirmation_dialog(win, running_processes, move |confirmed| {
-                if confirmed {
-                    // User confirmed, destroy the window
+            let win_ref = win.clone();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let results = rt.block_on(async {
+                    let mut running = Vec::new();
+                    for (session_id, daemon_socket, title) in &tab_infos {
+                        let conn = match if let Some(ref path) = daemon_socket {
+                            cterm_client::DaemonConnection::connect_unix(path, false).await
+                        } else {
+                            cterm_client::DaemonConnection::connect_local().await
+                        } {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        if let Ok(info) = conn.get_session(session_id).await {
+                            if info.has_foreground_process {
+                                let name = if info.foreground_process_name.is_empty() {
+                                    "a process".to_string()
+                                } else {
+                                    info.foreground_process_name
+                                };
+                                running.push((title.clone(), name));
+                            }
+                        }
+                    }
+                    running
+                });
+                let _ = result_tx.send(results);
+            });
+
+            glib::idle_add_local_once(move || {
+                let running_processes =
+                    match result_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            window_clone.destroy();
+                            return;
+                        }
+                    };
+
+                if running_processes.is_empty() {
                     window_clone.destroy();
+                } else {
+                    let wc = window_clone.clone();
+                    dialogs::show_close_confirmation_dialog(
+                        &win_ref,
+                        running_processes,
+                        move |confirmed| {
+                            if confirmed {
+                                wc.destroy();
+                            }
+                        },
+                    );
                 }
             });
 
-            // Inhibit the close for now - dialog callback will handle it
             glib::Propagation::Stop
         });
     }
@@ -2935,7 +2982,7 @@ fn close_tab_by_id(
     }
 }
 
-/// Request to close tab by ID - checks for running processes and confirms with user if needed
+/// Request to close tab by ID - queries daemon for running processes and confirms with user
 #[cfg(unix)]
 fn request_close_tab_by_id(
     notebook: &Notebook,
@@ -2945,46 +2992,99 @@ fn request_close_tab_by_id(
     config: &Rc<RefCell<Config>>,
     id: u64,
 ) {
-    // Check if we should confirm close with running processes
     let confirm_close = config.borrow().general.confirm_close_with_running;
+    if !confirm_close {
+        close_tab_by_id(notebook, tabs, tab_bar, window, id);
+        return;
+    }
 
-    // Find the tab and check for running process
-    let process_info: Option<(String, String)> = {
+    // Get session_id, daemon_socket, and title for the daemon query
+    let query_info: Option<(String, Option<std::path::PathBuf>, String)> = {
         let tabs = tabs.borrow();
-        tabs.iter().find(|t| t.id == id).and_then(|tab| {
-            if confirm_close && tab.terminal.has_foreground_process() {
-                let process_name = tab
-                    .terminal
-                    .foreground_process_name()
-                    .unwrap_or_else(|| "a process".to_string());
-                Some((tab.title.clone(), process_name))
-            } else {
-                None
-            }
+        tabs.iter().find(|t| t.id == id).map(|tab| {
+            (
+                tab.session_id.clone().unwrap_or_default(),
+                tab.daemon_socket.clone(),
+                tab.title.clone(),
+            )
         })
     };
 
-    if let Some((tab_title, process_name)) = process_info {
-        // Show confirmation dialog
-        let notebook = notebook.clone();
-        let tabs = Rc::clone(tabs);
-        let tab_bar = tab_bar.clone();
-        let window = window.clone();
+    let Some((session_id, daemon_socket, tab_title)) = query_info else {
+        return;
+    };
+
+    if session_id.is_empty() {
+        close_tab_by_id(notebook, tabs, tab_bar, window, id);
+        return;
+    }
+
+    // Query the daemon asynchronously for foreground process info
+    let notebook = notebook.clone();
+    let tabs = Rc::clone(tabs);
+    let tab_bar = tab_bar.clone();
+    let window = window.clone();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(async {
+            let conn = match if let Some(ref path) = daemon_socket {
+                cterm_client::DaemonConnection::connect_unix(path, false).await
+            } else {
+                cterm_client::DaemonConnection::connect_local().await
+            } {
+                Ok(c) => c,
+                Err(_) => return None,
+            };
+            let session = match conn.get_session(&session_id).await {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
+            if session.has_foreground_process {
+                let name = if session.foreground_process_name.is_empty() {
+                    "a process".to_string()
+                } else {
+                    session.foreground_process_name
+                };
+                Some(name)
+            } else {
+                None
+            }
+        });
+        let _ = result_tx.send(result);
+    });
+
+    // Check result on the main thread via idle callback
+    glib::idle_add_local_once(move || {
+        // The thread should complete very quickly (local socket query)
+        let process_name = match result_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Some(name)) => name,
+            _ => {
+                // No foreground process or query failed — close directly
+                close_tab_by_id(&notebook, &tabs, &tab_bar, &window, id);
+                return;
+            }
+        };
+
         let window_for_closure = window.clone();
+        let notebook_c = notebook.clone();
+        let tabs_c = Rc::clone(&tabs);
+        let tab_bar_c = tab_bar.clone();
 
         dialogs::show_close_confirmation_dialog(
             &window,
             vec![(tab_title, process_name)],
             move |confirmed| {
                 if confirmed {
-                    close_tab_by_id(&notebook, &tabs, &tab_bar, &window_for_closure, id);
+                    close_tab_by_id(&notebook_c, &tabs_c, &tab_bar_c, &window_for_closure, id);
                 }
             },
         );
-    } else {
-        // No running process or confirmation disabled - close directly
-        close_tab_by_id(notebook, tabs, tab_bar, window, id);
-    }
+    });
 }
 
 /// Request to close tab by ID - non-Unix fallback (no process detection)
