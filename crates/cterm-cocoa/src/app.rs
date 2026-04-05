@@ -91,6 +91,8 @@ pub struct AppDelegateIvars {
     is_relaunching: std::cell::Cell<bool>,
     /// Count of windows with active bell notifications
     bell_count: std::cell::Cell<u32>,
+    /// Unix Shells device service
+    unixshells_service: std::sync::Arc<cterm_app::unixshells::DeviceService>,
 }
 
 define_class!(
@@ -838,6 +840,14 @@ define_class!(
             crate::remotes_dialog::show_remotes_dialog(mtm, config);
         }
 
+        /// Show Unix Shells sign-in dialog
+        #[unsafe(method(unixshellsSignIn:))]
+        fn action_unixshells_sign_in(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            let ds = self.ivars().unixshells_service.clone();
+            crate::unixshells_dialog::show_unixshells_dialog(mtm, ds);
+        }
+
         /// Called by windows when they close to remove from tracking
         #[unsafe(method(windowDidClose:))]
         fn window_did_close(&self, window: &CtermWindow) {
@@ -1004,6 +1014,7 @@ define_class!(
 
 impl AppDelegate {
     pub fn new(mtm: MainThreadMarker, config: Config, theme: Theme) -> Retained<Self> {
+        let relay_username = config.latch.relay_username.clone();
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(AppDelegateIvars {
             config,
@@ -1012,6 +1023,10 @@ impl AppDelegate {
             remote_manager: cterm_client::RemoteManager::new(),
             is_relaunching: std::cell::Cell::new(false),
             bell_count: std::cell::Cell::new(0),
+            unixshells_service: std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
+                cterm_app::config::config_dir().unwrap_or_default(),
+                relay_username,
+            )),
         });
         unsafe { msg_send![super(this), init] }
     }

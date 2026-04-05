@@ -23,6 +23,7 @@ pub mod session_dialog;
 pub mod tab_bar;
 pub mod templates_dialog;
 pub mod terminal_canvas;
+pub mod unixshells_dialog;
 pub mod update_dialog;
 pub mod upgrade_receiver;
 pub mod window;

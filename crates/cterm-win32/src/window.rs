@@ -1398,6 +1398,20 @@ impl WindowState {
                 MenuAction::ManageRemotes => {
                     crate::remotes_dialog::show_remotes_dialog(self.hwnd.0 as *mut _);
                 }
+                MenuAction::UnixShellsSignIn => {
+                    let ds = std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
+                        cterm_app::config::config_dir().unwrap_or_default(),
+                        self.config.latch.relay_username.clone(),
+                    ));
+                    crate::unixshells_dialog::show_unixshells_dialog(self.hwnd.0 as *mut _, ds);
+                }
+                MenuAction::UnixShellsSignOut => {
+                    let ds = cterm_app::unixshells::DeviceService::new(
+                        cterm_app::config::config_dir().unwrap_or_default(),
+                        self.config.latch.relay_username.clone(),
+                    );
+                    ds.sign_out();
+                }
             }
         }
     }
