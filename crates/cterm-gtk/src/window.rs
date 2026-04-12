@@ -703,6 +703,32 @@ impl CtermWindow {
             window.add_action(&action);
         }
 
+        // URL actions (for hyperlink context menu)
+        {
+            let action =
+                gio::SimpleAction::new("open-url", Some(glib::VariantTy::new("s").unwrap()));
+            action.connect_activate(|_, param| {
+                if let Some(url) = param.and_then(|v| v.get::<String>()) {
+                    if let Err(e) = open::that(&url) {
+                        log::error!("Failed to open URL: {}", e);
+                    }
+                }
+            });
+            window.add_action(&action);
+
+            let action =
+                gio::SimpleAction::new("copy-url", Some(glib::VariantTy::new("s").unwrap()));
+            action.connect_activate(|_, param| {
+                if let Some(url) = param.and_then(|v| v.get::<String>()) {
+                    if let Some(display) = gdk::Display::default() {
+                        let clipboard = display.clipboard();
+                        clipboard.set_text(&url);
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
         // Edit menu actions
         {
             // Copy selection to clipboard

@@ -663,8 +663,33 @@ impl TerminalWidget {
         let drawing_area_click = self.drawing_area.clone();
         let selecting_pressed = Rc::clone(&selecting);
 
-        click_controller.connect_pressed(move |_, n_press, x, y| {
+        click_controller.connect_pressed(move |gesture, n_press, x, y| {
             drawing_area_click.grab_focus();
+
+            let dims = cell_dims_click.borrow();
+            let col = (x / dims.width).floor() as usize;
+            let row = (y / dims.height).floor() as usize;
+            drop(dims);
+
+            // Ctrl+click to open hyperlinks
+            if let Some(event) = gesture.current_event() {
+                let state = event.modifier_state();
+                if state.contains(gdk::ModifierType::CONTROL_MASK) {
+                    let term = terminal_click.lock();
+                    if let Some(uri) = term
+                        .screen()
+                        .get_cell(row, col)
+                        .and_then(|c| c.hyperlink.as_ref())
+                        .map(|h| h.uri.clone())
+                    {
+                        drop(term);
+                        if let Err(e) = open::that(&uri) {
+                            log::error!("Failed to open URL {}: {}", uri, e);
+                        }
+                        return;
+                    }
+                }
+            }
 
             // Determine selection mode based on click count
             let mode = match n_press {
@@ -674,11 +699,6 @@ impl TerminalWidget {
             };
 
             // Start selection
-            let dims = cell_dims_click.borrow();
-            let col = (x / dims.width).floor() as usize;
-            let row = (y / dims.height).floor() as usize;
-            drop(dims);
-
             let mut term = terminal_click.lock();
             let line = term.screen().visible_row_to_absolute_line(row);
             term.screen_mut().start_selection(line, col, mode);
@@ -725,6 +745,45 @@ impl TerminalWidget {
 
         self.drawing_area.add_controller(click_controller);
 
+        // Right-click for hyperlink context menu
+        {
+            let right_click = GestureClick::new();
+            right_click.set_button(gdk::BUTTON_SECONDARY);
+
+            let terminal_rc = Arc::clone(&terminal);
+            let cell_dims_rc = Rc::clone(&cell_dims);
+            let drawing_area_rc = self.drawing_area.clone();
+
+            right_click.connect_pressed(move |_, _n_press, x, y| {
+                let dims = cell_dims_rc.borrow();
+                let col = (x / dims.width).floor() as usize;
+                let row = (y / dims.height).floor() as usize;
+                drop(dims);
+
+                let term = terminal_rc.lock();
+                let uri = term
+                    .screen()
+                    .get_cell(row, col)
+                    .and_then(|c| c.hyperlink.as_ref())
+                    .map(|h| h.uri.clone());
+                drop(term);
+
+                if let Some(uri) = uri {
+                    // Build context menu for hyperlink
+                    let menu = gio::Menu::new();
+                    menu.append(Some("Open URL"), Some(&format!("win.open-url::{}", uri)));
+                    menu.append(Some("Copy URL"), Some(&format!("win.copy-url::{}", uri)));
+
+                    let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+                    popover.set_parent(&drawing_area_rc);
+                    popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    popover.popup();
+                }
+            });
+
+            self.drawing_area.add_controller(right_click);
+        }
+
         // Middle-click paste from primary selection (Unix only)
         #[cfg(unix)]
         {
@@ -760,7 +819,7 @@ impl TerminalWidget {
             self.drawing_area.add_controller(middle_click_controller);
         }
 
-        // Mouse motion for drag selection
+        // Mouse motion for drag selection and hyperlink hover
         let motion_controller = gtk4::EventControllerMotion::new();
 
         let terminal_motion = Arc::clone(&terminal);
@@ -769,21 +828,44 @@ impl TerminalWidget {
         let selecting_motion = Rc::clone(&selecting);
 
         motion_controller.connect_motion(move |_, x, y| {
-            if !*selecting_motion.borrow() {
-                return;
-            }
-
             let dims = cell_dims_motion.borrow();
             let col = (x / dims.width).floor() as usize;
             let row = (y / dims.height).floor() as usize;
             drop(dims);
 
-            let mut term = terminal_motion.lock();
-            let line = term.screen().visible_row_to_absolute_line(row);
-            term.screen_mut().extend_selection(line, col);
+            // Selection drag
+            if *selecting_motion.borrow() {
+                let mut term = terminal_motion.lock();
+                let line = term.screen().visible_row_to_absolute_line(row);
+                term.screen_mut().extend_selection(line, col);
+                drop(term);
+                drawing_area_motion.queue_draw();
+                return;
+            }
+
+            // Check for hyperlink under cursor
+            let term = terminal_motion.lock();
+            let has_link = term
+                .screen()
+                .get_cell(row, col)
+                .and_then(|c| c.hyperlink.as_ref())
+                .is_some();
+            let uri = term
+                .screen()
+                .get_cell(row, col)
+                .and_then(|c| c.hyperlink.as_ref())
+                .map(|h| h.uri.clone());
             drop(term);
 
-            drawing_area_motion.queue_draw();
+            if has_link {
+                drawing_area_motion.set_cursor_from_name(Some("pointer"));
+                if let Some(uri) = uri {
+                    drawing_area_motion.set_tooltip_text(Some(&uri));
+                }
+            } else {
+                drawing_area_motion.set_cursor_from_name(Some("text"));
+                drawing_area_motion.set_tooltip_text(None);
+            }
         });
 
         self.drawing_area.add_controller(motion_controller);
@@ -1697,6 +1779,9 @@ fn draw_terminal(
                 let fg_color = if is_inverted {
                     // Inverted: use background color as foreground
                     cell.bg.to_rgb(palette)
+                } else if cell.hyperlink.is_some() && cell.fg == Color::Default {
+                    // Cornflower blue for hyperlinks with default fg
+                    Rgb::new(100, 149, 237)
                 } else if cell.fg == Color::Default {
                     palette.foreground
                 } else {
@@ -1730,9 +1815,15 @@ fn draw_terminal(
                     attrs.insert(attr);
                 }
 
-                if cell.attrs.contains(CellAttrs::UNDERLINE) {
+                if cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some() {
                     let attr = pango::AttrInt::new_underline(pango::Underline::Single);
                     attrs.insert(attr);
+                    if cell.hyperlink.is_some() {
+                        // Cornflower blue for hyperlinks
+                        let attr =
+                            pango::AttrColor::new_underline_color(100 * 256, 149 * 256, 237 * 256);
+                        attrs.insert(attr);
+                    }
                 }
 
                 if cell.attrs.contains(CellAttrs::STRIKETHROUGH) {
