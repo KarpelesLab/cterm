@@ -868,9 +868,15 @@ impl Screen {
                     if start.line < lines_removed {
                         self.selection = None;
                     } else {
-                        // Adjust selection indices to account for removed lines
+                        // Adjust selection indices to account for removed lines.
+                        // All three of anchor, end, and anchor_end (when set for
+                        // word/line modes) must be shifted together — otherwise
+                        // the ordered range expands as new output arrives.
                         selection.anchor.line -= lines_removed;
                         selection.end.line -= lines_removed;
+                        if let Some(ref mut anchor_end) = selection.anchor_end {
+                            anchor_end.line -= lines_removed;
+                        }
                     }
                 }
             }
@@ -2376,5 +2382,47 @@ mod tests {
         // Space is a non-word char, so anchor == end (single char range)
         assert_eq!(sel.anchor, SelectionPoint::new(0, 5));
         assert_eq!(sel.end, SelectionPoint::new(0, 5));
+    }
+
+    #[test]
+    fn test_word_selection_survives_scrollback_wrap() {
+        // Regression: when scrollback is full and a line is evicted,
+        // anchor_end must be shifted along with anchor/end, otherwise
+        // the ordered() range expands as new output arrives.
+        let config = ScreenConfig {
+            scrollback_lines: 2,
+            ..ScreenConfig::default()
+        };
+        let mut screen = Screen::new(80, 3, config);
+
+        // Fill scrollback to capacity. Grid has 3 rows; move cursor to the
+        // last row first, then subsequent line_feeds push rows into scrollback.
+        screen.line_feed();
+        screen.line_feed(); // cursor now at last row, no scrollback yet
+        assert_eq!(screen.scrollback.len(), 0);
+        screen.line_feed();
+        screen.line_feed();
+        assert_eq!(screen.scrollback.len(), 2);
+
+        // Write a word on the current (last) grid row.
+        screen.carriage_return();
+        for c in "hello world".chars() {
+            screen.put_char(c);
+        }
+        let abs_line = screen.visible_row_to_absolute_line(2);
+
+        // Double-click "hello".
+        screen.start_selection(abs_line, 2, SelectionMode::Word);
+        let (s0, e0) = screen.selection.as_ref().unwrap().ordered();
+        assert_eq!(s0, SelectionPoint::new(abs_line, 0));
+        assert_eq!(e0, SelectionPoint::new(abs_line, 4));
+
+        // One more line_feed evicts the oldest scrollback row (lines_removed == 1).
+        screen.line_feed();
+        let sel = screen.selection.as_ref().unwrap();
+        let (start, end) = sel.ordered();
+        // Selection must stay on the same single word, just shifted up by one line.
+        assert_eq!(start, SelectionPoint::new(abs_line - 1, 0));
+        assert_eq!(end, SelectionPoint::new(abs_line - 1, 4));
     }
 }
