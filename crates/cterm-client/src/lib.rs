@@ -9,6 +9,8 @@ mod remote_manager;
 mod session;
 mod socket;
 
+#[cfg(unix)]
+pub use connection::SshTunnelHandle;
 pub use connection::{CreateSessionOpts, DaemonConnection};
 pub use error::ClientError;
 pub use remote_manager::RemoteManager;

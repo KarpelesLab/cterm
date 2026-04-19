@@ -29,6 +29,7 @@ pub struct TabBar {
     on_click_callbacks: TabCallbackMap,
     on_rename: TabIdCallback,
     on_set_color: TabIdCallback,
+    on_disconnect: TabIdCallback,
     /// Current tab ID for context menu actions
     context_menu_tab_id: Rc<RefCell<Option<u64>>>,
 }
@@ -41,6 +42,15 @@ struct TabInfo {
     #[allow(dead_code)] // Kept to prevent button from being dropped
     close_button: Button,
     context_popover: PopoverMenu,
+    /// Menu model behind `context_popover`. Kept so `mark_tab_remote` can
+    /// append the "Disconnect" entry after the tab has been created.
+    menu: Menu,
+    /// Action group bound to this tab's context menu, so `mark_tab_remote`
+    /// can add the `tab.disconnect` action when needed.
+    action_group: SimpleActionGroup,
+    /// True once `mark_tab_remote` has appended the Disconnect item, to keep
+    /// `mark_tab_remote` idempotent.
+    is_remote: bool,
 }
 
 impl TabBar {
@@ -76,6 +86,7 @@ impl TabBar {
             on_click_callbacks: Rc::new(RefCell::new(HashMap::new())),
             on_rename: Rc::new(RefCell::new(None)),
             on_set_color: Rc::new(RefCell::new(None)),
+            on_disconnect: Rc::new(RefCell::new(None)),
             context_menu_tab_id: Rc::new(RefCell::new(None)),
         };
 
@@ -221,6 +232,9 @@ impl TabBar {
             bell_icon,
             close_button,
             context_popover: popover,
+            menu,
+            action_group,
+            is_remote: false,
         });
 
         // Set as active if first tab
@@ -361,6 +375,43 @@ impl TabBar {
     #[allow(dead_code)]
     pub fn set_on_set_color<F: Fn(u64) + 'static>(&self, callback: F) {
         *self.on_set_color.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// Set callback for the "Disconnect" right-click menu item that
+    /// `mark_tab_remote` adds to remote tabs.
+    pub fn set_on_disconnect<F: Fn(u64) + 'static>(&self, callback: F) {
+        *self.on_disconnect.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// Mark a tab as backed by a configured remote connection.
+    ///
+    /// Adds a "Disconnect" entry to the tab's right-click menu and registers a
+    /// `tab.disconnect` action that fires the `on_disconnect` callback. Safe
+    /// to call more than once on the same tab — subsequent calls are no-ops.
+    pub fn mark_tab_remote(&self, id: u64) {
+        let mut tabs = self.tabs.borrow_mut();
+        let Some(tab) = tabs.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if tab.is_remote {
+            return;
+        }
+        tab.is_remote = true;
+
+        // Wire the action that fires the disconnect callback for THIS tab id.
+        let disconnect_action = SimpleAction::new("disconnect", None);
+        let on_disconnect = Rc::clone(&self.on_disconnect);
+        let tab_id = id;
+        disconnect_action.connect_activate(move |_, _| {
+            if let Some(ref callback) = *on_disconnect.borrow() {
+                callback(tab_id);
+            }
+        });
+        tab.action_group.add_action(&disconnect_action);
+
+        // Append the menu item — gio::Menu mutations propagate to the live
+        // popover, so no re-binding of the model is needed.
+        tab.menu.append(Some("Disconnect"), Some("tab.disconnect"));
     }
 
     /// Get number of tabs

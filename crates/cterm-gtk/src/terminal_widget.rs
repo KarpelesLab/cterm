@@ -81,6 +81,15 @@ impl TerminalWidget {
         }
     }
 
+    /// Detach from the daemon session WITHOUT killing the remote PTY.
+    /// Called when the user disconnects from a remote — the session stays
+    /// alive on the server and can be reattached later.
+    pub fn detach_session(&self) {
+        if let Some(ref tx) = self.daemon_cmd_tx {
+            let _ = tx.send(DaemonCommand::Detach);
+        }
+    }
+
     /// Tell the daemon to clear the bell/alert state for this session.
     pub fn clear_alert(&self) {
         if let Some(ref tx) = self.daemon_cmd_tx {
@@ -1205,6 +1214,13 @@ impl TerminalWidget {
                                 }
                                 break;
                             }
+                            DaemonCommand::Detach => {
+                                log::info!("Detaching from daemon session");
+                                if let Err(e) = cmd_session.detach().await {
+                                    log::error!("Failed to detach from daemon session: {}", e);
+                                }
+                                break;
+                            }
                             DaemonCommand::SetTitle(title) => {
                                 if let Err(e) = cmd_session.set_custom_title(&title).await {
                                     log::error!("Failed to set custom title: {}", e);
@@ -1666,7 +1682,12 @@ enum PtyMessage {
 enum DaemonCommand {
     Write(Vec<u8>),
     Resize(u32, u32),
+    /// Kill the remote PTY and shut down the I/O loop.
     Destroy,
+    /// Tell the daemon to detach (keeping the remote PTY alive) and shut down
+    /// the I/O loop. Used by the right-click "Disconnect" path so a closed tab
+    /// does not terminate the underlying remote session.
+    Detach,
     SetTitle(String),
     SetTabColor(String),
     SetTemplateName(String),

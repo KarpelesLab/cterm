@@ -309,7 +309,8 @@ where
 
             let result = match rt {
                 Ok(rt) => rt.block_on(async {
-                    let conn = cterm_client::DaemonConnection::connect_ssh(&host_bg, true).await?;
+                    let (conn, _tunnel) =
+                        cterm_client::DaemonConnection::connect_ssh(&host_bg, true).await?;
 
                     // Attach to all existing running sessions
                     let mut sessions =

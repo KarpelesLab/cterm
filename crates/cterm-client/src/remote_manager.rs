@@ -4,12 +4,23 @@
 //! tabs targeting the same remote share a single SSH tunnel.
 
 use crate::connection::DaemonConnection;
+#[cfg(unix)]
+use crate::connection::SshTunnelHandle;
 #[cfg(not(unix))]
 use crate::error::ClientError;
 use crate::error::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// One cached remote: the gRPC connection plus (on unix) a handle to the
+/// SSH tunnel process so `disconnect()` can actually tear it down.
+#[derive(Clone)]
+struct RemoteEntry {
+    conn: DaemonConnection,
+    #[cfg(unix)]
+    tunnel: SshTunnelHandle,
+}
 
 /// Manages connections to remote ctermd instances.
 ///
@@ -18,7 +29,7 @@ use tokio::sync::Mutex;
 /// which reuses an existing connection or establishes a new one.
 #[derive(Clone)]
 pub struct RemoteManager {
-    connections: Arc<Mutex<HashMap<String, DaemonConnection>>>,
+    connections: Arc<Mutex<HashMap<String, RemoteEntry>>>,
 }
 
 impl RemoteManager {
@@ -41,14 +52,20 @@ impl RemoteManager {
     ) -> Result<DaemonConnection> {
         let mut map = self.connections.lock().await;
 
-        if let Some(conn) = map.get(remote_name) {
+        if let Some(entry) = map.get(remote_name) {
             // TODO: health check / reconnect if the tunnel died
-            return Ok(conn.clone());
+            return Ok(entry.conn.clone());
         }
 
         log::info!("Connecting to remote '{}' ({})", remote_name, host);
-        let conn = DaemonConnection::connect_ssh(host, compress).await?;
-        map.insert(remote_name.to_string(), conn.clone());
+        let (conn, tunnel) = DaemonConnection::connect_ssh(host, compress).await?;
+        map.insert(
+            remote_name.to_string(),
+            RemoteEntry {
+                conn: conn.clone(),
+                tunnel,
+            },
+        );
         Ok(conn)
     }
 
@@ -66,9 +83,18 @@ impl RemoteManager {
         )))
     }
 
-    /// Remove a cached connection (e.g. on disconnect).
+    /// Disconnect from a remote: kill the SSH tunnel (which breaks every
+    /// gRPC channel using it) and drop the cache entry. The remote ctermd's
+    /// sessions are NOT killed — they survive on the server, ready to be
+    /// reattached on a future `get_or_connect`.
     pub async fn disconnect(&self, remote_name: &str) {
-        self.connections.lock().await.remove(remote_name);
+        let entry = self.connections.lock().await.remove(remote_name);
+        #[cfg(unix)]
+        if let Some(entry) = entry {
+            entry.tunnel.kill();
+        }
+        #[cfg(not(unix))]
+        let _ = entry;
     }
 }
 

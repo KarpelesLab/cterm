@@ -1624,6 +1624,61 @@ pub fn show_close_confirmation_dialog<F>(
     dialog.present();
 }
 
+/// Confirm disconnecting from a remote.
+///
+/// Fires `callback(true)` if the user clicks "Disconnect", `callback(false)`
+/// otherwise. The body text warns that every tab on the connection will close
+/// and clarifies that remote sessions stay alive on the server.
+pub fn show_disconnect_confirmation_dialog<F>(
+    parent: &impl IsA<Window>,
+    remote_name: &str,
+    tab_count: usize,
+    callback: F,
+) where
+    F: Fn(bool) + 'static,
+{
+    let dialog = Dialog::builder()
+        .title("Disconnect from Remote")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Disconnect", ResponseType::Ok);
+
+    let content = dialog.content_area();
+    content.set_spacing(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let headline = Label::new(Some(&format!("Disconnect from \"{}\"?", remote_name)));
+    headline.set_halign(Align::Start);
+    headline.set_wrap(true);
+    content.append(&headline);
+
+    let body = if tab_count == 1 {
+        "This will close the tab from this connection. The remote session will keep running on the server and can be reattached by reconnecting.".to_string()
+    } else {
+        format!(
+            "This will close all {} tabs from this connection. Remote sessions will keep running on the server and can be reattached by reconnecting.",
+            tab_count
+        )
+    };
+    let body_label = Label::new(Some(&body));
+    body_label.set_halign(Align::Start);
+    body_label.set_wrap(true);
+    content.append(&body_label);
+
+    dialog.connect_response(move |dialog, response| {
+        callback(response == ResponseType::Ok);
+        dialog.close();
+    });
+
+    dialog.present();
+}
+
 /// Result of a file drop dialog
 pub enum FileDropChoice {
     PastePath,

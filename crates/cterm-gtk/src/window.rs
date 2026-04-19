@@ -36,6 +36,11 @@ struct TabEntry {
     session_id: Option<String>,
     /// Daemon socket path (None = local daemon, Some = remote/SSH-tunneled)
     daemon_socket: Option<std::path::PathBuf>,
+    /// Configured remote name (the `RemoteManager` key) when the tab was opened
+    /// via `spawn_daemon_tab` against a configured remote. Tabs with `Some(name)`
+    /// can be torn down via the right-click "Disconnect" menu item, which kills
+    /// the shared SSH tunnel and removes every tab with the same name.
+    remote_name: Option<String>,
 }
 
 /// Main window container
@@ -583,6 +588,7 @@ impl CtermWindow {
                             title_locked,
                             Some(sid),
                             daemon_socket,
+                            None,
                         );
 
                         if let Some(ref color) = tab_color {
@@ -2049,6 +2055,59 @@ impl CtermWindow {
                 });
             });
         }
+
+        // Disconnect remote (right-click context menu, only on remote tabs)
+        {
+            let tabs = Rc::clone(&self.tabs);
+            let notebook = self.notebook.clone();
+            let tab_bar = self.tab_bar.clone();
+            let window = self.window.clone();
+            let remote_manager = self.remote_manager.clone();
+            self.tab_bar.set_on_disconnect(move |tab_id| {
+                // Resolve which remote this tab belongs to and how many tabs
+                // share it — needed for the dialog wording.
+                let (remote_name, tab_count) = {
+                    let tabs_ref = tabs.borrow();
+                    let Some(name) = tabs_ref
+                        .iter()
+                        .find(|t| t.id == tab_id)
+                        .and_then(|t| t.remote_name.clone())
+                    else {
+                        return; // Not a remote tab — shouldn't happen, menu is hidden.
+                    };
+                    let count = tabs_ref
+                        .iter()
+                        .filter(|t| t.remote_name.as_deref() == Some(name.as_str()))
+                        .count();
+                    (name, count)
+                };
+
+                let tabs_inner = Rc::clone(&tabs);
+                let notebook_inner = notebook.clone();
+                let tab_bar_inner = tab_bar.clone();
+                let window_inner = window.clone();
+                let remote_manager_inner = remote_manager.clone();
+                let remote_name_inner = remote_name.clone();
+                dialogs::show_disconnect_confirmation_dialog(
+                    &window,
+                    &remote_name,
+                    tab_count,
+                    move |confirmed| {
+                        if !confirmed {
+                            return;
+                        }
+                        disconnect_remote(
+                            &notebook_inner,
+                            &tabs_inner,
+                            &tab_bar_inner,
+                            &window_inner,
+                            &remote_manager_inner,
+                            &remote_name_inner,
+                        );
+                    },
+                );
+            });
+        }
     }
 
     /// Set up close request handler to confirm when closing with running processes
@@ -2236,6 +2295,7 @@ impl CtermWindow {
             title_locked,
             Some(sid),
             daemon_socket,
+            None,
         );
 
         // Restore tab color if available
@@ -2491,7 +2551,12 @@ fn finalize_new_tab(
     title_locked: bool,
     session_id: Option<String>,
     daemon_socket: Option<std::path::PathBuf>,
+    remote_name: Option<String>,
 ) {
+    if remote_name.is_some() {
+        tab_bar.mark_tab_remote(tab_id);
+    }
+
     tabs.borrow_mut().push(TabEntry {
         id: tab_id,
         title,
@@ -2500,6 +2565,7 @@ fn finalize_new_tab(
         color: None,
         session_id,
         daemon_socket,
+        remote_name,
     });
 
     tab_bar.update_visibility();
@@ -2667,6 +2733,10 @@ fn spawn_daemon_tab(
     let file_manager = Rc::clone(file_manager);
     let notification_bar = notification_bar.clone();
 
+    // Capture the remote name (if any) for the resulting TabEntry — enables
+    // the "Disconnect" right-click menu item.
+    let remote_name = remote.as_ref().map(|(_, name, _, _)| name.clone());
+
     let (tx, rx) = std::sync::mpsc::channel::<DaemonAttachResult>();
 
     std::thread::spawn(move || {
@@ -2742,6 +2812,7 @@ fn spawn_daemon_tab(
                             false,
                             sid,
                             daemon_socket,
+                            remote_name.clone(),
                         );
 
                         // Store color in tab entry and send metadata to daemon
@@ -2869,6 +2940,7 @@ fn spawn_mosh_tab(
                             false,
                             None, // no session_id for mosh
                             None, // no daemon_socket for mosh
+                            None, // no remote_name (mosh isn't RemoteManager-tracked)
                         );
                     }
                     Err(e) => {
@@ -2981,6 +3053,7 @@ fn create_daemon_tab(
                             terminal,
                             false,
                             Some(sid),
+                            None,
                             None,
                         );
                     }
@@ -3157,32 +3230,102 @@ fn close_tab_by_id(
         tabs[index].terminal.destroy_session();
     }
 
-    // Remove from notebook
+    remove_tab_from_ui(notebook, tabs, tab_bar, window, id);
+}
+
+/// Remove a tab from the UI (notebook, tabs vec, tab bar) WITHOUT issuing any
+/// destroy/detach RPC. Closes the window when the last tab is gone.
+///
+/// Callers that need a graceful daemon-side shutdown must invoke either
+/// `terminal.destroy_session()` (kills the PTY) or `terminal.detach_session()`
+/// (keeps the PTY) BEFORE calling this.
+fn remove_tab_from_ui(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    id: u64,
+) {
+    let index = {
+        let tabs = tabs.borrow();
+        tabs.iter().position(|t| t.id == id)
+    };
+    let Some(index) = index else { return };
+
     notebook.remove_page(Some(index as u32));
-
-    // Remove from tabs list
     tabs.borrow_mut().remove(index);
-
-    // Remove from tab bar
     tab_bar.remove_tab(id);
-
-    // Update tab bar visibility (hide if only one tab)
     tab_bar.update_visibility();
 
-    // Close window if no tabs left
     if tabs.borrow().is_empty() {
         window.close();
         return;
     }
 
-    // Update active tab in tab bar
     sync_tab_bar_active(tab_bar, tabs, notebook);
 
-    // Focus the current terminal
     if let Some(page) = notebook.current_page() {
         if let Some(widget) = notebook.nth_page(Some(page)) {
             widget.grab_focus();
         }
+    }
+}
+
+/// Disconnect from a remote: send `detach` to each tab's daemon session
+/// (keeps the remote PTYs alive on the server), kill the shared SSH tunnel
+/// via `RemoteManager`, and remove every tab from the UI without firing the
+/// kill-session RPC.
+fn disconnect_remote(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    remote_manager: &cterm_client::RemoteManager,
+    remote_name: &str,
+) {
+    // Snapshot the tab IDs to remove and tell each one's daemon I/O loop to
+    // detach (best-effort — the loop sends DetachSession over the still-live
+    // shared channel before we kill the tunnel).
+    let tab_ids: Vec<u64> = {
+        let tabs_ref = tabs.borrow();
+        tabs_ref
+            .iter()
+            .filter(|t| t.remote_name.as_deref() == Some(remote_name))
+            .map(|t| {
+                t.terminal.detach_session();
+                t.id
+            })
+            .collect()
+    };
+
+    if tab_ids.is_empty() {
+        return;
+    }
+
+    // Tear down the SSH tunnel asynchronously. Fire-and-forget — the tunnel
+    // process gets SIGTERM and the gRPC channel breaks; the per-tab reader
+    // threads observe the broken stream and exit on their own.
+    let mgr = remote_manager.clone();
+    let name = remote_name.to_string();
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::error!("Failed to build runtime for disconnect: {}", e);
+                return;
+            }
+        };
+        rt.block_on(async {
+            mgr.disconnect(&name).await;
+        });
+    });
+
+    // Remove tabs from the UI immediately (don't wait on the disconnect thread).
+    for id in tab_ids {
+        remove_tab_from_ui(notebook, tabs, tab_bar, window, id);
     }
 }
 

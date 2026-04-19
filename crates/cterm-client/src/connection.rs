@@ -83,6 +83,43 @@ pub struct DaemonInfo {
     pub socket_path: Option<PathBuf>,
 }
 
+/// Handle for a spawned SSH tunnel process. Allows another part of the app
+/// (typically `RemoteManager::disconnect`) to terminate the tunnel without
+/// holding a `&mut Child` (the `Child` is owned by a detached waiter thread).
+///
+/// Cloning is cheap (Arc); calling `kill()` is idempotent.
+#[cfg(unix)]
+#[derive(Clone, Default)]
+pub struct SshTunnelHandle {
+    pid: Arc<std::sync::Mutex<Option<i32>>>,
+}
+
+#[cfg(unix)]
+impl SshTunnelHandle {
+    fn from_child(child: &std::process::Child) -> Self {
+        Self {
+            pid: Arc::new(std::sync::Mutex::new(Some(child.id() as i32))),
+        }
+    }
+
+    /// Send SIGTERM to the tunnel process. No-op if it has already exited.
+    pub fn kill(&self) {
+        let mut guard = self.pid.lock().unwrap();
+        if let Some(pid) = guard.take() {
+            // SAFETY: `kill(2)` with a PID we obtained from our own child
+            // process is safe; the kernel returns ESRCH if the process is gone.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+
+    /// Mark the tunnel as exited (called from the waiter thread).
+    fn mark_exited(&self) {
+        *self.pid.lock().unwrap() = None;
+    }
+}
+
 /// Options for creating a new terminal session
 #[derive(Default)]
 pub struct CreateSessionOpts {
@@ -166,7 +203,7 @@ impl DaemonConnection {
     /// When `compress` is true, SSH compression (`-C`) is enabled on the tunnel,
     /// which significantly reduces bandwidth for terminal data (scrollback, screen snapshots).
     #[cfg(unix)]
-    pub async fn connect_ssh(host: &str, compress: bool) -> Result<Self> {
+    pub async fn connect_ssh(host: &str, compress: bool) -> Result<(Self, SshTunnelHandle)> {
         log::info!("Connecting to {} via SSH", host);
 
         // 1. Single SSH command: find/install ctermd, start daemon, print socket path
@@ -284,16 +321,19 @@ impl DaemonConnection {
 
         // Keep the tunnel process alive in a background thread (not a tokio task,
         // so it survives runtime drops). Clean up the socket when the tunnel exits.
+        let tunnel_handle = SshTunnelHandle::from_child(&tunnel);
         let local_socket_cleanup = local_socket;
+        let waiter_handle = tunnel_handle.clone();
         std::thread::spawn(move || {
             match tunnel.wait() {
                 Ok(status) => log::info!("SSH tunnel exited: {}", status),
                 Err(e) => log::error!("SSH tunnel error: {}", e),
             }
+            waiter_handle.mark_exited();
             let _ = std::fs::remove_file(&local_socket_cleanup);
         });
 
-        Ok(conn)
+        Ok((conn, tunnel_handle))
     }
 
     /// Get the local socket path used for SSH forwarding to a given host

@@ -737,7 +737,7 @@ define_class!(
 
                 let result = match rt {
                     Ok(rt) => rt.block_on(async {
-                        let conn =
+                        let (conn, _tunnel) =
                             cterm_client::DaemonConnection::connect_ssh(&host, true).await?;
 
                         // Attach to all existing running sessions
