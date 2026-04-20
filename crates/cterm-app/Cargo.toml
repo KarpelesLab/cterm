@@ -28,9 +28,6 @@ env_logger.workspace = true
 tar.workspace = true
 flate2.workspace = true
 anyhow.workspace = true
-ssh-key.workspace = true
-ed25519-dalek.workspace = true
-hostname = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

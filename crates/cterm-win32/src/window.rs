@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use cterm_app::config::{Config, ConnectionType, RemoteConfig};
+use cterm_app::config::{Config, RemoteConfig};
 use cterm_app::file_transfer::PendingFileManager;
 use cterm_app::shortcuts::ShortcutManager;
 use cterm_core::color::Rgb;
@@ -1398,20 +1398,6 @@ impl WindowState {
                 MenuAction::ManageRemotes => {
                     crate::remotes_dialog::show_remotes_dialog(self.hwnd.0 as *mut _);
                 }
-                MenuAction::UnixShellsSignIn => {
-                    let ds = std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
-                        cterm_app::config::config_dir().unwrap_or_default(),
-                        self.config.latch.relay_username.clone(),
-                    ));
-                    crate::unixshells_dialog::show_unixshells_dialog(self.hwnd.0 as *mut _, ds);
-                }
-                MenuAction::UnixShellsSignOut => {
-                    let ds = cterm_app::unixshells::DeviceService::new(
-                        cterm_app::config::config_dir().unwrap_or_default(),
-                        self.config.latch.relay_username.clone(),
-                    );
-                    ds.sign_out();
-                }
             }
         }
     }
@@ -2642,41 +2628,8 @@ fn parse_hex_color(hex: &str) -> Option<Rgb> {
 
 /// Build a MoshConfig from a RemoteConfig.
 fn mosh_config_from_remote(remote: &RemoteConfig, cols: u16, rows: u16) -> cterm_mosh::MoshConfig {
-    let connection_type = match remote.connection_type {
-        ConnectionType::Relay => {
-            let relay_host = remote
-                .proxy_jump
-                .as_deref()
-                .unwrap_or("unixshells.com")
-                .to_string();
-            let jump_host = format!("relay.{}", relay_host);
-            cterm_mosh::MoshConnectionType::Relay {
-                relay_host: relay_host.clone(),
-                jump_host,
-                relay_username: remote
-                    .relay_username
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                relay_device: remote
-                    .relay_device
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                session_name: remote
-                    .session_name
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-            }
-        }
-        ConnectionType::Direct => cterm_mosh::MoshConnectionType::Direct,
-    };
     cterm_mosh::MoshConfig {
         host: remote.host.clone(),
-        connection_type,
-        proxy_jump: if remote.connection_type == ConnectionType::Direct {
-            remote.proxy_jump.clone()
-        } else {
-            None
-        },
         cols,
         rows,
         locale: Some("en_US.UTF-8".to_string()),

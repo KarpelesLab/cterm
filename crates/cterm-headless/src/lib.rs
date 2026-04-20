@@ -24,8 +24,6 @@
 pub mod bridge;
 pub mod cli;
 pub mod error;
-#[cfg(feature = "latch")]
-pub mod latch;
 pub mod relaunch;
 pub mod server;
 pub mod service;

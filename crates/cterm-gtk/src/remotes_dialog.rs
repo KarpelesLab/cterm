@@ -11,20 +11,13 @@ use gtk4::{
     ResponseType, Window,
 };
 
-use cterm_app::config::{
-    load_config, save_config, Config, ConnectionMethod, ConnectionType, RemoteConfig,
-};
+use cterm_app::config::{load_config, save_config, Config, ConnectionMethod, RemoteConfig};
 
 /// All form fields wrapped for sharing across closures.
 struct Fields {
     name: Rc<Entry>,
     host: Rc<Entry>,
     method: Rc<ComboBoxText>,
-    conn_type: Rc<ComboBoxText>,
-    proxy: Rc<Entry>,
-    relay_user: Rc<Entry>,
-    relay_device: Rc<Entry>,
-    session_name: Rc<Entry>,
     remote_combo: Rc<ComboBoxText>,
 }
 
@@ -40,30 +33,12 @@ impl Fields {
                     ConnectionMethod::Daemon => 0,
                     ConnectionMethod::Mosh => 1,
                 }));
-                self.conn_type
-                    .set_active(Some(match remote.connection_type {
-                        ConnectionType::Direct => 0,
-                        ConnectionType::Relay => 1,
-                    }));
-                self.proxy
-                    .set_text(remote.proxy_jump.as_deref().unwrap_or(""));
-                self.relay_user
-                    .set_text(remote.relay_username.as_deref().unwrap_or(""));
-                self.relay_device
-                    .set_text(remote.relay_device.as_deref().unwrap_or(""));
-                self.session_name
-                    .set_text(remote.session_name.as_deref().unwrap_or(""));
                 return;
             }
         }
         self.name.set_text("");
         self.host.set_text("");
         self.method.set_active(Some(0));
-        self.conn_type.set_active(Some(0));
-        self.proxy.set_text("");
-        self.relay_user.set_text("");
-        self.relay_device.set_text("");
-        self.session_name.set_text("");
     }
 
     fn save(&self, config: &Rc<RefCell<Config>>) {
@@ -77,22 +52,9 @@ impl Fields {
                     Some(1) => ConnectionMethod::Mosh,
                     _ => ConnectionMethod::Daemon,
                 };
-                remote.connection_type = match self.conn_type.active() {
-                    Some(1) => ConnectionType::Relay,
-                    _ => ConnectionType::Direct,
-                };
-                set_opt(&self.proxy, &mut remote.proxy_jump);
-                set_opt(&self.relay_user, &mut remote.relay_username);
-                set_opt(&self.relay_device, &mut remote.relay_device);
-                set_opt(&self.session_name, &mut remote.session_name);
             }
         }
     }
-}
-
-fn set_opt(entry: &Entry, target: &mut Option<String>) {
-    let val = entry.text().to_string();
-    *target = if val.is_empty() { None } else { Some(val) };
 }
 
 fn populate_combo(combo: &ComboBoxText, remotes: &[RemoteConfig]) {
@@ -170,42 +132,6 @@ where
     method_combo.set_active(Some(0));
     attach_label(&grid, "Method:", row);
     grid.attach(&method_combo, 1, row, 1, 1);
-    row += 1;
-
-    let conn_type_combo = ComboBoxText::new();
-    conn_type_combo.append_text("Direct");
-    conn_type_combo.append_text("Relay");
-    conn_type_combo.set_active(Some(0));
-    attach_label(&grid, "Type:", row);
-    grid.attach(&conn_type_combo, 1, row, 1, 1);
-    row += 1;
-
-    let proxy_entry = Entry::new();
-    proxy_entry.set_placeholder_text(Some("unixshells.com"));
-    proxy_entry.set_hexpand(true);
-    attach_label(&grid, "Proxy/Relay:", row);
-    grid.attach(&proxy_entry, 1, row, 1, 1);
-    row += 1;
-
-    let relay_user_entry = Entry::new();
-    relay_user_entry.set_placeholder_text(Some("username"));
-    relay_user_entry.set_hexpand(true);
-    attach_label(&grid, "Relay User:", row);
-    grid.attach(&relay_user_entry, 1, row, 1, 1);
-    row += 1;
-
-    let relay_device_entry = Entry::new();
-    relay_device_entry.set_placeholder_text(Some("device-name"));
-    relay_device_entry.set_hexpand(true);
-    attach_label(&grid, "Device:", row);
-    grid.attach(&relay_device_entry, 1, row, 1, 1);
-    row += 1;
-
-    let session_name_entry = Entry::new();
-    session_name_entry.set_placeholder_text(Some("default"));
-    session_name_entry.set_hexpand(true);
-    attach_label(&grid, "Session:", row);
-    grid.attach(&session_name_entry, 1, row, 1, 1);
 
     content.append(&grid);
 
@@ -213,11 +139,6 @@ where
         name: Rc::new(name_entry),
         host: Rc::new(host_entry),
         method: Rc::new(method_combo),
-        conn_type: Rc::new(conn_type_combo),
-        proxy: Rc::new(proxy_entry),
-        relay_user: Rc::new(relay_user_entry),
-        relay_device: Rc::new(relay_device_entry),
-        session_name: Rc::new(session_name_entry),
         remote_combo: Rc::new(remote_combo),
     });
 
@@ -263,16 +184,6 @@ where
         fields.host.connect_changed(move |_| u());
         let u = Rc::clone(&update);
         fields.method.connect_changed(move |_| u());
-        let u = Rc::clone(&update);
-        fields.conn_type.connect_changed(move |_| u());
-        let u = Rc::clone(&update);
-        fields.proxy.connect_changed(move |_| u());
-        let u = Rc::clone(&update);
-        fields.relay_user.connect_changed(move |_| u());
-        let u = Rc::clone(&update);
-        fields.relay_device.connect_changed(move |_| u());
-        let u = Rc::clone(&update);
-        fields.session_name.connect_changed(move |_| u());
     }
 
     // Add button
@@ -286,11 +197,6 @@ where
                 name,
                 host: String::new(),
                 method: Default::default(),
-                connection_type: Default::default(),
-                proxy_jump: None,
-                relay_username: None,
-                relay_device: None,
-                session_name: None,
                 ssh_compression: true,
             });
             let new_idx = cfg.remotes.len() - 1;

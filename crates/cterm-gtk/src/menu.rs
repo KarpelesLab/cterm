@@ -18,13 +18,7 @@ fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
 ///
 /// If `show_debug` is true, includes a Debug submenu in the Help menu
 /// with developer/testing options.
-/// The Unix Shells submenu returned alongside the main menu model.
-pub struct MenuResult {
-    pub menu: gio::Menu,
-    pub unixshells_menu: gio::Menu,
-}
-
-pub fn create_menu_model_with_options(show_debug: bool) -> MenuResult {
+pub fn create_menu_model_with_options(show_debug: bool) -> gio::Menu {
     let menu = gio::Menu::new();
 
     // File menu
@@ -52,11 +46,6 @@ pub fn create_menu_model_with_options(show_debug: bool) -> MenuResult {
     session_menu.append(Some("SSH Remote..."), Some("win.ssh-connect"));
     session_menu.append(Some("Manage Remotes..."), Some("win.manage-remotes"));
     file_menu.append_submenu(Some("Sessions"), &session_menu);
-
-    // Unix Shells submenu (dynamic — rebuilt when device list changes)
-    let unixshells_menu = gio::Menu::new();
-    unixshells_menu.append(Some("Sign In..."), Some("win.unixshells-signin"));
-    file_menu.append_submenu(Some("Unix Shells"), &unixshells_menu);
 
     file_menu.append(Some("Tab Templates..."), Some("win.tab-templates"));
     file_menu.append_item(&menu_item(
@@ -143,10 +132,7 @@ pub fn create_menu_model_with_options(show_debug: bool) -> MenuResult {
 
     menu.append_submenu(Some("Help"), &help_menu);
 
-    MenuResult {
-        menu,
-        unixshells_menu,
-    }
+    menu
 }
 
 /// Create the tools submenu from loaded tool shortcuts
@@ -164,8 +150,7 @@ fn create_tools_submenu() -> gio::Menu {
 /// Rebuild the Tools menu in the menu bar (called after preferences save).
 /// Rebuilds the entire menu model and replaces it on the PopoverMenuBar.
 #[allow(dead_code)]
-pub fn rebuild_menu_bar(menu_bar: &gtk4::PopoverMenuBar, show_debug: bool) -> gio::Menu {
-    let result = create_menu_model_with_options(show_debug);
-    menu_bar.set_menu_model(Some(&result.menu));
-    result.unixshells_menu
+pub fn rebuild_menu_bar(menu_bar: &gtk4::PopoverMenuBar, show_debug: bool) {
+    let menu = create_menu_model_with_options(show_debug);
+    menu_bar.set_menu_model(Some(&menu));
 }

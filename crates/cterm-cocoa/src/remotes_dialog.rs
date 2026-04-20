@@ -14,7 +14,7 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
-use cterm_app::config::{save_config, Config, ConnectionMethod, ConnectionType, RemoteConfig};
+use cterm_app::config::{save_config, Config, ConnectionMethod, RemoteConfig};
 use std::cell::RefCell;
 
 pub struct RemotesDialogIvars {
@@ -23,11 +23,6 @@ pub struct RemotesDialogIvars {
     name_field: RefCell<Option<Retained<NSTextField>>>,
     host_field: RefCell<Option<Retained<NSTextField>>>,
     method_popup: RefCell<Option<Retained<objc2_app_kit::NSPopUpButton>>>,
-    conn_type_popup: RefCell<Option<Retained<objc2_app_kit::NSPopUpButton>>>,
-    proxy_field: RefCell<Option<Retained<NSTextField>>>,
-    relay_user_field: RefCell<Option<Retained<NSTextField>>>,
-    relay_device_field: RefCell<Option<Retained<NSTextField>>>,
-    session_name_field: RefCell<Option<Retained<NSTextField>>>,
 }
 
 define_class!(
@@ -58,11 +53,6 @@ define_class!(
                 name,
                 host: String::new(),
                 method: Default::default(),
-                connection_type: Default::default(),
-                proxy_jump: None,
-                relay_username: None,
-                relay_device: None,
-                session_name: None,
                 ssh_compression: true,
             });
             let new_idx = config.remotes.len() - 1;
@@ -156,28 +146,6 @@ impl RemotesDialog {
                         ConnectionMethod::Mosh => 1,
                     });
                 }
-                if let Some(p) = ivars.conn_type_popup.borrow().as_ref() {
-                    p.selectItemAtIndex(match remote.connection_type {
-                        ConnectionType::Direct => 0,
-                        ConnectionType::Relay => 1,
-                    });
-                }
-                set_text(
-                    &ivars.proxy_field,
-                    remote.proxy_jump.as_deref().unwrap_or(""),
-                );
-                set_text(
-                    &ivars.relay_user_field,
-                    remote.relay_username.as_deref().unwrap_or(""),
-                );
-                set_text(
-                    &ivars.relay_device_field,
-                    remote.relay_device.as_deref().unwrap_or(""),
-                );
-                set_text(
-                    &ivars.session_name_field,
-                    remote.session_name.as_deref().unwrap_or(""),
-                );
                 return;
             }
         }
@@ -188,13 +156,6 @@ impl RemotesDialog {
         if let Some(p) = ivars.method_popup.borrow().as_ref() {
             p.selectItemAtIndex(0);
         }
-        if let Some(p) = ivars.conn_type_popup.borrow().as_ref() {
-            p.selectItemAtIndex(0);
-        }
-        set_text(&ivars.proxy_field, "");
-        set_text(&ivars.relay_user_field, "");
-        set_text(&ivars.relay_device_field, "");
-        set_text(&ivars.session_name_field, "");
     }
 
     fn save_current_to_config(&self) {
@@ -220,16 +181,6 @@ impl RemotesDialog {
                         _ => ConnectionMethod::Daemon,
                     };
                 }
-                if let Some(p) = ivars.conn_type_popup.borrow().as_ref() {
-                    remote.connection_type = match p.indexOfSelectedItem() {
-                        1 => ConnectionType::Relay,
-                        _ => ConnectionType::Direct,
-                    };
-                }
-                read_opt(&ivars.proxy_field, &mut remote.proxy_jump);
-                read_opt(&ivars.relay_user_field, &mut remote.relay_username);
-                read_opt(&ivars.relay_device_field, &mut remote.relay_device);
-                read_opt(&ivars.session_name_field, &mut remote.session_name);
             }
             drop(config);
             self.refresh_list();
@@ -247,14 +198,6 @@ fn set_text(field: &RefCell<Option<Retained<NSTextField>>>, value: &str) {
     }
 }
 
-/// Read an optional string from a text field (empty → None).
-fn read_opt(field: &RefCell<Option<Retained<NSTextField>>>, target: &mut Option<String>) {
-    if let Some(f) = field.borrow().as_ref() {
-        let val = f.stringValue().to_string();
-        *target = if val.is_empty() { None } else { Some(val) };
-    }
-}
-
 pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
     let content_rect = NSRect::new(NSPoint::new(300.0, 200.0), NSSize::new(420.0, 480.0));
     let style_mask =
@@ -267,11 +210,6 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
         name_field: RefCell::new(None),
         host_field: RefCell::new(None),
         method_popup: RefCell::new(None),
-        conn_type_popup: RefCell::new(None),
-        proxy_field: RefCell::new(None),
-        relay_user_field: RefCell::new(None),
-        relay_device_field: RefCell::new(None),
-        session_name_field: RefCell::new(None),
     });
 
     let this: Retained<RemotesDialog> = unsafe {
@@ -391,102 +329,6 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
     method_row.addView_inGravity(&method_popup, NSStackViewGravity::Leading);
     main_stack.addView_inGravity(&method_row, NSStackViewGravity::Top);
 
-    // Connection Type popup
-    let conn_type_row = unsafe { NSStackView::new(mtm) };
-    conn_type_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    conn_type_row.setSpacing(8.0);
-    let conn_type_label =
-        unsafe { NSTextField::labelWithString(&NSString::from_str("Type:"), mtm) };
-    unsafe {
-        let _: () = msg_send![&*conn_type_label, setPreferredMaxLayoutWidth: 60.0f64];
-    }
-    let conn_type_popup = unsafe {
-        let p = objc2_app_kit::NSPopUpButton::new(mtm);
-        p.addItemWithTitle(&NSString::from_str("Direct"));
-        p.addItemWithTitle(&NSString::from_str("Relay"));
-        p.setTarget(Some(&*this));
-        p.setAction(Some(sel!(methodChanged:)));
-        p
-    };
-    conn_type_row.addView_inGravity(&conn_type_label, NSStackViewGravity::Leading);
-    conn_type_row.addView_inGravity(&conn_type_popup, NSStackViewGravity::Leading);
-    main_stack.addView_inGravity(&conn_type_row, NSStackViewGravity::Top);
-
-    // Proxy Jump field
-    let proxy_row = unsafe { NSStackView::new(mtm) };
-    proxy_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    proxy_row.setSpacing(8.0);
-    let proxy_label = unsafe { NSTextField::labelWithString(&NSString::from_str("Proxy:"), mtm) };
-    unsafe {
-        let _: () = msg_send![&*proxy_label, setPreferredMaxLayoutWidth: 60.0f64];
-    }
-    let proxy_field = unsafe {
-        let f = NSTextField::new(mtm);
-        f.setPlaceholderString(Some(&NSString::from_str("unixshells.com")));
-        f.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*this)));
-        f
-    };
-    proxy_row.addView_inGravity(&proxy_label, NSStackViewGravity::Leading);
-    proxy_row.addView_inGravity(&proxy_field, NSStackViewGravity::Leading);
-    main_stack.addView_inGravity(&proxy_row, NSStackViewGravity::Top);
-
-    // Relay Username field
-    let relay_user_row = unsafe { NSStackView::new(mtm) };
-    relay_user_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    relay_user_row.setSpacing(8.0);
-    let relay_user_label =
-        unsafe { NSTextField::labelWithString(&NSString::from_str("Relay User:"), mtm) };
-    unsafe {
-        let _: () = msg_send![&*relay_user_label, setPreferredMaxLayoutWidth: 60.0f64];
-    }
-    let relay_user_field = unsafe {
-        let f = NSTextField::new(mtm);
-        f.setPlaceholderString(Some(&NSString::from_str("username")));
-        f.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*this)));
-        f
-    };
-    relay_user_row.addView_inGravity(&relay_user_label, NSStackViewGravity::Leading);
-    relay_user_row.addView_inGravity(&relay_user_field, NSStackViewGravity::Leading);
-    main_stack.addView_inGravity(&relay_user_row, NSStackViewGravity::Top);
-
-    // Relay Device field
-    let relay_device_row = unsafe { NSStackView::new(mtm) };
-    relay_device_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    relay_device_row.setSpacing(8.0);
-    let relay_device_label =
-        unsafe { NSTextField::labelWithString(&NSString::from_str("Device:"), mtm) };
-    unsafe {
-        let _: () = msg_send![&*relay_device_label, setPreferredMaxLayoutWidth: 60.0f64];
-    }
-    let relay_device_field = unsafe {
-        let f = NSTextField::new(mtm);
-        f.setPlaceholderString(Some(&NSString::from_str("device-name")));
-        f.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*this)));
-        f
-    };
-    relay_device_row.addView_inGravity(&relay_device_label, NSStackViewGravity::Leading);
-    relay_device_row.addView_inGravity(&relay_device_field, NSStackViewGravity::Leading);
-    main_stack.addView_inGravity(&relay_device_row, NSStackViewGravity::Top);
-
-    // Session Name field
-    let session_name_row = unsafe { NSStackView::new(mtm) };
-    session_name_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    session_name_row.setSpacing(8.0);
-    let session_name_label =
-        unsafe { NSTextField::labelWithString(&NSString::from_str("Session:"), mtm) };
-    unsafe {
-        let _: () = msg_send![&*session_name_label, setPreferredMaxLayoutWidth: 60.0f64];
-    }
-    let session_name_field = unsafe {
-        let f = NSTextField::new(mtm);
-        f.setPlaceholderString(Some(&NSString::from_str("default")));
-        f.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*this)));
-        f
-    };
-    session_name_row.addView_inGravity(&session_name_label, NSStackViewGravity::Leading);
-    session_name_row.addView_inGravity(&session_name_field, NSStackViewGravity::Leading);
-    main_stack.addView_inGravity(&session_name_row, NSStackViewGravity::Top);
-
     // Bottom row: Cancel / Save
     let bottom_row = unsafe { NSStackView::new(mtm) };
     bottom_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -518,11 +360,6 @@ pub fn show_remotes_dialog(mtm: MainThreadMarker, config: Config) {
     *this.ivars().name_field.borrow_mut() = Some(name_field);
     *this.ivars().host_field.borrow_mut() = Some(host_field);
     *this.ivars().method_popup.borrow_mut() = Some(method_popup);
-    *this.ivars().conn_type_popup.borrow_mut() = Some(conn_type_popup);
-    *this.ivars().proxy_field.borrow_mut() = Some(proxy_field);
-    *this.ivars().relay_user_field.borrow_mut() = Some(relay_user_field);
-    *this.ivars().relay_device_field.borrow_mut() = Some(relay_device_field);
-    *this.ivars().session_name_field.borrow_mut() = Some(session_name_field);
 
     // Populate list
     this.refresh_list();

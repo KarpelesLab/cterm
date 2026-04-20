@@ -9,7 +9,7 @@ use gtk4::{
     Orientation, PopoverMenuBar,
 };
 
-use cterm_app::config::{Config, ConnectionType, RemoteConfig};
+use cterm_app::config::{Config, RemoteConfig};
 use cterm_app::file_transfer::PendingFileManager;
 use cterm_app::shortcuts::ShortcutManager;
 use cterm_ui::events::{Action, KeyCode, Modifiers};
@@ -59,8 +59,6 @@ pub struct CtermWindow {
     file_manager: Rc<RefCell<PendingFileManager>>,
     quick_open: QuickOpenOverlay,
     remote_manager: cterm_client::RemoteManager,
-    unixshells_service: std::sync::Arc<cterm_app::unixshells::DeviceService>,
-    unixshells_menu: gio::Menu,
 }
 
 /// Show an error dialog when a seamless upgrade fails.
@@ -99,9 +97,8 @@ impl CtermWindow {
         let main_box = GtkBox::new(Orientation::Vertical, 0);
 
         // Create menu bar
-        let menu_result = menu::create_menu_model_with_options(config.general.show_debug_menu);
-        let unixshells_menu = menu_result.unixshells_menu.clone();
-        let menu_bar = PopoverMenuBar::from_model(Some(&menu_result.menu));
+        let menu_model = menu::create_menu_model_with_options(config.general.show_debug_menu);
+        let menu_bar = PopoverMenuBar::from_model(Some(&menu_model));
         main_box.append(&menu_bar);
 
         // Create tab bar
@@ -149,16 +146,10 @@ impl CtermWindow {
             file_manager,
             quick_open,
             remote_manager: cterm_client::RemoteManager::new(),
-            unixshells_service: std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
-                cterm_app::config::config_dir().unwrap_or_default(),
-                config.latch.relay_username.clone(),
-            )),
-            unixshells_menu: unixshells_menu.clone(),
         };
 
         // Set up window actions
         cterm_window.setup_actions();
-        cterm_window.setup_unixshells_menu_poller();
 
         // Set up Quick Open callback
         cterm_window.setup_quick_open();
@@ -215,9 +206,8 @@ impl CtermWindow {
 
         let main_box = GtkBox::new(Orientation::Vertical, 0);
 
-        let menu_result = menu::create_menu_model_with_options(config.general.show_debug_menu);
-        let unixshells_menu = menu_result.unixshells_menu.clone();
-        let menu_bar = PopoverMenuBar::from_model(Some(&menu_result.menu));
+        let menu_model = menu::create_menu_model_with_options(config.general.show_debug_menu);
+        let menu_bar = PopoverMenuBar::from_model(Some(&menu_model));
         main_box.append(&menu_bar);
 
         let tab_bar = TabBar::new();
@@ -258,15 +248,9 @@ impl CtermWindow {
             file_manager,
             quick_open,
             remote_manager: cterm_client::RemoteManager::new(),
-            unixshells_service: std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
-                cterm_app::config::config_dir().unwrap_or_default(),
-                config.latch.relay_username.clone(),
-            )),
-            unixshells_menu: unixshells_menu.clone(),
         };
 
         cterm_window.setup_actions();
-        cterm_window.setup_unixshells_menu_poller();
         cterm_window.setup_quick_open();
         cterm_window.setup_key_handler();
         cterm_window.setup_focus_handler();
@@ -612,99 +596,6 @@ impl CtermWindow {
                 crate::remotes_dialog::show_remotes_dialog(&window_clone, || {
                     log::info!("Remotes configuration saved");
                 });
-            });
-            window.add_action(&action);
-        }
-
-        // Unix Shells actions
-        {
-            // Sign In
-            let window_clone = window.clone();
-            let ds = std::sync::Arc::clone(&self.unixshells_service);
-            let action = gio::SimpleAction::new("unixshells-signin", None);
-            action.connect_activate(move |_, _| {
-                crate::unixshells_dialog::show_signin_dialog(&window_clone, &ds);
-            });
-            window.add_action(&action);
-
-            // Sign Out
-            let ds = std::sync::Arc::clone(&self.unixshells_service);
-            let action = gio::SimpleAction::new("unixshells-signout", None);
-            action.connect_activate(move |_, _| {
-                ds.sign_out();
-            });
-            window.add_action(&action);
-
-            // Connect to device (parameterized action)
-            let notebook_us = notebook.clone();
-            let tabs_us = Rc::clone(&tabs);
-            let next_tab_id_us = Rc::clone(&self.next_tab_id);
-            let config_us = Rc::clone(&self.config);
-            let theme_us = self.theme.clone();
-            let tab_bar_us = self.tab_bar.clone();
-            let window_us = window.clone();
-            let has_bell_us = Rc::clone(&self.has_bell);
-            let file_manager_us = Rc::clone(&self.file_manager);
-            let notification_bar_us = self.notification_bar.clone();
-            let ds = std::sync::Arc::clone(&self.unixshells_service);
-            let action = gio::SimpleAction::new(
-                "unixshells-connect",
-                Some(glib::VariantTy::new("s").unwrap()),
-            );
-            action.connect_activate(move |_, param| {
-                let Some(device_name) = param.and_then(|v| v.get::<String>()) else {
-                    return;
-                };
-
-                // Get username from service
-                let username = match ds.login_state() {
-                    cterm_app::unixshells::LoginState::LoggedIn { username } => username,
-                    _ => return,
-                };
-
-                // Find session name from device list
-                let session_name = {
-                    let devices = ds.devices();
-                    devices
-                        .iter()
-                        .find(|d| d.device == device_name)
-                        .and_then(|d| d.sessions.first())
-                        .map(|s| s.name.clone())
-                        .unwrap_or_else(|| "default".to_string())
-                };
-
-                // Build RemoteConfig for mosh relay connection
-                let remote = cterm_app::config::RemoteConfig {
-                    name: format!("unixshells-{}", device_name),
-                    host: "jump@relay.unixshells.com".to_string(),
-                    method: cterm_app::config::ConnectionMethod::Mosh,
-                    connection_type: cterm_app::config::ConnectionType::Relay,
-                    proxy_jump: None,
-                    relay_username: Some(username.clone()),
-                    relay_device: Some(device_name.clone()),
-                    session_name: Some(session_name),
-                    ssh_compression: true,
-                };
-
-                let mosh_config = mosh_config_from_remote(&remote, 80, 24);
-
-                spawn_mosh_tab(
-                    &notebook_us,
-                    &tabs_us,
-                    &next_tab_id_us,
-                    &config_us,
-                    &theme_us,
-                    &tab_bar_us,
-                    &window_us,
-                    &has_bell_us,
-                    &file_manager_us,
-                    &notification_bar_us,
-                    mosh_config,
-                    device_name,
-                    None,
-                    None,
-                    false,
-                );
             });
             window.add_action(&action);
         }
@@ -1881,72 +1772,6 @@ impl CtermWindow {
     }
 
     /// Set up Quick Open overlay callback
-    /// Poll the Unix Shells DeviceService for changes and rebuild the menu.
-    fn setup_unixshells_menu_poller(&self) {
-        let ds = std::sync::Arc::clone(&self.unixshells_service);
-        let menu = self.unixshells_menu.clone();
-        let last_version = Rc::new(RefCell::new(0u64));
-
-        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
-            let current = ds.version.load(std::sync::atomic::Ordering::Relaxed);
-            if current == *last_version.borrow() {
-                return glib::ControlFlow::Continue;
-            }
-            *last_version.borrow_mut() = current;
-
-            // Rebuild the Unix Shells submenu
-            menu.remove_all();
-
-            match ds.login_state() {
-                cterm_app::unixshells::LoginState::LoggedOut => {
-                    menu.append(Some("Sign In..."), Some("win.unixshells-signin"));
-                }
-                cterm_app::unixshells::LoginState::PendingApproval { username, .. } => {
-                    let item =
-                        gio::MenuItem::new(Some(&format!("{} (pending...)", username)), None);
-                    item.set_attribute_value("action", None::<&glib::Variant>);
-                    menu.append_item(&item);
-                }
-                cterm_app::unixshells::LoginState::LoggedIn { ref username } => {
-                    // Username label (non-clickable)
-                    let item = gio::MenuItem::new(Some(username), None);
-                    menu.append_item(&item);
-
-                    // Devices
-                    let devices = ds.devices();
-                    if !devices.is_empty() {
-                        let devices_section = gio::Menu::new();
-                        for device in &devices {
-                            let has_sessions = device.sessions.iter().any(|s| s.status == "alive");
-                            let label = if has_sessions || device.online {
-                                format!("{} (online)", device.device)
-                            } else {
-                                format!("{} (offline)", device.device)
-                            };
-
-                            if has_sessions || device.online {
-                                let action = format!("win.unixshells-connect::{}", device.device);
-                                devices_section.append(Some(&label), Some(&action));
-                            } else {
-                                // Offline device — no action
-                                let item = gio::MenuItem::new(Some(&label), None);
-                                devices_section.append_item(&item);
-                            }
-                        }
-                        menu.append_section(None, &devices_section);
-                    }
-
-                    // Sign out
-                    let signout_section = gio::Menu::new();
-                    signout_section.append(Some("Sign Out"), Some("win.unixshells-signout"));
-                    menu.append_section(None, &signout_section);
-                }
-            }
-
-            glib::ControlFlow::Continue
-        });
-    }
-
     fn setup_quick_open(&self) {
         let notebook = self.notebook.clone();
         let tabs = Rc::clone(&self.tabs);
@@ -3678,41 +3503,8 @@ fn calculate_initial_cell_dimensions(config: &Config) -> CellDimensions {
 
 /// Build a MoshConfig from a RemoteConfig.
 fn mosh_config_from_remote(remote: &RemoteConfig, cols: u16, rows: u16) -> cterm_mosh::MoshConfig {
-    let connection_type = match remote.connection_type {
-        ConnectionType::Relay => {
-            let relay_host = remote
-                .proxy_jump
-                .as_deref()
-                .unwrap_or("unixshells.com")
-                .to_string();
-            let jump_host = format!("relay.{}", relay_host);
-            cterm_mosh::MoshConnectionType::Relay {
-                relay_host: relay_host.clone(),
-                jump_host,
-                relay_username: remote
-                    .relay_username
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                relay_device: remote
-                    .relay_device
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                session_name: remote
-                    .session_name
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-            }
-        }
-        ConnectionType::Direct => cterm_mosh::MoshConnectionType::Direct,
-    };
     cterm_mosh::MoshConfig {
         host: remote.host.clone(),
-        connection_type,
-        proxy_jump: if remote.connection_type == ConnectionType::Direct {
-            remote.proxy_jump.clone()
-        } else {
-            None
-        },
         cols,
         rows,
         locale: Some("en_US.UTF-8".to_string()),

@@ -70,10 +70,6 @@ pub enum MenuAction {
     SSHConnect = 7002,
     ManageRemotes = 7003,
 
-    // Unix Shells menu
-    UnixShellsSignIn = 8001,
-    UnixShellsSignOut = 8002,
-
     // Debug menu (shown when Shift is held)
     DebugRelaunch = 6001,
     DebugDumpState = 6002,
@@ -129,8 +125,6 @@ impl MenuAction {
             7001 => Some(Self::AttachSession),
             7002 => Some(Self::SSHConnect),
             7003 => Some(Self::ManageRemotes),
-            8001 => Some(Self::UnixShellsSignIn),
-            8002 => Some(Self::UnixShellsSignOut),
             6001 => Some(Self::DebugRelaunch),
             6002 => Some(Self::DebugDumpState),
             6003 => Some(Self::ViewLogs),
@@ -181,11 +175,6 @@ pub fn create_menu_bar(show_debug: bool) -> HMENU {
             "&Manage Remotes...",
         );
         append_popup_menu(file_menu, sessions_menu, "S&essions");
-
-        // Unix Shells submenu
-        let unixshells_menu = CreatePopupMenu();
-        append_menu_item(unixshells_menu, MenuAction::UnixShellsSignIn, "&Sign In...");
-        append_popup_menu(file_menu, unixshells_menu, "&Unix Shells");
 
         append_separator(file_menu);
         append_menu_item(file_menu, MenuAction::Quit, "&Quit\tAlt+F4");

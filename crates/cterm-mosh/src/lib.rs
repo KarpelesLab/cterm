@@ -17,36 +17,11 @@ pub mod transport;
 
 pub use session::MoshSession;
 
-/// Connection type for mosh: direct or via relay.
-#[derive(Debug, Clone, Default)]
-pub enum MoshConnectionType {
-    /// Direct SSH + UDP to the target host
-    #[default]
-    Direct,
-    /// Via relay server (3-hop SSH tunnel)
-    Relay {
-        /// Relay host (e.g., "unixshells.com")
-        relay_host: String,
-        /// Jump host (e.g., "relay.unixshells.com")
-        jump_host: String,
-        /// Relay account username
-        relay_username: String,
-        /// Relay device name
-        relay_device: String,
-        /// Latch session name (e.g., "default")
-        session_name: String,
-    },
-}
-
 /// Configuration for a mosh connection.
 #[derive(Debug, Clone)]
 pub struct MoshConfig {
     /// SSH destination (user@hostname or hostname)
     pub host: String,
-    /// Connection type: direct or relay
-    pub connection_type: MoshConnectionType,
-    /// SSH ProxyJump for direct connections (e.g., "bastion.example.com")
-    pub proxy_jump: Option<String>,
     /// Terminal columns
     pub cols: u16,
     /// Terminal rows

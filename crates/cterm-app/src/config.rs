@@ -44,9 +44,6 @@ pub struct Config {
     pub remotes: Vec<RemoteConfig>,
     /// Sticky tabs configuration
     pub sticky_tabs: Vec<StickyTabConfig>,
-    /// Latch server configuration (SSH/mosh/web server in ctermd)
-    #[serde(default)]
-    pub latch: LatchConfig,
 }
 
 /// Connection method for remote sessions.
@@ -58,17 +55,6 @@ pub enum ConnectionMethod {
     Daemon,
     /// Connect via mosh protocol (encrypted UDP, tolerates roaming)
     Mosh,
-}
-
-/// Connection type: direct SSH or via relay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ConnectionType {
-    /// Direct SSH to the target host
-    #[default]
-    Direct,
-    /// Via relay server (3-hop SSH tunnel: jump host → tunnel → target)
-    Relay,
 }
 
 /// A named remote host for daemon-backed or mosh sessions.
@@ -83,11 +69,6 @@ pub enum ConnectionType {
 /// name = "dev-server"
 /// host = "user@dev.example.com"
 /// method = "daemon"  # or "mosh"
-/// connection_type = "direct"  # or "relay"
-/// proxy_jump = "relay.example.com"  # optional, for NAT traversal
-/// relay_username = "myuser"  # relay account username
-/// relay_device = "mydevice"  # relay device name
-/// session_name = "default"  # latch session name
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
@@ -98,21 +79,6 @@ pub struct RemoteConfig {
     /// Connection method (defaults to "daemon")
     #[serde(default)]
     pub method: ConnectionMethod,
-    /// Connection type: direct or relay (defaults to "direct")
-    #[serde(default)]
-    pub connection_type: ConnectionType,
-    /// SSH ProxyJump host for relay/NAT traversal
-    #[serde(default)]
-    pub proxy_jump: Option<String>,
-    /// Relay account username (for relay connections)
-    #[serde(default)]
-    pub relay_username: Option<String>,
-    /// Relay device name (for relay connections)
-    #[serde(default)]
-    pub relay_device: Option<String>,
-    /// Latch session name (for relay connections, defaults to "default")
-    #[serde(default)]
-    pub session_name: Option<String>,
     /// Enable SSH compression (-C flag). Defaults to true.
     /// Reduces bandwidth for remote connections, especially useful on slow/mobile networks.
     #[serde(default = "default_true")]
@@ -565,76 +531,6 @@ impl Default for ShortcutsConfig {
             preferences: "Ctrl+Comma".into(),
             find: "Ctrl+Shift+F".into(),
             reset: "Ctrl+Shift+R".into(),
-        }
-    }
-}
-
-/// Latch server configuration (SSH/mosh/web server embedded in ctermd)
-///
-/// When enabled, ctermd exposes an SSH server, optional mosh transport, and
-/// optional web terminal. Remote users connect to named sessions using
-/// public-key authentication.
-///
-/// ```toml
-/// [latch]
-/// enabled = true
-/// ssh_listen = "0.0.0.0:2222"
-/// mosh_enabled = true
-/// web_enabled = false
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LatchConfig {
-    /// Enable the latch server feature
-    pub enabled: bool,
-    /// SSH listen address (e.g., "0.0.0.0:2222")
-    pub ssh_listen: String,
-    /// Path to SSH host key (auto-generated Ed25519 if missing)
-    pub host_key_path: Option<String>,
-    /// Path to authorized_keys file
-    pub authorized_keys_path: Option<String>,
-    /// Enable mosh transport (UDP)
-    pub mosh_enabled: bool,
-    /// Start of UDP port range for mosh sessions
-    pub mosh_port_start: u16,
-    /// End of UDP port range for mosh sessions
-    pub mosh_port_end: u16,
-    /// Enable web terminal (HTTPS + WebSocket + xterm.js)
-    pub web_enabled: bool,
-    /// Web terminal listen address (e.g., "0.0.0.0:7680")
-    pub web_listen: String,
-    /// Enable relay connection for NAT traversal
-    pub relay_enabled: bool,
-    /// Relay server hostname
-    pub relay_host: String,
-    /// Relay account username
-    pub relay_username: Option<String>,
-    /// Relay device name (defaults to hostname)
-    pub relay_device: Option<String>,
-    /// Maximum concurrent latch sessions
-    pub max_sessions: usize,
-    /// Render coalesce window in milliseconds
-    pub render_coalesce_ms: u64,
-}
-
-impl Default for LatchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ssh_listen: "0.0.0.0:2222".into(),
-            host_key_path: None,
-            authorized_keys_path: None,
-            mosh_enabled: true,
-            mosh_port_start: 60000,
-            mosh_port_end: 61000,
-            web_enabled: false,
-            web_listen: "0.0.0.0:7680".into(),
-            relay_enabled: false,
-            relay_host: "unixshells.com".into(),
-            relay_username: None,
-            relay_device: None,
-            max_sessions: 64,
-            render_coalesce_ms: 2,
         }
     }
 }

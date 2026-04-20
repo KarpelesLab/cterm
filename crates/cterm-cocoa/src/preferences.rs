@@ -85,19 +85,6 @@ pub struct PreferencesWindowIvars {
     git_branch_label: RefCell<Option<Retained<NSTextField>>>,
     git_last_sync_label: RefCell<Option<Retained<NSTextField>>>,
     git_changes_label: RefCell<Option<Retained<NSTextField>>>,
-    // Latch tab controls
-    latch_enabled_checkbox: RefCell<Option<Retained<NSButton>>>,
-    latch_ssh_listen_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_mosh_checkbox: RefCell<Option<Retained<NSButton>>>,
-    latch_mosh_port_start_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_mosh_port_end_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_web_checkbox: RefCell<Option<Retained<NSButton>>>,
-    latch_web_listen_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_relay_checkbox: RefCell<Option<Retained<NSButton>>>,
-    latch_relay_host_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_relay_username_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_relay_device_field: RefCell<Option<Retained<NSTextField>>>,
-    latch_max_sessions_field: RefCell<Option<Retained<NSTextField>>>,
 }
 
 define_class!(
@@ -206,18 +193,6 @@ impl PreferencesWindow {
             git_branch_label: RefCell::new(None),
             git_last_sync_label: RefCell::new(None),
             git_changes_label: RefCell::new(None),
-            latch_enabled_checkbox: RefCell::new(None),
-            latch_ssh_listen_field: RefCell::new(None),
-            latch_mosh_checkbox: RefCell::new(None),
-            latch_mosh_port_start_field: RefCell::new(None),
-            latch_mosh_port_end_field: RefCell::new(None),
-            latch_web_checkbox: RefCell::new(None),
-            latch_web_listen_field: RefCell::new(None),
-            latch_relay_checkbox: RefCell::new(None),
-            latch_relay_host_field: RefCell::new(None),
-            latch_relay_username_field: RefCell::new(None),
-            latch_relay_device_field: RefCell::new(None),
-            latch_max_sessions_field: RefCell::new(None),
         });
 
         let this: Retained<Self> = unsafe {
@@ -270,9 +245,6 @@ impl PreferencesWindow {
 
         let git_sync_tab = self.create_git_sync_tab(mtm);
         tab_view.addTabViewItem(&git_sync_tab);
-
-        let latch_tab = self.create_latch_tab(mtm, config);
-        tab_view.addTabViewItem(&latch_tab);
 
         unsafe {
             container.addSubview(&tab_view);
@@ -1049,109 +1021,6 @@ impl PreferencesWindow {
         }
     }
 
-    fn create_latch_tab(&self, mtm: MainThreadMarker, config: &Config) -> Retained<NSTabViewItem> {
-        let tab = NSTabViewItem::new();
-        tab.setLabel(&NSString::from_str("Latch"));
-
-        let stack = unsafe {
-            let stack = NSStackView::new(mtm);
-            stack.setOrientation(objc2_app_kit::NSUserInterfaceLayoutOrientation::Vertical);
-            stack.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
-            stack.setSpacing(8.0);
-            stack.setEdgeInsets(objc2_foundation::NSEdgeInsets {
-                top: 16.0,
-                left: 16.0,
-                bottom: 16.0,
-                right: 16.0,
-            });
-            stack
-        };
-
-        // Enable remote access
-        let enabled_cb = self.create_checkbox(mtm, "Enable remote access", config.latch.enabled);
-        *self.ivars().latch_enabled_checkbox.borrow_mut() = Some(enabled_cb.clone());
-        unsafe { stack.addArrangedSubview(&enabled_cb) };
-
-        // SSH listen address
-        let ssh_row =
-            self.create_label_field_row(mtm, "SSH listen address:", &config.latch.ssh_listen);
-        *self.ivars().latch_ssh_listen_field.borrow_mut() = Some(ssh_row.1.clone());
-        unsafe { stack.addArrangedSubview(&ssh_row.0) };
-
-        // Mosh
-        let mosh_cb = self.create_checkbox(mtm, "Enable mosh transport", config.latch.mosh_enabled);
-        *self.ivars().latch_mosh_checkbox.borrow_mut() = Some(mosh_cb.clone());
-        unsafe { stack.addArrangedSubview(&mosh_cb) };
-
-        let port_start_row = self.create_label_field_row(
-            mtm,
-            "Mosh port start:",
-            &config.latch.mosh_port_start.to_string(),
-        );
-        *self.ivars().latch_mosh_port_start_field.borrow_mut() = Some(port_start_row.1.clone());
-        unsafe { stack.addArrangedSubview(&port_start_row.0) };
-
-        let port_end_row = self.create_label_field_row(
-            mtm,
-            "Mosh port end:",
-            &config.latch.mosh_port_end.to_string(),
-        );
-        *self.ivars().latch_mosh_port_end_field.borrow_mut() = Some(port_end_row.1.clone());
-        unsafe { stack.addArrangedSubview(&port_end_row.0) };
-
-        // Web terminal
-        let web_cb = self.create_checkbox(mtm, "Enable web terminal", config.latch.web_enabled);
-        *self.ivars().latch_web_checkbox.borrow_mut() = Some(web_cb.clone());
-        unsafe { stack.addArrangedSubview(&web_cb) };
-
-        let web_row =
-            self.create_label_field_row(mtm, "Web listen address:", &config.latch.web_listen);
-        *self.ivars().latch_web_listen_field.borrow_mut() = Some(web_row.1.clone());
-        unsafe { stack.addArrangedSubview(&web_row.0) };
-
-        // Relay
-        let relay_cb = self.create_checkbox(
-            mtm,
-            "Enable relay (NAT traversal)",
-            config.latch.relay_enabled,
-        );
-        *self.ivars().latch_relay_checkbox.borrow_mut() = Some(relay_cb.clone());
-        unsafe { stack.addArrangedSubview(&relay_cb) };
-
-        let relay_host_row =
-            self.create_label_field_row(mtm, "Relay host:", &config.latch.relay_host);
-        *self.ivars().latch_relay_host_field.borrow_mut() = Some(relay_host_row.1.clone());
-        unsafe { stack.addArrangedSubview(&relay_host_row.0) };
-
-        let relay_user_row = self.create_label_field_row(
-            mtm,
-            "Relay username:",
-            config.latch.relay_username.as_deref().unwrap_or(""),
-        );
-        *self.ivars().latch_relay_username_field.borrow_mut() = Some(relay_user_row.1.clone());
-        unsafe { stack.addArrangedSubview(&relay_user_row.0) };
-
-        let relay_dev_row = self.create_label_field_row(
-            mtm,
-            "Relay device:",
-            config.latch.relay_device.as_deref().unwrap_or(""),
-        );
-        *self.ivars().latch_relay_device_field.borrow_mut() = Some(relay_dev_row.1.clone());
-        unsafe { stack.addArrangedSubview(&relay_dev_row.0) };
-
-        // Max sessions
-        let max_row = self.create_label_field_row(
-            mtm,
-            "Max sessions:",
-            &config.latch.max_sessions.to_string(),
-        );
-        *self.ivars().latch_max_sessions_field.borrow_mut() = Some(max_row.1.clone());
-        unsafe { stack.addArrangedSubview(&max_row.0) };
-
-        tab.setView(Some(&stack));
-        tab
-    }
-
     fn create_label_field_row(
         &self,
         mtm: MainThreadMarker,
@@ -1381,52 +1250,6 @@ impl PreferencesWindow {
         }
         if let Some(ref checkbox) = *self.ivars().show_close_checkbox.borrow() {
             config.tabs.show_close_button = checkbox.state() == 1;
-        }
-
-        // Collect Latch settings
-        if let Some(ref cb) = *self.ivars().latch_enabled_checkbox.borrow() {
-            config.latch.enabled = cb.state() == 1;
-        }
-        if let Some(ref field) = *self.ivars().latch_ssh_listen_field.borrow() {
-            config.latch.ssh_listen = field.stringValue().to_string();
-        }
-        if let Some(ref cb) = *self.ivars().latch_mosh_checkbox.borrow() {
-            config.latch.mosh_enabled = cb.state() == 1;
-        }
-        if let Some(ref field) = *self.ivars().latch_mosh_port_start_field.borrow() {
-            if let Ok(v) = field.stringValue().to_string().parse::<u16>() {
-                config.latch.mosh_port_start = v;
-            }
-        }
-        if let Some(ref field) = *self.ivars().latch_mosh_port_end_field.borrow() {
-            if let Ok(v) = field.stringValue().to_string().parse::<u16>() {
-                config.latch.mosh_port_end = v;
-            }
-        }
-        if let Some(ref cb) = *self.ivars().latch_web_checkbox.borrow() {
-            config.latch.web_enabled = cb.state() == 1;
-        }
-        if let Some(ref field) = *self.ivars().latch_web_listen_field.borrow() {
-            config.latch.web_listen = field.stringValue().to_string();
-        }
-        if let Some(ref cb) = *self.ivars().latch_relay_checkbox.borrow() {
-            config.latch.relay_enabled = cb.state() == 1;
-        }
-        if let Some(ref field) = *self.ivars().latch_relay_host_field.borrow() {
-            config.latch.relay_host = field.stringValue().to_string();
-        }
-        if let Some(ref field) = *self.ivars().latch_relay_username_field.borrow() {
-            let v = field.stringValue().to_string();
-            config.latch.relay_username = if v.is_empty() { None } else { Some(v) };
-        }
-        if let Some(ref field) = *self.ivars().latch_relay_device_field.borrow() {
-            let v = field.stringValue().to_string();
-            config.latch.relay_device = if v.is_empty() { None } else { Some(v) };
-        }
-        if let Some(ref field) = *self.ivars().latch_max_sessions_field.borrow() {
-            if let Ok(v) = field.stringValue().to_string().parse::<usize>() {
-                config.latch.max_sessions = v;
-            }
         }
 
         // Save config to file

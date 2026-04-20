@@ -15,7 +15,7 @@ use objc2_foundation::{
 };
 use std::path::PathBuf;
 
-use cterm_app::config::{load_config, Config, ConnectionType, RemoteConfig};
+use cterm_app::config::{load_config, Config, RemoteConfig};
 use cterm_ui::theme::Theme;
 
 use crate::menu;
@@ -91,8 +91,6 @@ pub struct AppDelegateIvars {
     is_relaunching: std::cell::Cell<bool>,
     /// Count of windows with active bell notifications
     bell_count: std::cell::Cell<u32>,
-    /// Unix Shells device service
-    unixshells_service: std::sync::Arc<cterm_app::unixshells::DeviceService>,
 }
 
 define_class!(
@@ -840,14 +838,6 @@ define_class!(
             crate::remotes_dialog::show_remotes_dialog(mtm, config);
         }
 
-        /// Show Unix Shells sign-in dialog
-        #[unsafe(method(unixshellsSignIn:))]
-        fn action_unixshells_sign_in(&self, _sender: Option<&objc2::runtime::AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            let ds = self.ivars().unixshells_service.clone();
-            crate::unixshells_dialog::show_unixshells_dialog(mtm, ds);
-        }
-
         /// Called by windows when they close to remove from tracking
         #[unsafe(method(windowDidClose:))]
         fn window_did_close(&self, window: &CtermWindow) {
@@ -1014,7 +1004,6 @@ define_class!(
 
 impl AppDelegate {
     pub fn new(mtm: MainThreadMarker, config: Config, theme: Theme) -> Retained<Self> {
-        let relay_username = config.latch.relay_username.clone();
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(AppDelegateIvars {
             config,
@@ -1023,10 +1012,6 @@ impl AppDelegate {
             remote_manager: cterm_client::RemoteManager::new(),
             is_relaunching: std::cell::Cell::new(false),
             bell_count: std::cell::Cell::new(0),
-            unixshells_service: std::sync::Arc::new(cterm_app::unixshells::DeviceService::new(
-                cterm_app::config::config_dir().unwrap_or_default(),
-                relay_username,
-            )),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1467,41 +1452,8 @@ pub fn run_app_internal() {
 
 /// Build a MoshConfig from a RemoteConfig.
 fn mosh_config_from_remote(remote: &RemoteConfig, cols: u16, rows: u16) -> cterm_mosh::MoshConfig {
-    let connection_type = match remote.connection_type {
-        ConnectionType::Relay => {
-            let relay_host = remote
-                .proxy_jump
-                .as_deref()
-                .unwrap_or("unixshells.com")
-                .to_string();
-            let jump_host = format!("relay.{}", relay_host);
-            cterm_mosh::MoshConnectionType::Relay {
-                relay_host: relay_host.clone(),
-                jump_host,
-                relay_username: remote
-                    .relay_username
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                relay_device: remote
-                    .relay_device
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-                session_name: remote
-                    .session_name
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-            }
-        }
-        ConnectionType::Direct => cterm_mosh::MoshConnectionType::Direct,
-    };
     cterm_mosh::MoshConfig {
         host: remote.host.clone(),
-        connection_type,
-        proxy_jump: if remote.connection_type == ConnectionType::Direct {
-            remote.proxy_jump.clone()
-        } else {
-            None
-        },
         cols,
         rows,
         locale: Some("en_US.UTF-8".to_string()),

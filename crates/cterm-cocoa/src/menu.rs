@@ -262,21 +262,6 @@ fn create_file_menu(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
     sessions_item.setSubmenu(Some(&sessions_submenu));
     menu.addItem(&sessions_item);
 
-    // Unix Shells submenu
-    let unixshells_submenu = NSMenu::new(mtm);
-    unixshells_submenu.setTitle(&NSString::from_str("Unix Shells"));
-    unixshells_submenu.addItem(&create_menu_item(
-        mtm,
-        "Sign In...",
-        Some(sel!(unixshellsSignIn:)),
-        "",
-    ));
-
-    let unixshells_item = NSMenuItem::new(mtm);
-    unixshells_item.setTitle(&NSString::from_str("Unix Shells"));
-    unixshells_item.setSubmenu(Some(&unixshells_submenu));
-    menu.addItem(&unixshells_item);
-
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
     // Close Tab
