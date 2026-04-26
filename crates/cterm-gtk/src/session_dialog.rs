@@ -270,12 +270,12 @@ where
     content.set_margin_start(12);
     content.set_margin_end(12);
 
-    let label = Label::new(Some("Host (e.g. user@hostname):"));
+    let label = Label::new(Some("Host (e.g. user@hostname or user@hostname:port):"));
     label.set_halign(Align::Start);
     content.append(&label);
 
     let entry = gtk4::Entry::new();
-    entry.set_placeholder_text(Some("user@hostname"));
+    entry.set_placeholder_text(Some("user@hostname:port"));
     entry.set_activates_default(true);
     content.append(&entry);
 

@@ -15,6 +15,23 @@ use tonic::transport::Channel;
 #[cfg(unix)]
 const GITHUB_REPO: &str = "unixshells/cterm";
 
+/// Parse an SSH host string, extracting an optional port suffix.
+///
+/// Accepts `user@host:port`, `host:port`, `user@host`, or `host`.
+/// Returns the SSH destination (without port) and the port if present.
+fn parse_ssh_host(input: &str) -> (String, Option<u16>) {
+    // Check for user@host:port or host:port
+    // The port is the part after the last colon, but only if it parses as u16
+    if let Some(colon_pos) = input.rfind(':') {
+        let maybe_port = &input[colon_pos + 1..];
+        if let Ok(port) = maybe_port.parse::<u16>() {
+            let dest = &input[..colon_pos];
+            return (dest.to_string(), Some(port));
+        }
+    }
+    (input.to_string(), None)
+}
+
 /// Generate a shell script that finds ctermd on the remote host, installs it
 /// if needed, starts the daemon, and prints the socket path on stdout.
 ///
@@ -206,10 +223,18 @@ impl DaemonConnection {
     pub async fn connect_ssh(host: &str, compress: bool) -> Result<(Self, SshTunnelHandle)> {
         log::info!("Connecting to {} via SSH", host);
 
+        // Parse optional port from host string (user@host:port or host:port)
+        let (ssh_dest, port) = parse_ssh_host(host);
+
         // 1. Single SSH command: find/install ctermd, start daemon, print socket path
         let script = remote_setup_script();
+        let mut setup_args: Vec<String> = Vec::new();
+        if let Some(p) = port {
+            setup_args.extend(["-p".to_string(), p.to_string()]);
+        }
+        setup_args.extend([ssh_dest.clone(), script.clone()]);
         let output = Command::new("ssh")
-            .args([host, &script])
+            .args(&setup_args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -273,16 +298,19 @@ impl DaemonConnection {
         );
 
         let mut tunnel_args = vec![
-            "-N", // No remote command
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "StreamLocalBindUnlink=yes",
+            "-N".to_string(), // No remote command
+            "-o".to_string(),
+            "ExitOnForwardFailure=yes".to_string(),
+            "-o".to_string(),
+            "StreamLocalBindUnlink=yes".to_string(),
         ];
         if compress {
-            tunnel_args.push("-C");
+            tunnel_args.push("-C".to_string());
         }
-        tunnel_args.extend(["-L", &forward_spec, host]);
+        if let Some(p) = port {
+            tunnel_args.extend(["-p".to_string(), p.to_string()]);
+        }
+        tunnel_args.extend(["-L".to_string(), forward_spec.clone(), ssh_dest.clone()]);
 
         let mut tunnel = Command::new("ssh")
             .args(&tunnel_args)

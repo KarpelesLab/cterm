@@ -694,7 +694,9 @@ define_class!(
             // Show a simple input dialog for the SSH host
             let alert = objc2_app_kit::NSAlert::new(mtm);
             alert.setMessageText(&NSString::from_str("SSH Remote Terminal"));
-            alert.setInformativeText(&NSString::from_str("Enter host (e.g. user@hostname):"));
+            alert.setInformativeText(&NSString::from_str(
+                "Enter host (e.g. user@hostname or user@hostname:port):",
+            ));
             alert.addButtonWithTitle(&NSString::from_str("Connect"));
             alert.addButtonWithTitle(&NSString::from_str("Cancel"));
 
@@ -704,7 +706,7 @@ define_class!(
                     objc2_foundation::NSPoint::new(0.0, 0.0),
                     objc2_foundation::NSSize::new(300.0, 24.0),
                 ));
-                field.setPlaceholderString(Some(&NSString::from_str("user@hostname")));
+                field.setPlaceholderString(Some(&NSString::from_str("user@hostname:port")));
                 alert.setAccessoryView(Some(&field));
                 field
             };

@@ -496,7 +496,7 @@ unsafe fn init_ssh_dialog(hwnd: HWND) {
     create_label(
         hwnd,
         -1,
-        "Host (e.g. user@hostname):",
+        "Host (e.g. user@hostname or user@hostname:port):",
         margin,
         margin,
         dlg_width - margin * 2,
