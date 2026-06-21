@@ -2391,7 +2391,6 @@ mod tests {
         // the ordered() range expands as new output arrives.
         let config = ScreenConfig {
             scrollback_lines: 2,
-            ..ScreenConfig::default()
         };
         let mut screen = Screen::new(80, 3, config);
 
