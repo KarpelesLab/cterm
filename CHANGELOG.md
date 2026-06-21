@@ -9,6 +9,8 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-06-22
+
 ### Added
 - Hyperlink (OSC 8) rendering, hover, and interaction across GTK, macOS, and Windows.
 - Streaming input RPC with batched fallback for low-latency typing.
@@ -243,7 +245,8 @@ Initial pre-release.
 ### Changed
 - Replace `portable-pty` with a unified native PTY implementation.
 
-[Unreleased]: https://github.com/KarpelesLab/cterm/compare/v0.0.16...HEAD
+[Unreleased]: https://github.com/KarpelesLab/cterm/compare/v0.0.17...HEAD
+[0.0.17]: https://github.com/KarpelesLab/cterm/compare/v0.0.16...v0.0.17
 [0.0.16]: https://github.com/KarpelesLab/cterm/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/KarpelesLab/cterm/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/KarpelesLab/cterm/compare/v0.0.13...v0.0.14
