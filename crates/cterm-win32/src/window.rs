@@ -1693,7 +1693,6 @@ impl WindowState {
         if ctrl_pressed {
             if let Some(uri) = self.hyperlink_at(x, y) {
                 self.open_url(&uri);
-                return;
             }
         }
     }
