@@ -1,0 +1,211 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.0.16](https://github.com/KarpelesLab/cterm/releases/tag/v0.0.16) - 2026-06-21
+
+### Added
+
+- streaming input RPC with batched fallback for low-latency typing
+- support custom SSH port in remote dialogs (user@host:port)
+- add hyperlink rendering, hover, and interaction to cocoa and win32
+- add Disconnect to remote tab right-click menu
+- add hyperlink rendering, hover, and interaction to GTK terminal
+- proper bell/alert state management through ctermd daemon
+- add Unix Shells sign-in dialogs to macOS and Windows
+- add Unix Shells login and device menu integration
+- add Latch preferences tab to macOS and Windows UIs
+- complete web terminal auth and relay stream forwarding
+- add mosh handoff, web terminal, relay client, and latch UI
+- add latch server foundation (SSH, mosh SSP, renderer)
+- enable SSH compression (-C) on remote tunnels by default
+- confirm close when foreground process is running in daemon sessions
+- confirm close when foreground process is running in daemon sessions
+- new tabs inherit daemon context from current tab (macOS)
+- add mosh protocol support with relay proxy jump
+- add scrollbar overlay to terminal view (macOS + GTK)
+- serialize DRCS soft fonts and charset state across gRPC reconnection
+- SSH Remote attaches to all existing sessions, New Tab inherits daemon
+- incremental screen updates in StreamScreenUpdates
+- feature parity for remote management and daemon sessions across all frontends
+- remote host management and auto-install ctermd
+- add debug menu item to relaunch ctermd in-place
+- SSH remote support with stdio transport (Phase 8)
+- macOS daemon-backed terminal view (Phase 7)
+- GTK daemon-backed terminal widget (Phase 4)
+- add daemon session integration layer (Phase 3)
+- add cterm-client library for daemon communication
+- enable libadwaita for proper GTK4 menu styling and show keyboard shortcuts
+- show open tabs with custom names in Quick Launch
+- use OS-specific icon templates for each platform
+- add macOS-specific app icon with full-canvas design
+- add macOS-specific app icon with full-canvas design
+- add macOS code signing and notarization to CI
+- add file drag-and-drop support with options dialog
+- *(ci)* add UI screenshot tests for Linux and macOS
+- confirm before closing tabs or quitting with running processes
+- use platform-specific default fonts
+- *(macos)* auto-update now installs full app bundle with icon
+- add dedicated Git Sync tab in preferences with Sync Now button
+- generate app icons dynamically with version number
+- add macOS app icon
+- add ctermd headless terminal daemon with gRPC API
+- add git-backed configuration sync
+- add configurable TERM and focus events support
+- *(windows)* implement seamless upgrade protocol
+- *(win32)* implement feature parity with GTK/macOS
+- *(win32)* add native Windows UI implementation
+- *(gtk)* bring GTK4 to feature parity with macOS
+- *(iterm2)* implement streaming file transfer for large files
+- *(graphics)* implement iTerm2 inline image protocol (OSC 1337)
+- *(graphics)* implement Sixel and DRCS support
+- add native macOS UI using AppKit and Metal
+- re-add secret debug menu with safe deferred updates
+- auto-update tab and window title from terminal
+- add Docker terminal tabs support
+- hide tab bar with single tab, add bell notification to window title
+- add hidden Debug submenu in Help menu
+- implement multiple TODO items
+
+### Fixed
+
+- track the single workspace tag so release-plz bumps past 0.0.16
+- process all crates in release-plz so version actually bumps
+- drop redundant struct update flagged by clippy needless_update
+- keep word/line selection stable across scrollback wrap
+- make alerted tabs visually distinct with color highlight
+- NSTimer block signature requires NonNull<NSTimer> parameter
+- CI errors in macOS and Windows unixshells dialogs
+- query daemon for foreground process on tab/window close
+- prevent double-borrow panic when closing tab via close button
+- raise gRPC message size limit to 64 MB for large scrollback snapshots
+- use .first() instead of .get(0) for clippy on Windows
+- add missing ssh_compression field in Windows RemoteConfig initializers
+- initialize latch ivar fields in macOS preferences window
+- CI formatting and Windows build errors
+- resolve borrow-after-move errors in remotes_dialog.rs
+- auto-close tabs when shell exits in daemon sessions (macOS + Win32)
+- relay connection support matching mobile app's 3-hop SSH tunnel
+- CI clippy errors in scrollbar FFI types and win32 argument count
+- SSH Remote on macOS now attaches to all existing sessions
+- ensure Ctrl+PageUp/PageDown tab navigation works on GTK4
+- GTK4 tab close button and auto-close on shell exit
+- update GitHub repo references from KarpelesLab to unixshells
+- improve GTK4 tab bar and UI styling with theme-aware colors
+- keep SSH tunnel alive across tokio runtimes
+- connect to correct daemon for remote SSH sessions
+- auto-close tab when shell exits in GTK4
+- add visual styling for active tab in GTK4 tab bar
+- persist custom tab title to daemon from menu Set Title action
+- build ctermd alongside cterm by default
+- write screen snapshots as separate binary files during relaunch
+- preserve terminal screen state across ctermd relaunch
+- use SSH socket forwarding instead of stdio for remote sessions
+- render bold and italic text on macOS
+- preserve custom titles, tab colors, and cwd across upgrades
+- spill scrollback to temp files during upgrade to avoid 64MB buffer limit
+- *(ci)* find signing identity dynamically from keychain
+- *(ci)* improve macOS window detection for UI tests
+- *(ci)* disable watchdog for UI tests to prevent crash loop
+- find cterm window by process ID instead of class name
+- Windows DirectWrite E_INVALIDARG on startup
+- use correct package name for cterm binary in CI
+- CI build improvements and unused import fix
+- add Sync impl for Windows Pty and fix CI build commands
+- *(win32)* upgrade windows crate to 0.61 for Direct2D methods
+- *(win32)* add ID2D1RenderTarget trait imports and fix API alignment
+- resolve clippy warnings across all platforms
+- consolidate PTY ownership and fix Windows DLL bundling
+- *(cocoa)* use dispatch2 for safe main thread redraw and fix text rendering
+- always show debug menu to avoid segfault on dynamic menu swap
+- wait for parent to exit before starting GTK in upgrade receiver
+- use NON_UNIQUE flag in upgrade receiver to avoid DBus conflicts
+- prevent GTK from parsing args in upgrade receiver mode
+- add try_wait() method to Windows PTY
+- implement Send for Windows PTY struct
+- move STARTUPINFOEXW import to winbase for Windows build
+- use macos-15-intel runner for Intel builds
+- macOS type compatibility for libc fields
+
+### Other
+
+- add release-plz for changelog, versioning, and tagging
+- remove mosh support
+- remove latch, relay, and unixshells features
+- bump version to 0.0.16
+- simplify upgrade protocol and remove crash recovery
+- route all terminal sessions through ctermd daemon
+- extract cterm-proto from cterm-headless
+- bump version to 0.0.15
+- bump version to 0.0.14
+- add git_remote to template options table
+- update README with Quick Launch, tab templates, Docker/SSH docs
+- bump version to 0.0.13
+- bump version to 0.0.12
+- bump version to 0.0.11
+- add workflow_dispatch trigger for manual builds
+- bump version to 0.0.10
+- deduplicate code and fix bugs across core, cocoa, and gtk
+- bump version to 0.0.9
+- bump version to 0.0.8
+- replace Rust UI tests with PowerShell automation
+- add 5 minute timeout for UI integration tests
+- upload Windows UI test screenshots and logs as artifacts
+- bump version to 0.0.7
+- add native SSH client and ctermd client to roadmap
+- bump version to v0.0.6
+- reorganize roadmap, move split panes and plugins to future
+- explicitly build cterm and ctermd packages
+- install protobuf compiler on all CI runners
+- add gRPC integration tests for ctermd
+- create separate archives for ctermd
+- include ctermd in release archives
+- fix incorrect scroll keyboard shortcuts
+- add direct download links for all platforms
+- bump version to 0.0.5
+- update README with current platform support and features
+- add platform-specific clippy checks
+- add workflow and release process to CLAUDE.md
+- bump version to 0.0.4
+- add CLAUDE.md for Claude Code guidance
+- add run.sh to easily compile+run
+- add .devcontainer
+- *(docker)* read DevContainer config from devcontainer.json
+- bump version to 0.0.3
+- update README with crash recovery and macOS support
+- *(cocoa)* remove unused Metal renderer
+- add cterm logo
+- exclude cterm-cocoa from non-macOS builds
+- unify binary entry point with platform-specific backends
+- fix rustfmt comment alignment
+- use inherited FD for upgrade instead of Unix socket file
+- keep tar.gz/zip archives for auto-update support
+- add Windows installer and macOS DMG packaging
+- add Linux ARM64 build
+- set version to 0.0.1 for initial pre-release
+- add Windows test job
+- fix rustfmt formatting
+- fix rustfmt formatting
+- add comprehensive PTY tests and CI test jobs
+- update README and move configuration to docs/
+- replace portable-pty with unified native PTY implementation
+- Fix clippy: use assert! instead of assert_eq! with bool
+- Fix clippy: use derived Default for Color enum
+- Apply rustfmt formatting
+- Implement seamless upgrade system for live process updates
+- Add GitHub Actions lint job (rustfmt + clippy) and fix all warnings
+- Fix Ctrl+Shift shortcuts not working (e.g., Ctrl+Shift+T for new tab)
+- Apply rustfmt formatting
+- Implement TODO items and update CI runners
+- Add GitHub Actions workflow for multi-platform builds
+- Improve terminal sizing and fix theming
+- Add menu bar with File, Edit, Terminal, Tabs, Help menus
+- Implement clipboard paste, zoom, tab stops, and DSR
+- Add bell notification indicator for tabs
+- Fix tab system issues
+- Initial implementation of cterm terminal emulator
