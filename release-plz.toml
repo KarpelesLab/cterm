@@ -3,30 +3,37 @@
 # library) and it does NOT create GitHub Releases or build binaries — the
 # existing `.github/workflows/build.yml` already does that when the `v*` tag
 # is pushed.
+#
+# The whole workspace shares one version (`version.workspace = true`), so we
+# want a single `vX.Y.Z` tag and a single changelog covering every crate. To
+# get that, release-plz processes ALL crates (so a change in any crate bumps
+# the shared version and propagates up the dependency graph), but only the
+# root `cterm` crate emits the tag and owns the changelog.
 
 [workspace]
 # cterm is an application; nothing in this workspace is published to crates.io.
 publish = false
 
-# The whole workspace shares a single version (`version.workspace = true`), so
-# we release it as one unit through the root `cterm` crate (see below) and
-# don't let release-plz manage every member crate independently. Releasing the
-# root crate bumps `[workspace.package].version`, which every member inherits.
-release = false
-
 # build.yml creates the GitHub Release (and uploads binaries) when the tag is
-# pushed, so release-plz only needs to create the git tag, not the release.
+# pushed, so release-plz never creates a GitHub Release itself.
 git_release_enable = false
 
-# A single workspace-wide tag, matching build.yml's `tags: ['v*']` trigger.
-# Without this, a multi-crate workspace defaults to `{{ package }}-v{{ version }}`.
-git_tag_name = "v{{ version }}"
+# By default no crate creates a git tag; the root `cterm` crate re-enables it
+# below so there's exactly one workspace-wide tag.
+git_tag_enable = false
+
+# By default no crate writes a CHANGELOG.md; the root `cterm` crate re-enables
+# it below so there's a single aggregated changelog at the repo root.
+changelog_update = false
 
 [[package]]
 name = "cterm"
-# The one crate release-plz actually releases: its version bump drives the
-# shared workspace version and produces the single `vX.Y.Z` tag.
-release = true
+# The root crate is the single source of the tag and the changelog. Because
+# every crate inherits the shared workspace version, the root crate's manifest
+# version always reflects the latest bump, so this tag fires on any release.
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+changelog_update = true
 # Fold every other workspace crate's commits into cterm's changelog so the
 # single CHANGELOG.md reflects the whole repository, not just root `src/`.
 changelog_include = [
