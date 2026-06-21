@@ -85,26 +85,19 @@ Always run `cargo fmt --all` before committing to ensure consistent formatting.
 
 ### Release Process
 
-Releases are automated by [release-plz](https://release-plz.dev) (config in
-`release-plz.toml`, workflow in `.github/workflows/release-plz.yml`). Use
-[Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`,
-`refactor:`, …) so the changelog and version bump are derived correctly.
+Releases are cut manually. The whole workspace shares one version via
+`[workspace.package]`, and pushing a `vX.Y.Z` tag triggers `build.yml`, which
+builds the release binaries and creates the GitHub Release.
 
-1. Merge your changes to `master` as usual.
-2. release-plz opens/updates a **"Release vX.Y.Z" PR** that bumps the version in
-   `[workspace.package]` (inherited by every member crate) and updates
-   `CHANGELOG.md`. Review it like any other PR.
-3. Merge the release PR. release-plz then pushes the `vX.Y.Z` tag.
-4. The tag triggers `build.yml`, which builds the release binaries and creates
-   the GitHub Release with the attached artifacts.
+1. Update `CHANGELOG.md` with a new `## [X.Y.Z]` section summarizing the
+   changes since the last release.
+2. Update `version` in `Cargo.toml` (under `[workspace.package]`); every member
+   crate inherits it.
+3. Run `cargo fmt --all`.
+4. Commit the changelog + version bump.
+5. Tag the commit: `git tag vX.Y.Z`.
+6. Push commit and tag: `git push && git push origin vX.Y.Z`.
 
-Notes:
-- release-plz only manages the version, changelog, and tag — it does **not**
-  publish to crates.io (cterm is an application) or create the GitHub Release
-  itself (`build.yml` does, on the tag).
-- Releases are driven by the root `cterm` crate, so a commit touching *only*
-  `crates/cterm-headless` (and no shared crate) won't trigger a bump on its own.
-- Never delete/recreate tags once pushed—they become releases with published
-  artifacts.
-- Manual fallback: bump `version` under `[workspace.package]` in `Cargo.toml`,
-  `cargo fmt --all`, commit, then `git tag vX.Y.Z && git push && git push origin vX.Y.Z`.
+Tags trigger GitHub Actions to build the release binaries and publish the
+GitHub Release. Never delete/recreate tags once pushed—they become releases
+with published artifacts.
