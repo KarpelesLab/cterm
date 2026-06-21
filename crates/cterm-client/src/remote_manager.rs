@@ -17,6 +17,9 @@ use tokio::sync::Mutex;
 /// SSH tunnel process so `disconnect()` can actually tear it down.
 #[derive(Clone)]
 struct RemoteEntry {
+    // Read only on unix (`get_or_connect`/`disconnect`); on other platforms
+    // remote connections are unsupported and this entry is never constructed.
+    #[cfg_attr(not(unix), allow(dead_code))]
     conn: DaemonConnection,
     #[cfg(unix)]
     tunnel: SshTunnelHandle,

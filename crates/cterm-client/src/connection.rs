@@ -19,6 +19,7 @@ const GITHUB_REPO: &str = "unixshells/cterm";
 ///
 /// Accepts `user@host:port`, `host:port`, `user@host`, or `host`.
 /// Returns the SSH destination (without port) and the port if present.
+#[cfg(unix)]
 fn parse_ssh_host(input: &str) -> (String, Option<u16>) {
     // Check for user@host:port or host:port
     // The port is the part after the last colon, but only if it parses as u16
