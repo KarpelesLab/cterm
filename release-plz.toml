@@ -18,6 +18,12 @@ publish = false
 # pushed, so release-plz never creates a GitHub Release itself.
 git_release_enable = false
 
+# Every crate's release tracking resolves to the single workspace-wide tag
+# (e.g. `v0.0.16`), so release-plz recognizes the existing tag as "already
+# released" instead of treating each crate's default `{{package}}-v{{version}}`
+# tag (which never existed) as an unreleased initial version.
+git_tag_name = "v{{ version }}"
+
 # By default no crate creates a git tag; the root `cterm` crate re-enables it
 # below so there's exactly one workspace-wide tag.
 git_tag_enable = false
@@ -32,7 +38,6 @@ name = "cterm"
 # every crate inherits the shared workspace version, the root crate's manifest
 # version always reflects the latest bump, so this tag fires on any release.
 git_tag_enable = true
-git_tag_name = "v{{ version }}"
 changelog_update = true
 # Fold every other workspace crate's commits into cterm's changelog so the
 # single CHANGELOG.md reflects the whole repository, not just root `src/`.
