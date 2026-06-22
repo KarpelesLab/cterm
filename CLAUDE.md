@@ -79,9 +79,12 @@ Files: `config.toml`, `sticky_tabs.toml`, `themes/*.toml`
 
 ## Workflow
 
-### Before Committing
+### Committing (default: commit and push as you go)
 
-Always run `cargo fmt --all` before committing to ensure consistent formatting.
+Commit directly to `master` and `git push` after each logically complete change
+that builds — do not leave work uncommitted and do not ask first. This overrides
+the usual "branch first / commit only when asked" default. Run `cargo fmt --all`
+before each commit, and keep commits scoped to one logical change.
 
 ### Release Process
 
