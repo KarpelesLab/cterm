@@ -39,6 +39,7 @@ default-members = [".", "crates/cterm-headless"]
 [workspace.package]
 version = "0.0.17"
 edition = "2021"
+rust-version = "1.88"
 authors = ["cterm contributors"]
 license = "MIT"
 repository = "https://github.com/magicaltux/cterm"
@@ -77,14 +78,16 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
+# SSH (native, pure-Rust)
+puressh = { version = "0.0.7", default-features = false, features = ["multichannel"] }
+
 # Upgrade system
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rsurl = { version = "0.1.1", default-features = false, features = ["purecrypto-tls"] }
 sha2 = "0.10"
 semver = "1"
 bincode = "1"
 libc = "0.2"
 serde_json = "1"
-futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
 tar = "0.4"
 flate2 = "1"

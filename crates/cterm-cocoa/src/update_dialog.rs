@@ -47,15 +47,10 @@ pub fn check_for_updates_sync(mtm: MainThreadMarker) {
     let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-
-        let result = runtime.block_on(async {
+        let result = (|| {
             let updater = Updater::new(GITHUB_REPO, CURRENT_VERSION)?;
-            updater.check_for_update().await
-        });
+            updater.check_for_update()
+        })();
 
         let _ = tx.send(result);
     });
@@ -185,12 +180,7 @@ fn download_and_install_update(mtm: MainThreadMarker, info: UpdateInfo) {
 
     // Start download in background thread
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-
-        let result = runtime.block_on(async {
+        let result = (|| {
             let updater = Updater::new(GITHUB_REPO, CURRENT_VERSION)?;
 
             // Download with progress callback
@@ -198,23 +188,21 @@ fn download_and_install_update(mtm: MainThreadMarker, info: UpdateInfo) {
             let total_cb = Arc::clone(&total_clone);
             let cancelled_cb = Arc::clone(&cancelled_clone);
 
-            let path = updater
-                .download(&info, |dl, tot| {
-                    downloaded_cb.store(dl, Ordering::Relaxed);
-                    total_cb.store(tot, Ordering::Relaxed);
+            let path = updater.download(&info, |dl, tot| {
+                downloaded_cb.store(dl, Ordering::Relaxed);
+                total_cb.store(tot, Ordering::Relaxed);
 
-                    // Check for cancellation
-                    if cancelled_cb.load(Ordering::Relaxed) {
-                        // Can't really cancel mid-download, but we'll handle it
-                    }
-                })
-                .await?;
+                // Check for cancellation
+                if cancelled_cb.load(Ordering::Relaxed) {
+                    // Can't really cancel mid-download, but we'll handle it
+                }
+            })?;
 
             // Verify checksum
-            updater.verify(&path, &info).await?;
+            updater.verify(&path, &info)?;
 
             Ok::<_, UpdateError>(path)
-        });
+        })();
 
         match result {
             Ok(path) => {

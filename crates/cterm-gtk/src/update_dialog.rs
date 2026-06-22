@@ -289,18 +289,16 @@ pub fn show_update_dialog(parent: &impl IsA<Window>) {
 
 /// Check for updates asynchronously
 ///
-/// Runs the reqwest-based updater inside a Tokio runtime since reqwest
-/// requires Tokio's reactor.
+/// Runs the blocking rsurl-based updater on a background thread and awaits the
+/// result via a oneshot channel so the GTK main loop stays responsive.
 async fn check_for_updates() -> Result<Option<UpdateInfo>, UpdateError> {
-    // Run in a blocking thread with its own Tokio runtime
     let (tx, rx) = futures::channel::oneshot::channel::<Result<Option<UpdateInfo>, UpdateError>>();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        let result = rt.block_on(async {
+        let result = (|| {
             let updater = Updater::new(GITHUB_REPO, CURRENT_VERSION)?;
-            updater.check_for_update().await
-        });
+            updater.check_for_update()
+        })();
         let _ = tx.send(result);
     });
 
@@ -309,8 +307,8 @@ async fn check_for_updates() -> Result<Option<UpdateInfo>, UpdateError> {
 
 /// Download update with progress callback
 ///
-/// Runs the reqwest-based updater inside a Tokio runtime since reqwest
-/// requires Tokio's reactor.
+/// Runs the blocking rsurl-based updater on a background thread and awaits the
+/// result via a oneshot channel so the GTK main loop stays responsive.
 async fn download_update<F>(info: &UpdateInfo, on_progress: F) -> Result<PathBuf, UpdateError>
 where
     F: FnMut(u64, u64) + Send + 'static,
@@ -319,11 +317,10 @@ where
     let (tx, rx) = futures::channel::oneshot::channel::<Result<PathBuf, UpdateError>>();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        let result = rt.block_on(async {
+        let result = (|| {
             let updater = Updater::new(GITHUB_REPO, CURRENT_VERSION)?;
-            updater.download(&info, on_progress).await
-        });
+            updater.download(&info, on_progress)
+        })();
         let _ = tx.send(result);
     });
 

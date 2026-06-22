@@ -3,11 +3,10 @@
 //! This module provides functionality to check for updates from GitHub releases,
 //! download new versions, and verify their integrity.
 
-use futures_util::StreamExt;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -15,7 +14,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum UpdateError {
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] rsurl::Error),
 
     #[error("Failed to parse version: {0}")]
     Version(String),
@@ -66,8 +65,8 @@ pub struct Updater {
     repo: String,
     /// Current version of the application
     current_version: Version,
-    /// HTTP client
-    client: reqwest::Client,
+    /// User-Agent string sent with every request
+    user_agent: String,
 }
 
 impl Updater {
@@ -80,41 +79,38 @@ impl Updater {
         let version =
             Version::parse(current_version).map_err(|e| UpdateError::Version(e.to_string()))?;
 
-        let client = reqwest::Client::builder()
-            .user_agent(format!("cterm/{}", current_version))
-            .build()?;
-
         Ok(Self {
             repo: repo.to_string(),
             current_version: version,
-            client,
+            user_agent: format!("cterm/{}", current_version),
         })
+    }
+
+    /// Build a GET request carrying our User-Agent header.
+    fn get(&self, url: &str) -> Result<rsurl::Request, UpdateError> {
+        Ok(rsurl::Request::get(url)?.header("User-Agent", &self.user_agent))
     }
 
     /// Check for available updates
     ///
     /// Returns `Some(UpdateInfo)` if a newer version is available,
     /// `None` if already on the latest version.
-    pub async fn check_for_update(&self) -> Result<Option<UpdateInfo>, UpdateError> {
+    pub fn check_for_update(&self) -> Result<Option<UpdateInfo>, UpdateError> {
         let url = format!("https://api.github.com/repos/{}/releases/latest", self.repo);
 
         let response = self
-            .client
-            .get(&url)
+            .get(&url)?
             .header("Accept", "application/vnd.github.v3+json")
-            .send()
-            .await?;
+            .send()?;
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status == 404 {
             return Err(UpdateError::NotFound);
         }
 
-        if response.status() == reqwest::StatusCode::FORBIDDEN {
+        if response.status == 403 {
             // Check if it's rate limiting
             if response
-                .headers()
-                .get("X-RateLimit-Remaining")
-                .and_then(|v| v.to_str().ok())
+                .header("X-RateLimit-Remaining")
                 .map(|v| v == "0")
                 .unwrap_or(false)
             {
@@ -122,10 +118,8 @@ impl Updater {
             }
         }
 
-        let release: Value = response
-            .json()
-            .await
-            .map_err(|e| UpdateError::Json(e.to_string()))?;
+        let release: Value =
+            serde_json::from_slice(&response.body).map_err(|e| UpdateError::Json(e.to_string()))?;
 
         self.parse_release(&release)
     }
@@ -248,17 +242,26 @@ impl Updater {
     ///
     /// # Returns
     /// Path to the downloaded file
-    pub async fn download<F>(
-        &self,
-        info: &UpdateInfo,
-        mut on_progress: F,
-    ) -> Result<PathBuf, UpdateError>
+    pub fn download<F>(&self, info: &UpdateInfo, mut on_progress: F) -> Result<PathBuf, UpdateError>
     where
         F: FnMut(u64, u64),
     {
-        let response = self.client.get(&info.download_url).send().await?;
+        // `send_reader` yields a `Read` over the raw (undecoded) body and exposes
+        // the response head immediately, so we can read `content-length` before
+        // streaming the bytes to disk.
+        let mut reader = self.get(&info.download_url)?.send_reader()?;
 
-        let total_size = response.content_length().unwrap_or(info.size);
+        if reader.status() >= 400 {
+            return Err(UpdateError::Http(rsurl::Error::Status {
+                code: reader.status(),
+                reason: String::new(),
+            }));
+        }
+
+        let total_size = reader
+            .header("content-length")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(info.size);
 
         // Create temp file
         let temp_dir = std::env::temp_dir();
@@ -269,12 +272,14 @@ impl Updater {
         let mut downloaded: u64 = 0;
 
         // Stream the download
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            file.write_all(&chunk)?;
-            downloaded += chunk.len() as u64;
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])?;
+            downloaded += n as u64;
             on_progress(downloaded, total_size);
         }
 
@@ -407,16 +412,16 @@ impl Updater {
     /// # Returns
     /// `Ok(true)` if verification passed, `Ok(false)` if no checksum available,
     /// `Err` on verification failure
-    pub async fn verify(&self, file_path: &Path, info: &UpdateInfo) -> Result<bool, UpdateError> {
+    pub fn verify(&self, file_path: &Path, info: &UpdateInfo) -> Result<bool, UpdateError> {
         let checksum_url = match &info.checksum_url {
             Some(url) => url,
             None => return Ok(false), // No checksum available
         };
 
         // Download checksum file
-        let response = self.client.get(checksum_url).send().await?;
+        let response = self.get(checksum_url)?.send()?;
 
-        let checksum_text = response.text().await?;
+        let checksum_text = response.text()?;
 
         // Parse expected checksum (format: "hash  filename" or just "hash")
         let expected_hash = checksum_text

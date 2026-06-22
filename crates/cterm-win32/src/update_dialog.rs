@@ -303,64 +303,44 @@ unsafe fn start_update_check(hwnd: HWND) {
     let hwnd_ptr = hwnd as usize;
 
     std::thread::spawn(move || {
-        // Create a runtime for async operation
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
+        // Check for cancellation
+        if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let current_version = env!("CARGO_PKG_VERSION");
+        let updater = match cterm_app::upgrade::Updater::new(GITHUB_REPO, current_version) {
+            Ok(u) => u,
             Err(e) => {
                 PENDING_UPDATE.with(|p| {
-                    *p.borrow_mut() = Some(UpdateResult::Error(format!(
-                        "Failed to create runtime: {}",
-                        e
-                    )));
+                    *p.borrow_mut() = Some(UpdateResult::Error(e.to_string()));
                 });
                 post_update_result(hwnd_ptr);
                 return;
             }
         };
 
-        rt.block_on(async {
-            // Check for cancellation
-            if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
-                return;
-            }
+        // Check for cancellation
+        if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
+            return;
+        }
 
-            let current_version = env!("CARGO_PKG_VERSION");
-            let updater = match cterm_app::upgrade::Updater::new(GITHUB_REPO, current_version) {
-                Ok(u) => u,
-                Err(e) => {
-                    PENDING_UPDATE.with(|p| {
-                        *p.borrow_mut() = Some(UpdateResult::Error(e.to_string()));
-                    });
-                    post_update_result(hwnd_ptr);
-                    return;
-                }
-            };
+        let result = match updater.check_for_update() {
+            Ok(Some(info)) => UpdateResult::UpdateAvailable(Box::new(info)),
+            Ok(None) => UpdateResult::NoUpdate,
+            Err(e) => UpdateResult::Error(e.to_string()),
+        };
 
-            // Check for cancellation
-            if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
-                return;
-            }
+        // Check for cancellation before posting
+        if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
+            return;
+        }
 
-            let result = match updater.check_for_update().await {
-                Ok(Some(info)) => UpdateResult::UpdateAvailable(Box::new(info)),
-                Ok(None) => UpdateResult::NoUpdate,
-                Err(e) => UpdateResult::Error(e.to_string()),
-            };
-
-            // Check for cancellation before posting
-            if UPDATE_CHECK_CANCELLED.load(Ordering::SeqCst) {
-                return;
-            }
-
-            PENDING_UPDATE.with(|p| {
-                *p.borrow_mut() = Some(result);
-            });
-
-            post_update_result(hwnd_ptr);
+        PENDING_UPDATE.with(|p| {
+            *p.borrow_mut() = Some(result);
         });
+
+        post_update_result(hwnd_ptr);
     });
 }
 
