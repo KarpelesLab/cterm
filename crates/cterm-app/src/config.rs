@@ -379,92 +379,67 @@ pub struct SshTabConfig {
 }
 
 impl SshTabConfig {
-    /// Build SSH command and arguments
-    pub fn build_command(&self) -> (String, Vec<String>) {
-        let mut args = Vec::new();
-
-        // Port
-        if let Some(port) = self.port {
-            if port != 22 {
-                args.push("-p".to_string());
-                args.push(port.to_string());
-            }
+    /// Convert to a native [`cterm_core::SshConfig`] for the puressh-based PTY
+    /// backend. cterm no longer spawns the system `ssh` binary; SSH tabs open a
+    /// native connection instead.
+    ///
+    /// Prompt callbacks are left unset here; the layer that owns the UI fills
+    /// them in so host-key / password / passphrase prompts can be surfaced.
+    pub fn to_ssh_config(&self) -> cterm_core::SshConfig {
+        cterm_core::SshConfig {
+            host: self.host.clone(),
+            port: self.port.unwrap_or(22),
+            username: self.username.clone(),
+            identity_files: self.identity_file.clone().into_iter().collect(),
+            term: None,
+            remote_command: self.remote_command.clone(),
+            local_forwards: self
+                .local_forwards
+                .iter()
+                .map(|f| cterm_core::ssh::LocalForward {
+                    local_port: f.local_port,
+                    remote_host: f.remote_host.clone(),
+                    remote_port: f.remote_port,
+                })
+                .collect(),
+            jump_host: self.jump_host.clone(),
+            agent_forward: self.agent_forward,
+            x11_forward: self.x11_forward,
+            host_key_prompt: None,
+            password_prompt: None,
+            passphrase_prompt: None,
         }
+    }
 
-        // Identity file
-        if let Some(ref identity) = self.identity_file {
-            args.push("-i".to_string());
-            args.push(identity.to_string_lossy().to_string());
+    /// Convert to wire-level [`SshParams`] for a daemon `CreateSession` request.
+    ///
+    /// This is the serializable subset sent to the daemon, which reconstructs a
+    /// [`cterm_core::SshConfig`] on its side.
+    pub fn to_ssh_params(&self) -> cterm_proto::proto::SshParams {
+        cterm_proto::proto::SshParams {
+            host: self.host.clone(),
+            port: self.port.unwrap_or(22) as u32,
+            username: self.username.clone(),
+            identity_files: self
+                .identity_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .into_iter()
+                .collect(),
+            remote_command: self.remote_command.clone(),
+            jump_host: self.jump_host.clone(),
+            agent_forward: self.agent_forward,
+            x11_forward: self.x11_forward,
+            local_forwards: self
+                .local_forwards
+                .iter()
+                .map(|f| cterm_proto::proto::PortForward {
+                    local_port: f.local_port as u32,
+                    remote_host: f.remote_host.clone(),
+                    remote_port: f.remote_port as u32,
+                })
+                .collect(),
         }
-
-        // Local port forwards
-        for fwd in &self.local_forwards {
-            args.push("-L".to_string());
-            args.push(format!(
-                "{}:{}:{}",
-                fwd.local_port, fwd.remote_host, fwd.remote_port
-            ));
-        }
-
-        // Remote port forwards
-        for fwd in &self.remote_forwards {
-            args.push("-R".to_string());
-            args.push(format!(
-                "{}:{}:{}",
-                fwd.local_port, fwd.remote_host, fwd.remote_port
-            ));
-        }
-
-        // Dynamic forward (SOCKS proxy)
-        if let Some(port) = self.dynamic_forward {
-            args.push("-D".to_string());
-            args.push(port.to_string());
-        }
-
-        // X11 forwarding
-        if self.x11_forward {
-            args.push("-X".to_string());
-        }
-
-        // Agent forwarding
-        if self.agent_forward {
-            args.push("-A".to_string());
-        }
-
-        // TTY allocation
-        if self.request_tty {
-            args.push("-t".to_string());
-        }
-
-        // Jump host
-        if let Some(ref jump) = self.jump_host {
-            args.push("-J".to_string());
-            args.push(jump.clone());
-        }
-
-        // SSH options
-        for (key, value) in &self.options {
-            args.push("-o".to_string());
-            args.push(format!("{}={}", key, value));
-        }
-
-        // Extra args
-        args.extend(self.extra_args.iter().cloned());
-
-        // Build destination: user@host or just host
-        let destination = if let Some(ref user) = self.username {
-            format!("{}@{}", user, self.host)
-        } else {
-            self.host.clone()
-        };
-        args.push(destination);
-
-        // Remote command
-        if let Some(ref cmd) = self.remote_command {
-            args.push(cmd.clone());
-        }
-
-        ("ssh".to_string(), args)
     }
 }
 
@@ -646,11 +621,15 @@ impl StickyTabConfig {
         self.ssh.is_some()
     }
 
-    /// Get the command and arguments for this sticky tab
+    /// Get the command and arguments for this sticky tab.
     ///
     /// For Docker tabs, this builds the appropriate docker exec/run command.
-    /// For SSH tabs, this builds the ssh command with configured options.
     /// For regular tabs, this returns the configured command and args.
+    ///
+    /// SSH tabs are *not* handled here: they no longer spawn a command (the
+    /// system `ssh` binary), but open a native connection via
+    /// [`SshTabConfig::to_ssh_config`] / `Pty::connect_ssh`. Callers must check
+    /// [`Self::is_ssh`] and route SSH tabs through the native path.
     pub fn get_command_args(&self) -> (Option<String>, Vec<String>) {
         if let Some(ref docker) = self.docker {
             match docker.mode {
@@ -676,9 +655,6 @@ impl StickyTabConfig {
                     (Some(cmd), args)
                 }
             }
-        } else if let Some(ref ssh) = self.ssh {
-            let (cmd, args) = ssh.build_command();
-            (Some(cmd), args)
         } else {
             (self.command.clone(), self.args.clone())
         }
@@ -1270,180 +1246,72 @@ mod tests {
         assert_eq!(forwards[0].local_port, 8080);
     }
 
-    // SSH command building tests
+    // SSH config conversion tests (native puressh backend)
     #[test]
-    fn test_ssh_build_command_basic() {
+    fn test_ssh_to_config_basic() {
         let ssh = SshTabConfig {
             host: "example.com".to_string(),
-            // Note: Default::default() sets request_tty to false,
-            // but serde default is true (for TOML deserialization)
             ..Default::default()
         };
-        let (cmd, args) = ssh.build_command();
-        assert_eq!(cmd, "ssh");
-        // request_tty is false with Default::default()
-        assert!(!args.contains(&"-t".to_string()));
-        assert!(args.contains(&"example.com".to_string()));
+        let cfg = ssh.to_ssh_config();
+        assert_eq!(cfg.host, "example.com");
+        // Unset port maps to the SSH default.
+        assert_eq!(cfg.port, 22);
+        assert!(cfg.username.is_none());
     }
 
     #[test]
-    fn test_ssh_build_command_with_tty() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            request_tty: true,
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-t".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_username() {
+    fn test_ssh_to_config_with_username() {
         let ssh = SshTabConfig {
             host: "example.com".to_string(),
             username: Some("admin".to_string()),
             ..Default::default()
         };
-        let (cmd, args) = ssh.build_command();
-        assert_eq!(cmd, "ssh");
-        assert!(args.contains(&"admin@example.com".to_string()));
+        let cfg = ssh.to_ssh_config();
+        // Username stays a distinct field; no `user@host` string-building.
+        assert_eq!(cfg.username, Some("admin".to_string()));
+        assert_eq!(cfg.host, "example.com");
     }
 
     #[test]
-    fn test_ssh_build_command_with_port() {
+    fn test_ssh_to_config_with_port() {
         let ssh = SshTabConfig {
             host: "example.com".to_string(),
             port: Some(2222),
             ..Default::default()
         };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"2222".to_string()));
+        assert_eq!(ssh.to_ssh_config().port, 2222);
     }
 
     #[test]
-    fn test_ssh_build_command_default_port_not_added() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            port: Some(22),
-            ..Default::default()
-        };
-        let (cmd, args) = ssh.build_command();
-        assert_eq!(cmd, "ssh");
-        // Port 22 should not be added explicitly
-        assert!(!args.contains(&"-p".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_identity() {
+    fn test_ssh_to_config_with_identity() {
         let ssh = SshTabConfig {
             host: "example.com".to_string(),
             identity_file: Some(PathBuf::from("/home/user/.ssh/id_rsa")),
             ..Default::default()
         };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-i".to_string()));
-        assert!(args.contains(&"/home/user/.ssh/id_rsa".to_string()));
+        let cfg = ssh.to_ssh_config();
+        assert_eq!(
+            cfg.identity_files,
+            vec![PathBuf::from("/home/user/.ssh/id_rsa")]
+        );
     }
 
     #[test]
-    fn test_ssh_build_command_with_local_forward() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            local_forwards: vec![SshPortForward {
-                local_port: 8080,
-                remote_host: "localhost".to_string(),
-                remote_port: 80,
-            }],
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-L".to_string()));
-        assert!(args.contains(&"8080:localhost:80".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_remote_forward() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            remote_forwards: vec![SshPortForward {
-                local_port: 3000,
-                remote_host: "localhost".to_string(),
-                remote_port: 3000,
-            }],
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-R".to_string()));
-        assert!(args.contains(&"3000:localhost:3000".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_dynamic_forward() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            dynamic_forward: Some(1080),
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-D".to_string()));
-        assert!(args.contains(&"1080".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_x11() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            x11_forward: true,
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-X".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_agent_forward() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            agent_forward: true,
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-A".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_jump_host() {
+    fn test_ssh_to_config_flags_and_jump() {
         let ssh = SshTabConfig {
             host: "internal.example.com".to_string(),
+            x11_forward: true,
+            agent_forward: true,
             jump_host: Some("bastion.example.com".to_string()),
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(args.contains(&"-J".to_string()));
-        assert!(args.contains(&"bastion.example.com".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_with_remote_command() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
             remote_command: Some("ls -la".to_string()),
             ..Default::default()
         };
-        let (_, args) = ssh.build_command();
-        assert!(args.last() == Some(&"ls -la".to_string()));
-    }
-
-    #[test]
-    fn test_ssh_build_command_no_tty() {
-        let ssh = SshTabConfig {
-            host: "example.com".to_string(),
-            request_tty: false,
-            ..Default::default()
-        };
-        let (_, args) = ssh.build_command();
-        assert!(!args.contains(&"-t".to_string()));
+        let cfg = ssh.to_ssh_config();
+        assert!(cfg.x11_forward);
+        assert!(cfg.agent_forward);
+        assert_eq!(cfg.jump_host, Some("bastion.example.com".to_string()));
+        assert_eq!(cfg.remote_command, Some("ls -la".to_string()));
     }
 
     // StickyTabConfig tests
@@ -1508,11 +1376,18 @@ mod tests {
     }
 
     #[test]
-    fn test_get_command_args_ssh() {
+    fn test_ssh_tab_uses_native_config_not_command() {
+        // SSH tabs no longer spawn the `ssh` binary: get_command_args does not
+        // produce a command for them; the native SshConfig is used instead.
         let tab = StickyTabConfig::ssh("Test", "example.com", Some("user"));
+        assert!(tab.is_ssh());
         let (cmd, args) = tab.get_command_args();
-        assert_eq!(cmd, Some("ssh".to_string()));
-        assert!(args.contains(&"user@example.com".to_string()));
+        assert!(cmd.is_none());
+        assert!(args.is_empty());
+
+        let cfg = tab.ssh.as_ref().unwrap().to_ssh_config();
+        assert_eq!(cfg.host, "example.com");
+        assert_eq!(cfg.username, Some("user".to_string()));
     }
 
     #[test]

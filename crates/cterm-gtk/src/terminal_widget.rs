@@ -1328,6 +1328,18 @@ impl TerminalWidget {
                                         Some(cterm_proto::proto::terminal_event::Event::Bell(_)) => {
                                             let _ = tx_events.send(PtyMessage::Bell);
                                         }
+                                        Some(cterm_proto::proto::terminal_event::Event::SessionPrompt(prompt)) => {
+                                            // TODO: surface a native GTK dialog (as cterm-cocoa
+                                            // does via ssh_prompt). Until then, decline so the
+                                            // SSH connect fails cleanly instead of hanging.
+                                            log::warn!(
+                                                "SSH interactive prompt not yet supported in the GTK UI; declining (host {}:{})",
+                                                prompt.host, prompt.port
+                                            );
+                                            let _ = event_session
+                                                .respond_prompt(&prompt.prompt_id, false, None)
+                                                .await;
+                                        }
                                         _ => {}
                                     }
                                 }

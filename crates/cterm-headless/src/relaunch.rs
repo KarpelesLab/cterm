@@ -81,14 +81,18 @@ pub fn collect_and_write_relaunch_state(
 
     for session in &sessions {
         let (fd, pid) = session.with_terminal(|term| {
-            let fd = term.pty().map(|p| p.raw_fd()).unwrap_or(-1);
+            // SSH-backed sessions have no file descriptor and cannot be
+            // preserved across the daemon's exec; `try_raw_fd` returns None for
+            // them and they are skipped below.
+            let fd = term.pty().and_then(|p| p.try_raw_fd()).unwrap_or(-1);
             let pid = term.child_pid().unwrap_or(-1);
             (fd, pid)
         });
 
         if fd < 0 || pid < 0 {
             log::warn!(
-                "Skipping session {} (no valid FD/PID: fd={}, pid={})",
+                "Skipping session {} (no preservable FD/PID: fd={}, pid={}); \
+                 SSH sessions are dropped across daemon self-upgrade",
                 session.id,
                 fd,
                 pid

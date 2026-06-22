@@ -78,6 +78,45 @@ impl SessionManager {
         Ok(state)
     }
 
+    /// Create a new session backed by a native SSH connection (puressh).
+    ///
+    /// Returns immediately with a "connecting" session; the SSH connection is
+    /// established on a background task, surfacing any interactive prompts via
+    /// the session's event stream. Must be called from within the Tokio runtime.
+    pub fn create_ssh_session(
+        &self,
+        cols: usize,
+        rows: usize,
+        ssh_config: cterm_core::SshConfig,
+    ) -> Result<Arc<SessionState>> {
+        let id = generate_session_id();
+
+        if self.sessions.read().contains_key(&id) {
+            return Err(HeadlessError::SessionAlreadyExists(id));
+        }
+
+        let host = ssh_config.host.clone();
+        let state = SessionState::new_ssh_connecting(id.clone(), cols, rows, self.scrollback_lines);
+
+        // Store the session before driving the connection so prompt/event
+        // subscribers can attach immediately.
+        self.had_sessions.store(true, Ordering::Relaxed);
+        self.sessions.write().insert(id, Arc::clone(&state));
+
+        // Drive the SSH connection (and prompts) on a background task.
+        state.spawn_ssh_connect(ssh_config, cols, rows);
+
+        log::info!(
+            "Created SSH session {} to {} ({}x{}, connecting)",
+            state.id,
+            host,
+            cols,
+            rows
+        );
+
+        Ok(state)
+    }
+
     /// Get a session by ID
     pub fn get_session(&self, id: &str) -> Result<Arc<SessionState>> {
         self.sessions

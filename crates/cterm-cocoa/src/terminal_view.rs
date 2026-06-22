@@ -1637,13 +1637,44 @@ impl TerminalView {
                         use tokio_stream::StreamExt;
                         while let Some(result) = stream.next().await {
                             if let Ok(event) = result {
-                                if let Some(
-                                    cterm_proto::proto::terminal_event::Event::ProcessExited(_),
-                                ) = event.event
-                                {
-                                    log::info!("Daemon reports process exited");
-                                    exit_notify_event.notify_one();
-                                    break;
+                                match event.event {
+                                    Some(
+                                        cterm_proto::proto::terminal_event::Event::ProcessExited(_),
+                                    ) => {
+                                        log::info!("Daemon reports process exited");
+                                        exit_notify_event.notify_one();
+                                        break;
+                                    }
+                                    Some(
+                                        cterm_proto::proto::terminal_event::Event::SessionPrompt(
+                                            prompt,
+                                        ),
+                                    ) => {
+                                        // Show the prompt on the main thread, then
+                                        // send the user's reply back to the daemon.
+                                        let (tx, rx) = std::sync::mpsc::channel();
+                                        let prompt_for_ui = prompt.clone();
+                                        dispatch2::Queue::main().exec_async(move || {
+                                            let mtm =
+                                                unsafe { MainThreadMarker::new_unchecked() };
+                                            let _ = tx.send(crate::ssh_prompt::show_ssh_prompt(
+                                                mtm,
+                                                &prompt_for_ui,
+                                            ));
+                                        });
+                                        let reply = tokio::task::spawn_blocking(move || {
+                                            rx.recv().ok()
+                                        })
+                                        .await
+                                        .ok()
+                                        .flatten();
+                                        let (accept, secret) =
+                                            reply.unwrap_or((false, None));
+                                        let _ = event_session
+                                            .respond_prompt(&prompt.prompt_id, accept, secret)
+                                            .await;
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

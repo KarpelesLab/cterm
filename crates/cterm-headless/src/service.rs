@@ -76,6 +76,49 @@ impl TerminalService for TerminalServiceImpl {
         let cols = req.cols.max(1) as usize;
         let rows = req.rows.max(1) as usize;
 
+        // Native SSH session: open a puressh connection instead of a local shell.
+        if let Some(ssh) = req.ssh {
+            let local_forwards = ssh
+                .local_forwards
+                .into_iter()
+                .map(|f| cterm_core::ssh::LocalForward {
+                    local_port: f.local_port as u16,
+                    remote_host: f.remote_host,
+                    remote_port: f.remote_port as u16,
+                })
+                .collect();
+            let mut ssh_config = cterm_core::SshConfig {
+                host: ssh.host,
+                port: ssh.port as u16,
+                username: ssh.username,
+                identity_files: ssh.identity_files.into_iter().map(PathBuf::from).collect(),
+                term: req.term,
+                remote_command: ssh.remote_command,
+                local_forwards,
+                jump_host: ssh.jump_host,
+                agent_forward: ssh.agent_forward,
+                x11_forward: ssh.x11_forward,
+                host_key_prompt: None,
+                password_prompt: None,
+                passphrase_prompt: None,
+            };
+            // Default TERM if the client did not specify one.
+            if ssh_config.term.is_none() {
+                ssh_config.term = Some("xterm-256color".to_string());
+            }
+
+            let session = self
+                .session_manager
+                .create_ssh_session(cols, rows, ssh_config)
+                .map_err(Status::from)?;
+
+            return Ok(Response::new(CreateSessionResponse {
+                session_id: session.id.clone(),
+                cols: cols as u32,
+                rows: rows as u32,
+            }));
+        }
+
         let env: Vec<(String, String)> = req.env.into_iter().collect();
 
         let session = self
@@ -522,7 +565,7 @@ impl TerminalService for TerminalServiceImpl {
 
         let rx = session.subscribe_events();
         let session_id = req.session_id.clone();
-        let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
+        let events = BroadcastStream::new(rx).filter_map(move |result| match result {
             Ok(event) => Some(Ok(event_to_proto(&event))),
             Err(BroadcastStreamRecvError::Lagged(count)) => {
                 log::warn!(
@@ -534,7 +577,39 @@ impl TerminalService for TerminalServiceImpl {
             }
         });
 
+        // Merge in interactive SSH prompts (host key / password / passphrase),
+        // which the client answers via RespondPrompt.
+        let prompt_rx = session.subscribe_prompts();
+        let prompts = BroadcastStream::new(prompt_rx).filter_map(|result| match result {
+            Ok(prompt) => Some(Ok(TerminalEvent {
+                event: Some(terminal_event::Event::SessionPrompt(prompt)),
+            })),
+            Err(_) => None,
+        });
+
+        let stream = events.merge(prompts);
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn respond_prompt(
+        &self,
+        request: Request<RespondPromptRequest>,
+    ) -> Result<Response<RespondPromptResponse>, Status> {
+        let req = request.into_inner();
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .map_err(Status::from)?;
+
+        let success = session.respond_prompt(
+            &req.prompt_id,
+            crate::session::PromptReply {
+                accept: req.accept,
+                secret: req.secret,
+            },
+        );
+
+        Ok(Response::new(RespondPromptResponse { success }))
     }
 
     // ========================================================================

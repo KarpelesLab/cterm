@@ -79,7 +79,7 @@ mod unix {
     }
 
     /// Native PTY with exposed raw file descriptor
-    pub struct Pty {
+    pub struct LocalPty {
         /// The master PTY file descriptor
         master_fd: RawFd,
         /// File wrapper for the master (for I/O operations)
@@ -90,7 +90,7 @@ mod unix {
         exit_status: Option<i32>,
     }
 
-    impl Pty {
+    impl LocalPty {
         /// Create a new PTY and spawn the shell
         pub fn new(config: &PtyConfig) -> Result<Self, PtyError> {
             unsafe { Self::create_pty_and_spawn(config) }
@@ -556,7 +556,7 @@ mod unix {
         }
     }
 
-    impl Drop for Pty {
+    impl Drop for LocalPty {
         fn drop(&mut self) {
             // Send SIGHUP to the child process
             let _ = self.send_signal(libc::SIGHUP);
@@ -564,7 +564,7 @@ mod unix {
         }
     }
 
-    impl AsRawFd for Pty {
+    impl AsRawFd for LocalPty {
         fn as_raw_fd(&self) -> RawFd {
             self.master_fd
         }
@@ -626,7 +626,7 @@ mod windows {
     const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 
     /// Windows PTY using ConPTY
-    pub struct Pty {
+    pub struct LocalPty {
         /// Pseudo console handle
         hpc: HANDLE,
         /// Pipe for reading from PTY
@@ -645,12 +645,12 @@ mod windows {
 
     // SAFETY: Windows HANDLEs are just integer values that can be safely sent between threads.
     // The underlying resources are managed by the Windows kernel and are not tied to any thread.
-    // The Pty struct doesn't have any internal mutability that would cause data races,
+    // The LocalPty struct doesn't have any internal mutability that would cause data races,
     // and all access to HANDLEs goes through Windows kernel which handles synchronization.
-    unsafe impl Send for Pty {}
-    unsafe impl Sync for Pty {}
+    unsafe impl Send for LocalPty {}
+    unsafe impl Sync for LocalPty {}
 
-    impl Pty {
+    impl LocalPty {
         /// Create a new PTY and spawn the shell
         pub fn new(config: &PtyConfig) -> Result<Self, PtyError> {
             unsafe { Self::create_conpty(config) }
@@ -932,7 +932,7 @@ mod windows {
         }
     }
 
-    impl Drop for Pty {
+    impl Drop for LocalPty {
         fn drop(&mut self) {
             unsafe {
                 ClosePseudoConsole(self.hpc);
@@ -988,16 +988,16 @@ mod windows {
 }
 
 // ============================================================================
-// Re-export the platform-specific Pty
+// Platform-specific local PTY (private; wrapped by the public `Pty`)
 // ============================================================================
 
 #[cfg(unix)]
 pub use unix::save_original_nofile_limit;
 #[cfg(unix)]
-pub use unix::Pty;
+use unix::LocalPty;
 
 #[cfg(windows)]
-pub use windows::Pty;
+use windows::LocalPty;
 
 /// Platform-specific raw handle type
 /// On Unix this is RawFd (i32), on Windows this is RawHandle (isize)
@@ -1006,6 +1006,191 @@ pub type RawPtyHandle = std::os::unix::io::RawFd;
 
 #[cfg(windows)]
 pub type RawPtyHandle = std::os::windows::io::RawHandle;
+
+// ============================================================================
+// Public PTY: a backend abstraction over a local PTY or a native SSH channel
+// ============================================================================
+
+/// Backend behind the public [`Pty`].
+///
+/// `Local` is a real OS pseudo-terminal (with a file descriptor / ConPTY).
+/// `Ssh` is a native puressh channel that implements blocking read/write/resize
+/// directly — it has no file descriptor, so FD-specific operations
+/// ([`Pty::try_raw_fd`], `foreground_*`) return `None` for it.
+enum Backend {
+    Local(LocalPty),
+    Ssh(crate::ssh::SshPty),
+}
+
+/// A pseudo-terminal handle.
+///
+/// Most code treats this as an opaque source/sink of terminal bytes. Under the
+/// hood it is either a local OS PTY or a native SSH session; the methods below
+/// dispatch to whichever backend is in use.
+pub struct Pty {
+    backend: Backend,
+}
+
+impl Pty {
+    /// Create a new local PTY and spawn the configured shell.
+    pub fn new(config: &PtyConfig) -> Result<Self, PtyError> {
+        Ok(Self {
+            backend: Backend::Local(LocalPty::new(config)?),
+        })
+    }
+
+    /// Open a native SSH session and allocate a remote PTY-backed shell.
+    pub fn connect_ssh(config: crate::ssh::SshConfig, size: PtySize) -> Result<Self, PtyError> {
+        Ok(Self {
+            backend: Backend::Ssh(crate::ssh::SshPty::connect(config, size)?),
+        })
+    }
+
+    /// Reconstruct a local PTY from a raw master FD (upgrade/relaunch receiver).
+    ///
+    /// # Safety
+    /// The caller must ensure `fd` is a valid master PTY file descriptor and
+    /// `child_pid` is the correct process ID of the child process.
+    #[cfg(unix)]
+    pub unsafe fn from_raw_fd(fd: RawPtyHandle, child_pid: i32) -> Self {
+        Self {
+            backend: Backend::Local(LocalPty::from_raw_fd(fd, child_pid)),
+        }
+    }
+
+    /// Raw master FD, if this PTY is backed by a local OS PTY.
+    ///
+    /// Returns `None` for SSH-backed PTYs (no file descriptor); callers that
+    /// preserve PTYs across an exec (daemon self-upgrade) must skip those.
+    #[cfg(unix)]
+    pub fn try_raw_fd(&self) -> Option<RawPtyHandle> {
+        match &self.backend {
+            Backend::Local(p) => Some(p.raw_fd()),
+            Backend::Ssh(_) => None,
+        }
+    }
+
+    /// Duplicate the local master FD for transfer. Errors for SSH-backed PTYs.
+    #[cfg(unix)]
+    pub fn dup_fd(&self) -> io::Result<RawPtyHandle> {
+        match &self.backend {
+            Backend::Local(p) => p.dup_fd(),
+            Backend::Ssh(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "dup_fd is not supported for SSH-backed PTYs",
+            )),
+        }
+    }
+
+    /// Child process ID (local PTYs). SSH-backed PTYs have no local child and
+    /// return `-1`.
+    pub fn child_pid(&self) -> i32 {
+        match &self.backend {
+            Backend::Local(p) => p.child_pid(),
+            Backend::Ssh(p) => p.child_pid(),
+        }
+    }
+
+    /// Write bytes to the PTY (terminal input).
+    pub fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        match &mut self.backend {
+            Backend::Local(p) => p.write(data),
+            Backend::Ssh(p) => p.write(data),
+        }
+    }
+
+    /// Read bytes directly from the PTY (terminal output).
+    pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &mut self.backend {
+            Backend::Local(p) => p.read(buf),
+            Backend::Ssh(p) => p.read(buf),
+        }
+    }
+
+    /// Resize the PTY window.
+    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+        match &self.backend {
+            Backend::Local(p) => p.resize(rows, cols),
+            Backend::Ssh(p) => p.resize(rows, cols),
+        }
+    }
+
+    /// Whether the underlying process / connection is still alive.
+    pub fn is_running(&mut self) -> bool {
+        match &mut self.backend {
+            Backend::Local(p) => p.is_running(),
+            Backend::Ssh(p) => p.is_running(),
+        }
+    }
+
+    /// Block until the process / connection exits, returning its status.
+    pub fn wait(&mut self) -> io::Result<i32> {
+        match &mut self.backend {
+            Backend::Local(p) => p.wait(),
+            Backend::Ssh(p) => p.wait(),
+        }
+    }
+
+    /// Non-blocking exit-status poll.
+    pub fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        match &mut self.backend {
+            Backend::Local(p) => p.try_wait(),
+            Backend::Ssh(p) => p.try_wait(),
+        }
+    }
+
+    /// Send a signal to the child process (local) or best-effort remote signal.
+    pub fn send_signal(&self, signal: i32) -> io::Result<()> {
+        match &self.backend {
+            Backend::Local(p) => p.send_signal(signal),
+            Backend::Ssh(p) => p.send_signal(signal),
+        }
+    }
+
+    /// Clone an independent blocking reader over the PTY output.
+    pub fn try_clone_reader(&self) -> io::Result<Box<dyn Read + Send>> {
+        match &self.backend {
+            Backend::Local(p) => Ok(Box::new(p.try_clone_reader()?)),
+            Backend::Ssh(p) => p.try_clone_reader(),
+        }
+    }
+
+    /// Foreground process group of a local PTY, if any. `None` for SSH.
+    #[cfg(unix)]
+    pub fn foreground_process_group(&self) -> Option<i32> {
+        match &self.backend {
+            Backend::Local(p) => p.foreground_process_group(),
+            Backend::Ssh(_) => None,
+        }
+    }
+
+    /// Whether a local PTY has a foreground process other than the shell.
+    #[cfg(unix)]
+    pub fn has_foreground_process(&self) -> bool {
+        match &self.backend {
+            Backend::Local(p) => p.has_foreground_process(),
+            Backend::Ssh(_) => false,
+        }
+    }
+
+    /// Name of the foreground process of a local PTY, if any. `None` for SSH.
+    #[cfg(unix)]
+    pub fn foreground_process_name(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Local(p) => p.foreground_process_name(),
+            Backend::Ssh(_) => None,
+        }
+    }
+
+    /// Working directory of the foreground process of a local PTY. `None` for SSH.
+    #[cfg(unix)]
+    pub fn foreground_cwd(&self) -> Option<PathBuf> {
+        match &self.backend {
+            Backend::Local(p) => p.foreground_cwd(),
+            Backend::Ssh(_) => None,
+        }
+    }
+}
 
 // ============================================================================
 // Tests
@@ -1217,7 +1402,7 @@ mod tests {
         assert!(duped_fd >= 0);
 
         // The original FD should still be valid
-        let original_fd = pty.raw_fd();
+        let original_fd = pty.try_raw_fd().expect("local PTY should have a raw fd");
         assert!(original_fd >= 0);
 
         // They should be different FDs

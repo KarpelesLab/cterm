@@ -216,8 +216,8 @@ impl Terminal {
         Err(PtyError::NotRunning)
     }
 
-    /// Get a cloned reader for the PTY
-    pub fn pty_reader(&self) -> Option<std::fs::File> {
+    /// Get an independent blocking reader for the PTY output.
+    pub fn pty_reader(&self) -> Option<Box<dyn std::io::Read + Send>> {
         self.pty.as_ref().and_then(|p| p.try_clone_reader().ok())
     }
 

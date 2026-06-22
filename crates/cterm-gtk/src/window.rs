@@ -2835,6 +2835,8 @@ fn create_tab_from_template(
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        // SSH tabs open a native puressh connection on the daemon.
+        ssh: template.ssh.as_ref().map(|s| s.to_ssh_params()),
         ..Default::default()
     };
 

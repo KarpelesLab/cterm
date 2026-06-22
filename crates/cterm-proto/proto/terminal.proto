@@ -48,6 +48,9 @@ service TerminalService {
   // Event Streaming (per-session terminal events)
   rpc StreamEvents(StreamEventsRequest) returns (stream TerminalEvent);
 
+  // Reply to a SessionPromptEvent raised during SSH session establishment.
+  rpc RespondPrompt(RespondPromptRequest) returns (RespondPromptResponse);
+
   // Daemon Management
   rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
@@ -84,6 +87,38 @@ message HandshakeResponse {
 // Session Management
 // ============================================================================
 
+// Parameters for a native (puressh) SSH session. When set on a
+// CreateSessionRequest, the daemon opens an SSH connection instead of spawning
+// a local shell.
+message SshParams {
+  // Remote host (hostname or IP).
+  string host = 1;
+  // Remote port (0 = default 22).
+  uint32 port = 2;
+  // Login user (empty = local user).
+  optional string username = 3;
+  // Identity (private key) files to offer.
+  repeated string identity_files = 4;
+  // Remote command to run instead of an interactive shell.
+  optional string remote_command = 5;
+  // ProxyJump-style jump host (user@host[:port]).
+  optional string jump_host = 6;
+  // Forward the local SSH agent.
+  bool agent_forward = 7;
+  // Enable X11 forwarding.
+  bool x11_forward = 8;
+  // Local port forwards (`-L`): bind a local TCP port and forward each
+  // connection to remote_host:remote_port from the server's perspective.
+  repeated PortForward local_forwards = 9;
+}
+
+// A single `-L`-style local port forward.
+message PortForward {
+  uint32 local_port = 1;
+  string remote_host = 2;
+  uint32 remote_port = 3;
+}
+
 message CreateSessionRequest {
   // Terminal dimensions
   uint32 cols = 1;
@@ -103,6 +138,9 @@ message CreateSessionRequest {
 
   // TERM environment variable (default: xterm-256color)
   optional string term = 7;
+
+  // When set, open a native SSH session instead of spawning a local shell.
+  optional SshParams ssh = 8;
 }
 
 message CreateSessionResponse {
@@ -550,7 +588,47 @@ message TerminalEvent {
     ProcessExitedEvent process_exited = 3;
     ContentChangedEvent content_changed = 4;
     ClipboardRequestEvent clipboard_request = 5;
+    // Daemon-injected: an SSH session needs an interactive answer (host key,
+    // password, or key passphrase). The client replies via RespondPrompt.
+    SessionPromptEvent session_prompt = 6;
   }
+}
+
+// Kinds of interactive prompt a native SSH session may raise during connect.
+enum PromptKind {
+  PROMPT_KIND_UNSPECIFIED = 0;
+  PROMPT_KIND_HOSTKEY_UNKNOWN = 1;  // unknown host — accept/reject
+  PROMPT_KIND_HOSTKEY_CHANGED = 2;  // changed host key — accept/reject
+  PROMPT_KIND_PASSWORD = 3;         // login password — secret reply
+  PROMPT_KIND_PASSPHRASE = 4;       // identity-file passphrase — secret reply
+}
+
+// An interactive prompt raised while establishing an SSH session.
+message SessionPromptEvent {
+  // Opaque id correlating this prompt with its RespondPrompt reply.
+  string prompt_id = 1;
+  PromptKind kind = 2;
+  // Host/port being connected to (host-key prompts).
+  string host = 3;
+  uint32 port = 4;
+  // SSH key type + SHA256 fingerprint (host-key prompts).
+  string key_type = 5;
+  string fingerprint = 6;
+  // Human-readable prompt text (password/passphrase prompts).
+  string text = 7;
+}
+
+message RespondPromptRequest {
+  string session_id = 1;
+  string prompt_id = 2;
+  // For host-key prompts: whether to accept the key.
+  bool accept = 3;
+  // For password/passphrase prompts: the secret (empty/absent = cancel).
+  optional string secret = 4;
+}
+
+message RespondPromptResponse {
+  bool success = 1;
 }
 
 message TitleChangedEvent {

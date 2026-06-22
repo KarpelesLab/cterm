@@ -6,4 +6,4 @@ mod state;
 
 pub use id::generate_session_id;
 pub use manager::SessionManager;
-pub use state::{OutputData, SessionState};
+pub use state::{OutputData, PromptReply, SessionState};

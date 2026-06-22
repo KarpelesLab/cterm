@@ -8,7 +8,8 @@ use cterm_core::term::TerminalEvent;
 use cterm_core::Pty;
 use cterm_core::{PtyConfig, PtySize, Terminal};
 use parking_lot::RwLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -17,6 +18,15 @@ use tokio::sync::broadcast;
 pub struct OutputData {
     pub data: Vec<u8>,
     pub timestamp_ms: u64,
+}
+
+/// Reply to an interactive SSH prompt (host key / password / passphrase).
+#[derive(Clone, Debug, Default)]
+pub struct PromptReply {
+    /// For host-key prompts: whether the key was accepted.
+    pub accept: bool,
+    /// For password/passphrase prompts: the entered secret (None = cancelled).
+    pub secret: Option<String>,
 }
 
 /// Session state wrapping a Terminal instance
@@ -50,6 +60,20 @@ pub struct SessionState {
 
     /// Human-readable session name (for latch named sessions)
     session_name: RwLock<Option<String>>,
+
+    /// True while an SSH session is still establishing its connection (no PTY
+    /// yet). Keeps the session from being reaped as "dead" during connect.
+    connecting: std::sync::atomic::AtomicBool,
+
+    /// Broadcast of interactive SSH prompts (host key / password / passphrase)
+    /// raised during connect; consumed by `StreamEvents` and surfaced to the UI.
+    prompt_tx: broadcast::Sender<crate::proto::SessionPromptEvent>,
+
+    /// Pending prompts awaiting a `RespondPrompt`, keyed by prompt id.
+    prompt_registry: parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<PromptReply>>>,
+
+    /// Monotonic counter for generating prompt ids.
+    prompt_counter: AtomicU64,
 }
 
 impl SessionState {
@@ -97,9 +121,199 @@ impl SessionState {
             template_name: RwLock::new(String::new()),
             session_name: RwLock::new(None),
             alerted: std::sync::atomic::AtomicBool::new(false),
+            connecting: std::sync::atomic::AtomicBool::new(false),
+            prompt_tx: broadcast::channel(16).0,
+            prompt_registry: parking_lot::Mutex::new(HashMap::new()),
+            prompt_counter: AtomicU64::new(0),
         });
 
         Ok(state)
+    }
+
+    /// Create a placeholder session for a native SSH connection that is still
+    /// being established. It has a screen but no PTY yet; [`Self::is_running`]
+    /// reports it as alive (via the `connecting` flag) so it is not reaped while
+    /// connecting. Call [`Self::spawn_ssh_connect`] to drive the connection.
+    pub fn new_ssh_connecting(
+        id: String,
+        cols: usize,
+        rows: usize,
+        scrollback_lines: usize,
+    ) -> Arc<Self> {
+        let screen_config = ScreenConfig { scrollback_lines };
+        let terminal = Terminal::new(cols, rows, screen_config);
+
+        let (output_tx, _) = broadcast::channel(1024);
+        let (event_tx, _) = broadcast::channel(256);
+        let (prompt_tx, _) = broadcast::channel(16);
+
+        Arc::new(Self {
+            terminal: RwLock::new(terminal),
+            id,
+            output_tx,
+            event_tx,
+            attached_clients: AtomicU32::new(0),
+            custom_title: RwLock::new(String::new()),
+            tab_color: RwLock::new(String::new()),
+            template_name: RwLock::new(String::new()),
+            session_name: RwLock::new(None),
+            alerted: std::sync::atomic::AtomicBool::new(false),
+            connecting: std::sync::atomic::AtomicBool::new(true),
+            prompt_tx,
+            prompt_registry: parking_lot::Mutex::new(HashMap::new()),
+            prompt_counter: AtomicU64::new(0),
+        })
+    }
+
+    /// Drive the SSH connection on a background task. Interactive prompts (host
+    /// key, password, passphrase) are surfaced via [`Self::subscribe_prompts`]
+    /// and answered with [`Self::respond_prompt`]. On success the PTY is
+    /// attached and the reader started; on failure a `ProcessExited` event is
+    /// broadcast.
+    pub fn spawn_ssh_connect(
+        self: &Arc<Self>,
+        mut ssh_config: cterm_core::SshConfig,
+        cols: usize,
+        rows: usize,
+    ) {
+        let size = PtySize {
+            cols: cols as u16,
+            rows: rows as u16,
+            ..Default::default()
+        };
+        let state = Arc::clone(self);
+
+        tokio::spawn(async move {
+            // Bind interactive prompt callbacks to this session.
+            ssh_config.host_key_prompt = Some(state.host_key_prompt_callback());
+            ssh_config.password_prompt = Some(state.password_prompt_callback());
+            ssh_config.passphrase_prompt = Some(state.passphrase_prompt_callback());
+
+            let connect_state = Arc::clone(&state);
+            let result = tokio::task::spawn_blocking(move || {
+                let _ = &connect_state; // keep the session alive for callbacks
+                cterm_core::Pty::connect_ssh(ssh_config, size)
+            })
+            .await;
+
+            state.connecting.store(false, Ordering::Relaxed);
+
+            match result {
+                Ok(Ok(pty)) => {
+                    state.terminal.write().set_pty(pty);
+                    if let Err(e) = state.start_reader() {
+                        log::error!("Failed to start SSH reader for {}: {}", state.id, e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    log::warn!("SSH connect failed for {}: {}", state.id, e);
+                    state.process_output(format!("\r\nSSH connection failed: {e}\r\n").as_bytes());
+                    state.broadcast_event(TerminalEvent::ProcessExited(1));
+                }
+                Err(e) => {
+                    log::error!("SSH connect task panicked for {}: {}", state.id, e);
+                    state.broadcast_event(TerminalEvent::ProcessExited(1));
+                }
+            }
+        });
+    }
+
+    /// Whether this session is still establishing its SSH connection.
+    pub fn is_connecting(&self) -> bool {
+        self.connecting.load(Ordering::Relaxed)
+    }
+
+    /// Subscribe to interactive SSH prompts for this session.
+    pub fn subscribe_prompts(&self) -> broadcast::Receiver<crate::proto::SessionPromptEvent> {
+        self.prompt_tx.subscribe()
+    }
+
+    /// Emit a prompt and return a receiver that resolves when the client
+    /// replies via [`Self::respond_prompt`]. Runs on the (blocking) connect
+    /// thread, which parks on the returned receiver.
+    fn emit_prompt(
+        &self,
+        event: crate::proto::SessionPromptEvent,
+    ) -> std::sync::mpsc::Receiver<PromptReply> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.prompt_registry
+            .lock()
+            .insert(event.prompt_id.clone(), tx);
+        let _ = self.prompt_tx.send(event);
+        rx
+    }
+
+    /// Deliver a reply to a pending prompt. Returns false if unknown/expired.
+    pub fn respond_prompt(&self, prompt_id: &str, reply: PromptReply) -> bool {
+        if let Some(tx) = self.prompt_registry.lock().remove(prompt_id) {
+            tx.send(reply).is_ok()
+        } else {
+            false
+        }
+    }
+
+    fn next_prompt_id(&self) -> String {
+        format!(
+            "{}-{}",
+            self.id,
+            self.prompt_counter.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn host_key_prompt_callback(self: &Arc<Self>) -> cterm_core::HostKeyPrompt {
+        let state = Arc::clone(self);
+        Arc::new(move |req: cterm_core::HostKeyRequest| {
+            let prompt_id = state.next_prompt_id();
+            let kind = if req.changed {
+                crate::proto::PromptKind::HostkeyChanged
+            } else {
+                crate::proto::PromptKind::HostkeyUnknown
+            };
+            let rx = state.emit_prompt(crate::proto::SessionPromptEvent {
+                prompt_id,
+                kind: kind as i32,
+                host: req.host,
+                port: req.port as u32,
+                key_type: req.key_type,
+                fingerprint: req.fingerprint,
+                text: String::new(),
+            });
+            rx.recv().map(|r| r.accept).unwrap_or(false)
+        })
+    }
+
+    fn password_prompt_callback(self: &Arc<Self>) -> cterm_core::PasswordPrompt {
+        let state = Arc::clone(self);
+        Arc::new(move |text: &str| {
+            let prompt_id = state.next_prompt_id();
+            let rx = state.emit_prompt(crate::proto::SessionPromptEvent {
+                prompt_id,
+                kind: crate::proto::PromptKind::Password as i32,
+                host: String::new(),
+                port: 0,
+                key_type: String::new(),
+                fingerprint: String::new(),
+                text: text.to_string(),
+            });
+            rx.recv().ok().and_then(|r| r.secret)
+        })
+    }
+
+    fn passphrase_prompt_callback(self: &Arc<Self>) -> cterm_core::PassphrasePrompt {
+        let state = Arc::clone(self);
+        Arc::new(move |path: &str| {
+            let prompt_id = state.next_prompt_id();
+            let rx = state.emit_prompt(crate::proto::SessionPromptEvent {
+                prompt_id,
+                kind: crate::proto::PromptKind::Passphrase as i32,
+                host: String::new(),
+                port: 0,
+                key_type: String::new(),
+                fingerprint: String::new(),
+                text: format!("Enter passphrase for {path}"),
+            });
+            rx.recv().ok().and_then(|r| r.secret)
+        })
     }
 
     /// Reconstruct a session from a raw PTY file descriptor (used during relaunch).
@@ -138,6 +352,10 @@ impl SessionState {
             template_name: RwLock::new(template_name),
             session_name: RwLock::new(None),
             alerted: std::sync::atomic::AtomicBool::new(false),
+            connecting: std::sync::atomic::AtomicBool::new(false),
+            prompt_tx: broadcast::channel(16).0,
+            prompt_registry: parking_lot::Mutex::new(HashMap::new()),
+            prompt_counter: AtomicU64::new(0),
         });
 
         Ok(state)
@@ -248,7 +466,9 @@ impl SessionState {
 
     /// Check if the terminal is still running
     pub fn is_running(&self) -> bool {
-        self.terminal.write().is_running()
+        // A session still establishing its SSH connection has no PTY yet but
+        // must not be treated as dead.
+        self.connecting.load(Ordering::Relaxed) || self.terminal.write().is_running()
     }
 
     /// Get the child process ID

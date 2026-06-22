@@ -101,40 +101,30 @@ pub struct DaemonInfo {
     pub socket_path: Option<PathBuf>,
 }
 
-/// Handle for a spawned SSH tunnel process. Allows another part of the app
-/// (typically `RemoteManager::disconnect`) to terminate the tunnel without
-/// holding a `&mut Child` (the `Child` is owned by a detached waiter thread).
+/// Handle for a native (puressh) SSH tunnel. Allows another part of the app
+/// (typically `RemoteManager::disconnect`) to terminate the tunnel.
 ///
-/// Cloning is cheap (Arc); calling `kill()` is idempotent.
+/// Cloning is cheap (Arc); calling `kill()` is idempotent. The tunnel is also
+/// torn down when the last handle is dropped.
 #[cfg(unix)]
 #[derive(Clone, Default)]
 pub struct SshTunnelHandle {
-    pid: Arc<std::sync::Mutex<Option<i32>>>,
+    tunnel: Option<Arc<cterm_core::SshTunnel>>,
 }
 
 #[cfg(unix)]
 impl SshTunnelHandle {
-    fn from_child(child: &std::process::Child) -> Self {
+    fn from_tunnel(tunnel: cterm_core::SshTunnel) -> Self {
         Self {
-            pid: Arc::new(std::sync::Mutex::new(Some(child.id() as i32))),
+            tunnel: Some(Arc::new(tunnel)),
         }
     }
 
-    /// Send SIGTERM to the tunnel process. No-op if it has already exited.
+    /// Stop the tunnel. No-op if it has already been stopped.
     pub fn kill(&self) {
-        let mut guard = self.pid.lock().unwrap();
-        if let Some(pid) = guard.take() {
-            // SAFETY: `kill(2)` with a PID we obtained from our own child
-            // process is safe; the kernel returns ESRCH if the process is gone.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
+        if let Some(tunnel) = &self.tunnel {
+            tunnel.close();
         }
-    }
-
-    /// Mark the tunnel as exited (called from the waiter thread).
-    fn mark_exited(&self) {
-        *self.pid.lock().unwrap() = None;
     }
 }
 
@@ -148,6 +138,8 @@ pub struct CreateSessionOpts {
     pub cwd: Option<String>,
     pub env: Vec<(String, String)>,
     pub term: Option<String>,
+    /// When set, the daemon opens a native SSH session instead of a local shell.
+    pub ssh: Option<SshParams>,
 }
 
 /// Connection to a ctermd instance
@@ -222,146 +214,58 @@ impl DaemonConnection {
     /// which significantly reduces bandwidth for terminal data (scrollback, screen snapshots).
     #[cfg(unix)]
     pub async fn connect_ssh(host: &str, compress: bool) -> Result<(Self, SshTunnelHandle)> {
-        log::info!("Connecting to {} via SSH", host);
+        log::info!("Connecting to {} via SSH (native puressh)", host);
+        // puressh compression negotiation is not wired through this path yet.
+        let _ = compress;
 
-        // Parse optional port from host string (user@host:port or host:port)
+        // Parse optional port and split user@host.
         let (ssh_dest, port) = parse_ssh_host(host);
+        let (username, hostname) = match ssh_dest.split_once('@') {
+            Some((u, h)) => (Some(u.to_string()), h.to_string()),
+            None => (None, ssh_dest.clone()),
+        };
 
-        // 1. Single SSH command: find/install ctermd, start daemon, print socket path
+        // The setup script finds/installs ctermd, starts the daemon, and prints
+        // the remote socket path; the tunnel forwards a local socket to it.
         let script = remote_setup_script();
-        let mut setup_args: Vec<String> = Vec::new();
-        if let Some(p) = port {
-            setup_args.extend(["-p".to_string(), p.to_string()]);
-        }
-        setup_args.extend([ssh_dest.clone(), script.clone()]);
-        let output = Command::new("ssh")
-            .args(&setup_args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| ClientError::Connection(format!("Failed to run ssh: {}", e)))?;
-
-        // Log any stderr (install progress, warnings, etc.)
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            for line in stderr.trim().lines() {
-                log::info!("Remote [{}]: {}", host, line);
-            }
-        }
-
-        if !output.status.success() {
-            return Err(ClientError::Connection(format!(
-                "Failed to set up ctermd on {}: {}",
-                host,
-                stderr.trim()
-            )));
-        }
-
-        let remote_socket = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .last()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        if remote_socket.is_empty() {
-            return Err(ClientError::Connection(
-                "Empty socket path from remote ctermd".to_string(),
-            ));
-        }
-        log::info!("Remote socket path: {}", remote_socket);
-
-        // Give daemon a moment to fully start and create the socket
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        // 2. Create a local temp socket for forwarding
         let local_socket = Self::ssh_forward_socket_path(host);
 
-        // Clean up stale local socket from previous connection
-        if local_socket.exists() {
-            let _ = std::fs::remove_file(&local_socket);
-        }
+        let ssh_config = cterm_core::SshConfig {
+            host: hostname,
+            port: port.unwrap_or(22),
+            username,
+            ..Default::default()
+        };
 
-        // Ensure parent directory exists
-        if let Some(parent) = local_socket.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
+        // puressh is blocking and spawns its own pump/accept threads; run the
+        // connect+setup on a blocking task so we don't stall the reactor.
+        let local_for_tunnel = local_socket.clone();
+        let host_owned = host.to_string();
+        let tunnel = tokio::task::spawn_blocking(move || {
+            cterm_core::SshTunnel::connect(ssh_config, &script, local_for_tunnel)
+        })
+        .await
+        .map_err(|e| ClientError::Connection(format!("SSH tunnel task panicked: {e}")))?
+        .map_err(|e| ClientError::Connection(format!("SSH tunnel to {host_owned}: {e}")))?;
 
-        // 3. Start SSH tunnel as a standalone process (not tied to tokio runtime).
-        // Using std::process::Command so the tunnel outlives the creating runtime —
-        // the daemon reader thread creates its own runtime and reconnects via this socket.
-        let forward_spec = format!("{}:{}", local_socket.display(), remote_socket);
-
-        log::info!(
-            "Starting SSH tunnel: -L {} (compression={})",
-            forward_spec,
-            compress
-        );
-
-        let mut tunnel_args = vec![
-            "-N".to_string(), // No remote command
-            "-o".to_string(),
-            "ExitOnForwardFailure=yes".to_string(),
-            "-o".to_string(),
-            "StreamLocalBindUnlink=yes".to_string(),
-        ];
-        if compress {
-            tunnel_args.push("-C".to_string());
-        }
-        if let Some(p) = port {
-            tunnel_args.extend(["-p".to_string(), p.to_string()]);
-        }
-        tunnel_args.extend(["-L".to_string(), forward_spec.clone(), ssh_dest.clone()]);
-
-        let mut tunnel = Command::new("ssh")
-            .args(&tunnel_args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ClientError::Connection(format!("Failed to start SSH tunnel: {}", e)))?;
-
-        // Wait for the local socket to appear (tunnel is establishing)
+        // `SshTunnel::connect` binds the local socket before returning, but allow
+        // a brief grace period in case of filesystem latency.
         for i in 0..30 {
             if local_socket.exists() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100 * (i / 5 + 1))).await;
         }
-
         if !local_socket.exists() {
-            // Tunnel failed — collect stderr for diagnostics
-            let _ = tunnel.kill();
-            let output = tunnel.wait_with_output().ok();
-            let stderr = output
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
-            if !stderr.is_empty() {
-                log::error!("SSH tunnel stderr: {}", stderr.trim());
-            }
             return Err(ClientError::Connection(format!(
                 "SSH tunnel failed to create local socket at {}",
                 local_socket.display()
             )));
         }
 
-        // 4. Connect to the forwarded socket
+        // Connect the gRPC client to the forwarded socket.
         let conn = Self::try_connect_unix(&local_socket).await?;
-
-        // Keep the tunnel process alive in a background thread (not a tokio task,
-        // so it survives runtime drops). Clean up the socket when the tunnel exits.
-        let tunnel_handle = SshTunnelHandle::from_child(&tunnel);
-        let local_socket_cleanup = local_socket;
-        let waiter_handle = tunnel_handle.clone();
-        std::thread::spawn(move || {
-            match tunnel.wait() {
-                Ok(status) => log::info!("SSH tunnel exited: {}", status),
-                Err(e) => log::error!("SSH tunnel error: {}", e),
-            }
-            waiter_handle.mark_exited();
-            let _ = std::fs::remove_file(&local_socket_cleanup);
-        });
-
+        let tunnel_handle = SshTunnelHandle::from_tunnel(tunnel);
         Ok((conn, tunnel_handle))
     }
 
@@ -556,6 +460,7 @@ impl DaemonConnection {
                 cwd: opts.cwd,
                 env: opts.env.into_iter().collect(),
                 term: opts.term,
+                ssh: opts.ssh,
             })
             .await?;
 

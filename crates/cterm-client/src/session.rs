@@ -204,6 +204,32 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Reply to an interactive SSH prompt (host key / password / passphrase)
+    /// raised via a `SessionPromptEvent`.
+    ///
+    /// For host-key prompts, `accept` decides whether to trust the key and
+    /// `secret` is ignored. For password/passphrase prompts, `secret` carries
+    /// the entered text (`None` cancels).
+    pub async fn respond_prompt(
+        &self,
+        prompt_id: &str,
+        accept: bool,
+        secret: Option<String>,
+    ) -> Result<bool> {
+        let response = self
+            .client
+            .lock()
+            .await
+            .respond_prompt(RespondPromptRequest {
+                session_id: self.session_id.clone(),
+                prompt_id: prompt_id.to_string(),
+                accept,
+                secret,
+            })
+            .await?;
+        Ok(response.into_inner().success)
+    }
+
     /// Clear the bell/alert state on this session.
     pub async fn clear_alert(&self) -> Result<()> {
         self.client

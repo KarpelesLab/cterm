@@ -16,6 +16,7 @@ pub mod parser;
 pub mod pty;
 pub mod screen;
 pub mod sixel;
+pub mod ssh;
 pub mod streaming_file;
 pub mod term;
 
@@ -34,5 +35,8 @@ pub use screen::{
     SearchResult, Selection, SelectionMode, SelectionPoint, TerminalImage,
 };
 pub use sixel::{SixelDecoder, SixelImage};
+#[cfg(unix)]
+pub use ssh::SshTunnel;
+pub use ssh::{HostKeyPrompt, HostKeyRequest, PassphrasePrompt, PasswordPrompt, SshConfig};
 pub use streaming_file::{StreamingFileData, StreamingFileReceiver, StreamingFileResult};
 pub use term::{Terminal, WriteFn};

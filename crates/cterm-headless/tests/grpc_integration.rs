@@ -121,6 +121,7 @@ async fn test_create_and_list_sessions() {
             cwd: None,
             env: Default::default(),
             term: None,
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -171,6 +172,7 @@ async fn test_get_session() {
             cwd: None,
             env: Default::default(),
             term: None,
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -218,6 +220,7 @@ async fn test_write_input_and_get_screen() {
             cwd: None,
             env: Default::default(),
             term: Some("xterm".to_string()),
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -284,6 +287,7 @@ async fn test_resize() {
             cwd: None,
             env: Default::default(),
             term: None,
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -338,6 +342,7 @@ async fn test_get_cursor() {
             cwd: None,
             env: Default::default(),
             term: None,
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -383,6 +388,7 @@ async fn test_get_screen_full() {
             cwd: None,
             env: Default::default(),
             term: None,
+            ssh: None,
         })
         .await
         .expect("create_session failed");
@@ -434,6 +440,7 @@ async fn test_multiple_sessions() {
                 cwd: None,
                 env: Default::default(),
                 term: None,
+                ssh: None,
             })
             .await
             .expect("create_session failed");

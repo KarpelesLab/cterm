@@ -253,6 +253,8 @@ impl WindowState {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
+                // SSH tabs open a native puressh connection on the daemon.
+                ssh: template.ssh.as_ref().map(|s| s.to_ssh_params()),
                 ..Default::default()
             };
             let tab_id = self.spawn_daemon_tab(
@@ -2389,12 +2391,27 @@ async fn run_daemon_io_loop(
                 use futures::StreamExt;
                 while let Some(result) = stream.next().await {
                     if let Ok(event) = result {
-                        if let Some(cterm_proto::proto::terminal_event::Event::ProcessExited(_)) =
-                            event.event
-                        {
-                            log::info!("Daemon reports process exited");
-                            exit_notify_event.notify_one();
-                            break;
+                        match event.event {
+                            Some(cterm_proto::proto::terminal_event::Event::ProcessExited(_)) => {
+                                log::info!("Daemon reports process exited");
+                                exit_notify_event.notify_one();
+                                break;
+                            }
+                            Some(cterm_proto::proto::terminal_event::Event::SessionPrompt(
+                                prompt,
+                            )) => {
+                                // TODO: surface a native Win32 dialog (as cterm-cocoa does via
+                                // ssh_prompt). Until then, decline so the SSH connect fails
+                                // cleanly instead of hanging.
+                                log::warn!(
+                                    "SSH interactive prompt not yet supported in the Win32 UI; declining (host {}:{})",
+                                    prompt.host, prompt.port
+                                );
+                                let _ = event_session
+                                    .respond_prompt(&prompt.prompt_id, false, None)
+                                    .await;
+                            }
+                            _ => {}
                         }
                     }
                 }
