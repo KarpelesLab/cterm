@@ -264,15 +264,30 @@ impl SessionManager {
 
     /// Clean up dead sessions, returns the number of sessions removed
     pub fn cleanup_dead_sessions(&self) -> usize {
-        let mut sessions = self.sessions.write();
-        let dead_ids: Vec<String> = sessions
+        // Snapshot (id, Arc) pairs under a SHORT read lock, then drop the lock.
+        // Crucially, we do NOT call `is_running()` (which acquires a session's
+        // terminal lock) while holding the global `sessions` lock — otherwise a
+        // single contended terminal lock would freeze the whole map and block every
+        // concurrent `get_session()`, cascading into a daemon-wide deadlock.
+        let snapshot: Vec<(String, Arc<SessionState>)> = {
+            let sessions = self.sessions.read();
+            sessions
+                .iter()
+                .map(|(id, s)| (id.clone(), Arc::clone(s)))
+                .collect()
+        };
+
+        // Check liveness without holding the map lock.
+        let dead_ids: Vec<String> = snapshot
             .iter()
             .filter(|(_, s)| !s.is_running())
             .map(|(id, _)| id.clone())
             .collect();
 
+        // Take the write lock only to remove the dead ids.
         let count = dead_ids.len();
         if count > 0 {
+            let mut sessions = self.sessions.write();
             let mut named = self.named_sessions.write();
             for id in &dead_ids {
                 sessions.remove(id);

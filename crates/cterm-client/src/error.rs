@@ -10,6 +10,9 @@ pub enum ClientError {
     #[error("Daemon not running and auto-start failed: {0}")]
     DaemonNotRunning(String),
 
+    #[error("Daemon not responding: {0}")]
+    DaemonUnresponsive(String),
+
     #[error("Session not found: {0}")]
     SessionNotFound(String),
 

@@ -1,6 +1,6 @@
 //! Session state management
 
-use crate::bridge::PtyReader;
+use crate::bridge::{PtyReader, PtyWriter};
 use crate::error::Result;
 use cterm_core::screen::ScreenConfig;
 use cterm_core::term::TerminalEvent;
@@ -10,7 +10,7 @@ use cterm_core::{PtyConfig, PtySize, Terminal};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
 
 /// Output chunk with timestamp
@@ -74,6 +74,12 @@ pub struct SessionState {
 
     /// Monotonic counter for generating prompt ids.
     prompt_counter: AtomicU64,
+
+    /// Dedicated off-thread writer for the PTY master. All input and parser responses
+    /// are routed here so blocking PTY writes never stall a tokio worker thread or run
+    /// under the terminal lock. Initialized lazily in `start_reader`, once the PTY
+    /// exists (which for SSH sessions is only after the connection is established).
+    pty_writer: OnceLock<PtyWriter>,
 }
 
 impl SessionState {
@@ -125,6 +131,7 @@ impl SessionState {
             prompt_tx: broadcast::channel(16).0,
             prompt_registry: parking_lot::Mutex::new(HashMap::new()),
             prompt_counter: AtomicU64::new(0),
+            pty_writer: OnceLock::new(),
         });
 
         Ok(state)
@@ -162,6 +169,7 @@ impl SessionState {
             prompt_tx,
             prompt_registry: parking_lot::Mutex::new(HashMap::new()),
             prompt_counter: AtomicU64::new(0),
+            pty_writer: OnceLock::new(),
         })
     }
 
@@ -356,6 +364,7 @@ impl SessionState {
             prompt_tx: broadcast::channel(16).0,
             prompt_registry: parking_lot::Mutex::new(HashMap::new()),
             prompt_counter: AtomicU64::new(0),
+            pty_writer: OnceLock::new(),
         });
 
         Ok(state)
@@ -366,6 +375,12 @@ impl SessionState {
         let pty_reader = self.terminal.read().pty_reader();
 
         if let Some(reader) = pty_reader {
+            // Now that a PTY exists, spin up the dedicated writer thread (owns its own
+            // dup'd master fd). Idempotent: a no-op if already initialized.
+            if let Some(file) = self.terminal.read().pty_writer() {
+                let _ = self.pty_writer.set(PtyWriter::new(file, self.id.clone()));
+            }
+
             let state = Arc::clone(self);
             // Spawn the reader task - it will run until the PTY closes
             tokio::spawn(async move {
@@ -500,10 +515,19 @@ impl SessionState {
         None
     }
 
-    /// Write input to the terminal
+    /// Write input to the terminal.
+    ///
+    /// Routes through the dedicated PTY writer thread so the (potentially blocking)
+    /// write never runs on a tokio worker thread or under the terminal lock.
     pub fn write_input(&self, data: &[u8]) -> Result<usize> {
-        let mut term = self.terminal.write();
-        term.write(data)?;
+        match self.pty_writer.get() {
+            Some(writer) => writer.send(data),
+            // No PTY writer yet (e.g. SSH session still connecting): fall back to a
+            // direct write, which is a no-op unless a write_fn is configured.
+            None => {
+                self.terminal.write().write(data)?;
+            }
+        }
         Ok(data.len())
     }
 
@@ -518,9 +542,38 @@ impl SessionState {
         Ok(())
     }
 
-    /// Process PTY output data
+    /// Process PTY output data.
+    ///
+    /// Parses under the terminal lock, then releases it BEFORE sending any
+    /// parser-generated responses (DSR/DA/cursor reports) to the PTY writer thread.
+    /// This guarantees the terminal lock is never held across a (potentially blocking)
+    /// PTY write — the root cause of the daemon deadlock this avoids.
     pub fn process_output(&self, data: &[u8]) -> Vec<TerminalEvent> {
-        self.terminal.write().process(data)
+        let (events, responses) = {
+            let mut term = self.terminal.write();
+            term.process_collecting(data)
+        }; // terminal lock released here
+
+        if !responses.is_empty() {
+            match self.pty_writer.get() {
+                Some(writer) => {
+                    for response in responses {
+                        writer.send(&response);
+                    }
+                }
+                None => {
+                    // No PTY writer yet: write responses directly (no-op without a PTY).
+                    let mut term = self.terminal.write();
+                    for response in responses {
+                        if let Err(e) = term.write(&response) {
+                            log::error!("Failed to send response to PTY: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        events
     }
 
     /// Broadcast output data to subscribers

@@ -1155,6 +1155,19 @@ impl Pty {
         }
     }
 
+    /// Clone an independent blocking writer over the PTY input, for local PTYs.
+    ///
+    /// A duplicated local PTY master fd is bidirectional, so the returned `File` can
+    /// be written to from a dedicated thread without holding any terminal lock. SSH
+    /// backends have no local fd, so this returns `None` and their writes go through
+    /// the regular (under-lock) path.
+    pub fn try_clone_writer(&self) -> Option<File> {
+        match &self.backend {
+            Backend::Local(p) => p.try_clone_reader().ok(),
+            Backend::Ssh(_) => None,
+        }
+    }
+
     /// Foreground process group of a local PTY, if any. `None` for SSH.
     #[cfg(unix)]
     pub fn foreground_process_group(&self) -> Option<i32> {

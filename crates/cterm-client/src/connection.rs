@@ -15,6 +15,17 @@ use tonic::transport::Channel;
 #[cfg(unix)]
 const GITHUB_REPO: &str = "unixshells/cterm";
 
+/// Max time to establish the HTTP/2 transport to the daemon. A wedged daemon can
+/// accept the socket connection (the listen backlog is kernel-side) yet never
+/// complete the HTTP/2 settings exchange, so this guards the transport handshake.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Max time to wait for the daemon to answer the Handshake RPC. The handler is
+/// trivial (no I/O), so a healthy daemon replies in milliseconds; a larger budget
+/// only tolerates a cold/loaded daemon. Without this, a deadlocked daemon makes the
+/// client hang forever at startup.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Parse an SSH host string, extracting an optional port suffix.
 ///
 /// Accepts `user@host:port`, `host:port`, `user@host`, or `host`.
@@ -167,6 +178,11 @@ impl DaemonConnection {
         // Try connecting first
         match Self::try_connect(socket_path).await {
             Ok(conn) => Ok(conn),
+            // A wedged daemon (socket exists and accepts connections, but never answers
+            // the handshake) must NOT trigger auto-start: spawning a second ctermd would
+            // just fail to bind the same socket and exit, and we'd keep retrying against
+            // the wedged one. Surface it immediately so the UI can report it.
+            Err(e @ ClientError::DaemonUnresponsive(_)) => Err(e),
             Err(_) if auto_start => {
                 // Try to start the daemon
                 Self::start_daemon(socket_path)?;
@@ -312,16 +328,24 @@ impl DaemonConnection {
         }
 
         let owned_path = socket_path.to_owned();
-        let channel = tonic::transport::Endpoint::try_from("http://[::]:0")
-            .map_err(|e| ClientError::Connection(e.to_string()))?
-            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+        let endpoint = tonic::transport::Endpoint::try_from("http://[::]:0")
+            .map_err(|e| ClientError::Connection(e.to_string()))?;
+        let connect =
+            endpoint.connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                 let path = owned_path.clone();
                 async move {
                     let stream = tokio::net::UnixStream::connect(path).await?;
                     Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
                 }
-            }))
-            .await?;
+            }));
+        let channel = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| {
+                ClientError::DaemonUnresponsive(format!(
+                    "connect timed out after {}s",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            })??;
 
         Self::handshake(channel, Some(socket_path.to_owned())).await
     }
@@ -330,17 +354,25 @@ impl DaemonConnection {
     #[cfg(windows)]
     async fn try_connect_named_pipe(pipe_path: &Path) -> Result<Self> {
         let pipe_name = pipe_path.to_string_lossy().to_string();
-        let channel = tonic::transport::Endpoint::try_from("http://[::]:0")
-            .map_err(|e| ClientError::Connection(e.to_string()))?
-            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+        let endpoint = tonic::transport::Endpoint::try_from("http://[::]:0")
+            .map_err(|e| ClientError::Connection(e.to_string()))?;
+        let connect =
+            endpoint.connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                 let name = pipe_name.clone();
                 async move {
                     let client =
                         tokio::net::windows::named_pipe::ClientOptions::new().open(&name)?;
                     Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
                 }
-            }))
-            .await?;
+            }));
+        let channel = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| {
+                ClientError::DaemonUnresponsive(format!(
+                    "connect timed out after {}s",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            })??;
         Self::handshake(channel, Some(pipe_path.to_owned())).await
     }
 
@@ -349,13 +381,21 @@ impl DaemonConnection {
         let mut client =
             TerminalServiceClient::new(channel).max_decoding_message_size(64 * 1024 * 1024);
 
-        let response = client
-            .handshake(HandshakeRequest {
+        let response = tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            client.handshake(HandshakeRequest {
                 client_id: uuid::Uuid::new_v4().to_string(),
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
                 protocol_version: 1,
-            })
-            .await?;
+            }),
+        )
+        .await
+        .map_err(|_| {
+            ClientError::DaemonUnresponsive(format!(
+                "handshake timed out after {}s",
+                HANDSHAKE_TIMEOUT.as_secs()
+            ))
+        })??;
 
         let resp = response.into_inner();
         let info = DaemonInfo {

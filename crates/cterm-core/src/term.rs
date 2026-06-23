@@ -116,19 +116,37 @@ impl Terminal {
 
     /// Process input from the PTY and update the screen
     pub fn process(&mut self, data: &[u8]) -> Vec<TerminalEvent> {
+        let (events, responses) = self.process_collecting(data);
+
+        // Send any pending responses back to the PTY inline. This is the in-process
+        // path (GUI); the daemon uses `process_collecting` and writes responses through
+        // a dedicated off-thread writer so a blocking PTY write can't stall it.
+        for response in responses {
+            if let Err(e) = self.write(&response) {
+                log::error!("Failed to send response to PTY: {}", e);
+            }
+        }
+
+        events
+    }
+
+    /// Parse input and update the screen, RETURNING any pending PTY responses
+    /// (e.g. DSR/DA/cursor reports) instead of writing them back to the PTY.
+    ///
+    /// Daemon mode uses this so the (potentially blocking) PTY write happens off the
+    /// async worker thread and outside the terminal lock. Callers MUST write the
+    /// returned responses back to the PTY to keep terminal queries functioning.
+    pub fn process_collecting(&mut self, data: &[u8]) -> (Vec<TerminalEvent>, Vec<Vec<u8>>) {
         let mut events = Vec::new();
 
         self.parser.parse(&mut self.screen, data);
 
-        // Send any pending responses back to the PTY
-        if self.screen.has_pending_responses() {
-            let responses = self.screen.take_pending_responses();
-            for response in responses {
-                if let Err(e) = self.write(&response) {
-                    log::error!("Failed to send response to PTY: {}", e);
-                }
-            }
-        }
+        // Collect any pending responses for the caller to write back to the PTY
+        let responses = if self.screen.has_pending_responses() {
+            self.screen.take_pending_responses()
+        } else {
+            Vec::new()
+        };
 
         // Emit clipboard operation events
         if self.screen.has_clipboard_ops() {
@@ -154,7 +172,7 @@ impl Terminal {
             events.push(TerminalEvent::ContentChanged);
         }
 
-        events
+        (events, responses)
     }
 
     /// Write input to the PTY (keyboard input)
@@ -219,6 +237,16 @@ impl Terminal {
     /// Get an independent blocking reader for the PTY output.
     pub fn pty_reader(&self) -> Option<Box<dyn std::io::Read + Send>> {
         self.pty.as_ref().and_then(|p| p.try_clone_reader().ok())
+    }
+
+    /// Get a cloned writer for the PTY master (local PTYs only).
+    ///
+    /// A duplicated local PTY master fd is bidirectional, so this returns a `File`
+    /// suitable for writing input/responses back to the child. The daemon uses this to
+    /// drive a dedicated writer thread, keeping blocking PTY writes off the async
+    /// worker pool. Returns `None` for SSH-backed terminals (no local fd).
+    pub fn pty_writer(&self) -> Option<std::fs::File> {
+        self.pty.as_ref().and_then(|p| p.try_clone_writer())
     }
 
     /// Get the child process ID
@@ -483,6 +511,33 @@ mod tests {
 
         assert_eq!(term.screen().get_cell(0, 0).unwrap().c, 'H');
         assert_eq!(term.screen().get_cell(0, 12).unwrap().c, '!');
+    }
+
+    #[test]
+    fn test_process_collecting_returns_responses() {
+        // A terminal with no PTY: parser responses (e.g. DSR cursor-position report)
+        // must be RETURNED by process_collecting rather than written/swallowed, so the
+        // daemon can route them through its off-thread PTY writer.
+        let mut term = Terminal::new(80, 24, ScreenConfig::default());
+
+        // CSI 6 n = Device Status Report (cursor position). Cursor is at 1;1.
+        let (_events, responses) = term.process_collecting(b"\x1b[6n");
+
+        assert_eq!(responses.len(), 1, "expected one DSR response");
+        assert_eq!(responses[0], b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn test_process_collecting_no_response_for_plain_text() {
+        let mut term = Terminal::new(80, 24, ScreenConfig::default());
+
+        let (_events, responses) = term.process_collecting(b"Hello");
+
+        assert!(
+            responses.is_empty(),
+            "plain text must not generate PTY responses"
+        );
+        assert_eq!(term.screen().get_cell(0, 0).unwrap().c, 'H');
     }
 
     #[test]
