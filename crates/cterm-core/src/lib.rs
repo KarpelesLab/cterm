@@ -37,6 +37,9 @@ pub use screen::{
 pub use sixel::{SixelDecoder, SixelImage};
 #[cfg(unix)]
 pub use ssh::SshTunnel;
-pub use ssh::{HostKeyPrompt, HostKeyRequest, PassphrasePrompt, PasswordPrompt, SshConfig};
+pub use ssh::{
+    HostKeyPrompt, HostKeyRequest, LocalForward, PassphrasePrompt, PasswordPrompt, SshConfig,
+    SshPrompts,
+};
 pub use streaming_file::{StreamingFileData, StreamingFileReceiver, StreamingFileResult};
 pub use term::{Terminal, WriteFn};

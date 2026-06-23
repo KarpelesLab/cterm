@@ -65,6 +65,16 @@ pub type PasswordPrompt = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 /// The argument is the identity file path. Returns `None` to skip that key.
 pub type PassphrasePrompt = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// A bundle of interactive prompt callbacks for an SSH connection. Used to wire
+/// in-process UI prompts (e.g. the remote-ctermd tunnel) where the prompts can
+/// be shown directly rather than round-tripped over gRPC.
+#[derive(Clone, Default)]
+pub struct SshPrompts {
+    pub host_key: Option<HostKeyPrompt>,
+    pub password: Option<PasswordPrompt>,
+    pub passphrase: Option<PassphrasePrompt>,
+}
+
 /// A `-L`-style local port forward: bind `local_port` locally and forward each
 /// connection to `remote_host:remote_port` (resolved on the server).
 #[derive(Clone, Debug)]
@@ -431,8 +441,32 @@ fn fingerprint_sha256(key_blob: &[u8]) -> String {
     format!("SHA256:{b64}")
 }
 
-/// Collect authentication credentials: agent identities, then identity-file
-/// keys, then an interactive password (if a prompt is configured).
+/// Routes keyboard-interactive prompts through a cterm [`PasswordPrompt`].
+///
+/// Each server prompt (`(text, echo)`) is answered by calling the password
+/// callback with the prompt text. This covers the common single-prompt
+/// password-over-keyboard-interactive case as well as multi-prompt challenges.
+struct CallbackKbiResponder {
+    prompt: PasswordPrompt,
+}
+
+impl puressh::auth::KeyboardInteractiveResponder for CallbackKbiResponder {
+    fn respond(
+        &mut self,
+        _name: &str,
+        _instruction: &str,
+        prompts: &[(String, bool)],
+    ) -> Vec<String> {
+        prompts
+            .iter()
+            .map(|(text, _echo)| (self.prompt)(text).unwrap_or_default())
+            .collect()
+    }
+}
+
+/// Collect authentication credentials: agent identities, identity-file keys,
+/// then interactive password and keyboard-interactive (if a prompt is
+/// configured).
 fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
     let mut creds: Vec<ClientCredential> = Vec::new();
 
@@ -457,11 +491,17 @@ fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
         }
     }
 
-    // Interactive password, last.
+    // Interactive auth, last: both `password` and `keyboard-interactive` so we
+    // work against servers that only offer one of them (e.g. PAM-backed hosts
+    // typically use keyboard-interactive).
     if let Some(prompt) = config.password_prompt.clone() {
+        let pw = prompt.clone();
         creds.push(ClientCredential::PasswordPrompt(Box::new(move |_retry| {
-            prompt("").map(|p| p.into())
+            pw("").map(|p| p.into())
         })));
+        creds.push(ClientCredential::KeyboardInteractive(Box::new(
+            CallbackKbiResponder { prompt },
+        )));
     }
 
     creds

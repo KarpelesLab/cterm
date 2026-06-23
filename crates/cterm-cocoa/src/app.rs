@@ -738,7 +738,12 @@ define_class!(
                 let result = match rt {
                     Ok(rt) => rt.block_on(async {
                         let (conn, _tunnel) =
-                            cterm_client::DaemonConnection::connect_ssh(&host, true).await?;
+                            cterm_client::DaemonConnection::connect_ssh_with_prompts(
+                                &host,
+                                true,
+                                crate::ssh_prompt::interactive_prompts(),
+                            )
+                            .await?;
 
                         // Attach to all existing running sessions
                         let mut sessions =

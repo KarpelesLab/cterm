@@ -230,6 +230,19 @@ impl DaemonConnection {
     /// which significantly reduces bandwidth for terminal data (scrollback, screen snapshots).
     #[cfg(unix)]
     pub async fn connect_ssh(host: &str, compress: bool) -> Result<(Self, SshTunnelHandle)> {
+        Self::connect_ssh_with_prompts(host, compress, cterm_core::SshPrompts::default()).await
+    }
+
+    /// Like [`Self::connect_ssh`], but with interactive prompt callbacks for
+    /// host-key verification, password, and key passphrase. Because the tunnel
+    /// runs in the UI process, these can show native dialogs directly (unlike
+    /// daemon-side SSH tabs, which round-trip prompts over gRPC).
+    #[cfg(unix)]
+    pub async fn connect_ssh_with_prompts(
+        host: &str,
+        compress: bool,
+        prompts: cterm_core::SshPrompts,
+    ) -> Result<(Self, SshTunnelHandle)> {
         log::info!("Connecting to {} via SSH (native puressh)", host);
         // puressh compression negotiation is not wired through this path yet.
         let _ = compress;
@@ -250,6 +263,9 @@ impl DaemonConnection {
             host: hostname,
             port: port.unwrap_or(22),
             username,
+            host_key_prompt: prompts.host_key,
+            password_prompt: prompts.password,
+            passphrase_prompt: prompts.passphrase,
             ..Default::default()
         };
 
