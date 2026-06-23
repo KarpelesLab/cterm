@@ -12,6 +12,7 @@ mod notification_bar;
 mod quick_open;
 mod remotes_dialog;
 mod session_dialog;
+mod ssh_prompt;
 mod tab_bar;
 mod tab_templates_dialog;
 mod terminal_widget;

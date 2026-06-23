@@ -1329,15 +1329,16 @@ impl TerminalWidget {
                                             let _ = tx_events.send(PtyMessage::Bell);
                                         }
                                         Some(cterm_proto::proto::terminal_event::Event::SessionPrompt(prompt)) => {
-                                            // TODO: surface a native GTK dialog (as cterm-cocoa
-                                            // does via ssh_prompt). Until then, decline so the
-                                            // SSH connect fails cleanly instead of hanging.
-                                            log::warn!(
-                                                "SSH interactive prompt not yet supported in the GTK UI; declining (host {}:{})",
-                                                prompt.host, prompt.port
-                                            );
+                                            // Show a native dialog off the GTK main thread, then
+                                            // send the user's reply back to the daemon.
+                                            let p = prompt.clone();
+                                            let (accept, secret) = tokio::task::spawn_blocking(move || {
+                                                crate::ssh_prompt::show_ssh_prompt(&p)
+                                            })
+                                            .await
+                                            .unwrap_or((false, None));
                                             let _ = event_session
-                                                .respond_prompt(&prompt.prompt_id, false, None)
+                                                .respond_prompt(&prompt.prompt_id, accept, secret)
                                                 .await;
                                         }
                                         _ => {}
