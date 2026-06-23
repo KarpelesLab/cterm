@@ -284,25 +284,22 @@ async fn run_unix_socket_server(
 /// Check if a socket file is stale (no process using it)
 #[cfg(unix)]
 fn is_socket_stale(socket_path: &Path) -> bool {
-    // Check PID file
-    let mut pid_path = socket_path.to_path_buf();
-    pid_path.set_extension("pid");
-
-    if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            // Check if process is still running
-            let result = unsafe { libc::kill(pid, 0) };
-            if result == 0 {
-                // Process exists — socket is not stale
-                return false;
-            }
-            // Process doesn't exist — clean up PID file too
-            let _ = std::fs::remove_file(&pid_path);
-        }
+    // The authoritative test is whether anything actually answers on the socket.
+    // A live daemon (even a wedged one) keeps the listening socket open, so connect
+    // succeeds; once the daemon dies the kernel closes the listener and connect is
+    // refused. We deliberately do NOT trust the PID file as a primary signal: PIDs are
+    // reused, so a recycled PID makes `kill(pid, 0)` succeed and would wrongly report a
+    // dead daemon as "running", blocking restart after a hard kill.
+    if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+        // Something is listening — not stale.
+        return false;
     }
 
-    // No PID file or process is gone — try to connect to confirm
-    std::os::unix::net::UnixStream::connect(socket_path).is_err()
+    // Nothing is listening — the socket is stale. Clean up a leftover PID file too.
+    let mut pid_path = socket_path.to_path_buf();
+    pid_path.set_extension("pid");
+    let _ = std::fs::remove_file(&pid_path);
+    true
 }
 
 #[cfg(test)]
@@ -318,5 +315,32 @@ mod tests {
         assert!(config.socket_path.contains("ctermd"));
         assert_eq!(config.scrollback_lines, 10000);
         assert!(!config.foreground);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_socket_stale() {
+        let dir = std::env::temp_dir().join(format!("cterm-stale-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("ctermd.sock");
+
+        // No socket file at all -> connect refused -> stale.
+        assert!(is_socket_stale(&sock));
+
+        // A live listener -> connect succeeds -> NOT stale.
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert!(!is_socket_stale(&sock));
+
+        // Drop the listener (daemon "dies"); the socket file lingers but nothing
+        // listens -> connect refused -> stale, even though a PID file claims a live
+        // (here, our own, definitely-alive) PID. This is the hard-kill + PID-reuse case.
+        drop(listener);
+        let pid_path = dir.join("ctermd.pid");
+        std::fs::write(&pid_path, std::process::id().to_string()).unwrap();
+        assert!(is_socket_stale(&sock));
+        // The stale-check cleans up the leftover PID file.
+        assert!(!pid_path.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
