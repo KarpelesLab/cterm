@@ -302,7 +302,7 @@ async fn check_for_updates() -> Result<Option<UpdateInfo>, UpdateError> {
         let _ = tx.send(result);
     });
 
-    rx.await.unwrap_or_else(|_| Err(UpdateError::NotFound))
+    rx.await.unwrap_or(Err(UpdateError::NotFound))
 }
 
 /// Download update with progress callback
@@ -324,5 +324,5 @@ where
         let _ = tx.send(result);
     });
 
-    rx.await.unwrap_or_else(|_| Err(UpdateError::NotFound))
+    rx.await.unwrap_or(Err(UpdateError::NotFound))
 }

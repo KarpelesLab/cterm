@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
+#[cfg(unix)]
 use puressh::agent::{Agent, AgentHostKey};
 use puressh::auth::ClientCredential;
 use puressh::client::{Client, Config, HostKeyPolicy, KnownHostsPolicy, TofuAction};
@@ -470,14 +471,18 @@ impl puressh::auth::KeyboardInteractiveResponder for CallbackKbiResponder {
 fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
     let mut creds: Vec<ClientCredential> = Vec::new();
 
-    // ssh-agent identities.
-    if let Ok(Some(agent)) = Agent::connect_env() {
-        let agent = Arc::new(Mutex::new(agent));
-        let identities = agent.lock().ok().and_then(|mut a| a.identities().ok());
-        if let Some(identities) = identities {
-            for ident in identities {
-                if let Ok(hk) = AgentHostKey::from_identity(Arc::clone(&agent), ident.key_blob) {
-                    creds.push(ClientCredential::PublicKey(Box::new(hk)));
+    // ssh-agent identities (Unix only; the agent protocol uses a Unix socket).
+    #[cfg(unix)]
+    {
+        if let Ok(Some(agent)) = Agent::connect_env() {
+            let agent = Arc::new(Mutex::new(agent));
+            let identities = agent.lock().ok().and_then(|mut a| a.identities().ok());
+            if let Some(identities) = identities {
+                for ident in identities {
+                    if let Ok(hk) = AgentHostKey::from_identity(Arc::clone(&agent), ident.key_blob)
+                    {
+                        creds.push(ClientCredential::PublicKey(Box::new(hk)));
+                    }
                 }
             }
         }
