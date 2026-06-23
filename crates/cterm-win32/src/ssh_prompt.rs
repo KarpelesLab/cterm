@@ -189,7 +189,7 @@ unsafe fn init_secret_dialog(hwnd: HWND) {
         22,
     );
     // Mask the input like a password field.
-    SendMessageW(edit, EM_SETPASSWORDCHAR, '*' as usize, 0);
+    SendMessageW(edit, EM_SETPASSWORDCHAR as u32, '*' as usize, 0);
 
     let btn_y = dlg_height - button_height - margin;
     create_button(
