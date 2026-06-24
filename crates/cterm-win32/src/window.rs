@@ -18,8 +18,9 @@ use cterm_app::config::Config;
 use cterm_app::file_transfer::PendingFileManager;
 use cterm_app::shortcuts::ShortcutManager;
 use cterm_core::color::Rgb;
+use cterm_core::mouse::{encode_mouse_event, MouseButton as ReportButton, MouseModifiers};
 use cterm_core::pty::{PtyConfig, PtySize};
-use cterm_core::screen::{FileTransferOperation, ScreenConfig};
+use cterm_core::screen::{FileTransferOperation, MouseMode, ScreenConfig};
 use cterm_core::term::{Terminal, TerminalEvent};
 use cterm_ui::events::{Action, Modifiers};
 use cterm_ui::theme::Theme;
@@ -82,6 +83,14 @@ pub struct WindowState {
     pub file_manager: PendingFileManager,
     pub dpi: DpiInfo,
     pub mouse_state: MouseState,
+    /// Button currently forwarded to a mouse-tracking application (set on a
+    /// forwarded press, used to emit the matching release and drag-motion reports).
+    mouse_report_button: Option<ReportButton>,
+    /// Last pointer position in client pixels (used by the wheel handler, whose
+    /// message carries screen coordinates we'd otherwise have to convert).
+    last_mouse_pos: (f32, f32),
+    /// Last reported pointer cell, to avoid flooding drag reports per pixel.
+    last_mouse_cell: Option<(usize, usize)>,
     #[allow(dead_code)]
     menu_handle: winapi::shared::windef::HMENU,
     /// Skip close confirmation (set during relaunch)
@@ -120,6 +129,9 @@ impl WindowState {
             file_manager: PendingFileManager::new(),
             dpi,
             mouse_state: MouseState::new(),
+            mouse_report_button: None,
+            last_mouse_pos: (0.0, 0.0),
+            last_mouse_cell: None,
             menu_handle,
             skip_close_confirm: false,
             remote_manager: cterm_client::RemoteManager::new(),
@@ -1671,6 +1683,66 @@ impl WindowState {
     }
 
     /// Handle mouse down
+    /// Map window pixel coordinates to a visible terminal cell (col, row), or
+    /// None if the point is above the terminal area. Does not lock the terminal.
+    fn terminal_cell_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let y_offset = self.terminal_y_offset();
+        if y < y_offset {
+            return None;
+        }
+        let cell_dims = self.renderer.as_ref()?.cell_dimensions();
+        Some(mouse::pixel_to_cell(
+            x as i32,
+            (y - y_offset) as i32,
+            &cell_dims,
+            0,
+        ))
+    }
+
+    /// Whether the active terminal has enabled any mouse tracking mode.
+    fn mouse_tracking_active(&self) -> bool {
+        self.active_terminal()
+            .map(|t| t.lock().unwrap().screen().modes.mouse_mode != MouseMode::None)
+            .unwrap_or(false)
+    }
+
+    /// Forward a mouse event to a mouse-tracking application. Returns true if a
+    /// report was sent (the event was consumed). Must not be called while holding
+    /// the terminal lock.
+    fn forward_mouse_event(&self, button: ReportButton, x: f32, y: f32, is_drag: bool) -> bool {
+        let Some((col, row)) = self.terminal_cell_at(x, y) else {
+            return false;
+        };
+        let Some(terminal) = self.active_terminal() else {
+            return false;
+        };
+        let mut term = terminal.lock().unwrap();
+        let mode = term.screen().modes.mouse_mode;
+        if mode == MouseMode::None {
+            return false;
+        }
+        let sgr = term.screen().modes.sgr_mouse;
+        let consumed = if let Some(seq) = encode_mouse_event(
+            mode,
+            sgr,
+            button,
+            col,
+            row,
+            current_mouse_modifiers(),
+            is_drag,
+        ) {
+            let _ = term.write(&seq);
+            true
+        } else {
+            false
+        };
+        drop(term);
+        if consumed {
+            self.invalidate();
+        }
+        consumed
+    }
+
     pub fn on_mouse_down(&mut self, x: f32, y: f32) {
         // Check if click is in notification bar area
         let tab_bar_height = self.dpi.scale_f32(TAB_BAR_HEIGHT as f32);
@@ -1695,12 +1767,110 @@ impl WindowState {
         if ctrl_pressed {
             if let Some(uri) = self.hyperlink_at(x, y) {
                 self.open_url(&uri);
+                return;
             }
+        }
+
+        // Forward to a mouse-tracking application unless Shift is held (Shift is
+        // reserved for local interaction, matching the xterm/VTE convention).
+        if !shift_pressed()
+            && self.mouse_tracking_active()
+            && self.forward_mouse_event(ReportButton::Left, x, y, false)
+        {
+            self.mouse_report_button = Some(ReportButton::Left);
         }
     }
 
-    /// Handle mouse move for hyperlink hover
+    /// Handle mouse button release.
+    pub fn on_mouse_up(&mut self, x: f32, y: f32) {
+        // If a press was forwarded to a mouse-tracking app, report the release.
+        if self.mouse_report_button.take().is_some() {
+            self.forward_mouse_event(ReportButton::Release, x, y, false);
+        }
+    }
+
+    /// Handle middle-button press.
+    pub fn on_middle_down(&mut self, x: f32, y: f32) {
+        if !shift_pressed()
+            && self.mouse_tracking_active()
+            && self.forward_mouse_event(ReportButton::Middle, x, y, false)
+        {
+            self.mouse_report_button = Some(ReportButton::Middle);
+        }
+    }
+
+    /// Handle mouse wheel: forward to a tracking app, translate to cursor keys on
+    /// the alternate screen (alternate-scroll), or scroll the local scrollback.
+    pub fn on_wheel(&mut self, delta: i32) {
+        let up = delta > 0;
+        let shift = shift_pressed();
+        let Some(terminal) = self.active_terminal() else {
+            return;
+        };
+
+        if !shift {
+            // 1) Application is tracking the mouse: forward a wheel report.
+            if self.mouse_tracking_active() {
+                let (x, y) = self.last_mouse_pos;
+                let button = if up {
+                    ReportButton::WheelUp
+                } else {
+                    ReportButton::WheelDown
+                };
+                self.forward_mouse_event(button, x, y, false);
+                return;
+            }
+
+            // 2) Alternate screen + alternate-scroll: translate to cursor keys so
+            //    pagers (less/man) scroll.
+            let mut term = terminal.lock().unwrap();
+            if term.screen().modes.alternate_screen && term.screen().modes.alternate_scroll {
+                let key = if up {
+                    cterm_core::term::Key::Up
+                } else {
+                    cterm_core::term::Key::Down
+                };
+                if let Some(bytes) = term.handle_key(key, cterm_core::term::Modifiers::empty()) {
+                    for _ in 0..3 {
+                        let _ = term.write(&bytes);
+                    }
+                }
+                drop(term);
+                self.invalidate();
+                return;
+            }
+            drop(term);
+        }
+
+        // 3) Default: scroll the local scrollback viewport.
+        let mut term = terminal.lock().unwrap();
+        if up {
+            term.scroll_viewport_up(3);
+        } else {
+            term.scroll_viewport_down(3);
+        }
+        drop(term);
+        self.invalidate();
+    }
+
+    /// Handle mouse move for hyperlink hover and drag forwarding.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) {
+        self.last_mouse_pos = (x, y);
+
+        // If a button is held for a mouse-tracking app, report drag motion (only
+        // when the pointer crosses into a new cell, to avoid flooding).
+        if !shift_pressed() {
+            if let Some(button) = self.mouse_report_button {
+                let cell = self.terminal_cell_at(x, y);
+                if cell.is_some() && cell != self.last_mouse_cell {
+                    self.last_mouse_cell = cell;
+                    self.forward_mouse_event(button, x, y, true);
+                }
+                return;
+            }
+        }
+        self.last_mouse_cell = self.terminal_cell_at(x, y);
+
         let has_link = self.hyperlink_at(x, y).is_some();
 
         unsafe {
@@ -1725,6 +1895,15 @@ impl WindowState {
             if let Some(tab_id) = tab_id {
                 self.show_tab_context_menu(tab_id, x as i32, y as i32);
             }
+            return;
+        }
+
+        // Forward to a mouse-tracking application unless Shift is held.
+        if !shift_pressed()
+            && self.mouse_tracking_active()
+            && self.forward_mouse_event(ReportButton::Right, x, y, false)
+        {
+            self.mouse_report_button = Some(ReportButton::Right);
             return;
         }
 
@@ -2487,6 +2666,25 @@ fn post_tab_exit(hwnd: usize, tab_id: u64) {
 }
 
 /// Window procedure
+/// Whether Shift is currently held (used to bypass mouse forwarding so local
+/// interaction — hyperlink menu, scrollback — keeps working under a tracking app).
+fn shift_pressed() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+    unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }
+}
+
+/// Current Shift/Alt/Ctrl state for encoding into a mouse report.
+fn current_mouse_modifiers() -> MouseModifiers {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+    unsafe {
+        MouseModifiers {
+            shift: GetKeyState(VK_SHIFT.0 as i32) < 0,
+            alt: GetKeyState(VK_MENU.0 as i32) < 0,
+            ctrl: GetKeyState(VK_CONTROL.0 as i32) < 0,
+        }
+    }
+}
+
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Get window state
     let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
@@ -2571,10 +2769,45 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
 
+        WM_LBUTTONUP => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            state.on_mouse_up(x, y);
+            LRESULT(0)
+        }
+
+        WM_RBUTTONUP => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            state.on_mouse_up(x, y);
+            LRESULT(0)
+        }
+
+        WM_MBUTTONDOWN => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            state.on_middle_down(x, y);
+            LRESULT(0)
+        }
+
+        WM_MBUTTONUP => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            state.on_mouse_up(x, y);
+            LRESULT(0)
+        }
+
         WM_MOUSEMOVE => {
             let x = (lparam.0 & 0xFFFF) as i16 as f32;
             let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
             state.on_mouse_move(x, y);
+            LRESULT(0)
+        }
+
+        WM_MOUSEWHEEL => {
+            // High word of wParam is the signed wheel delta (multiple of 120).
+            let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+            state.on_wheel(delta);
             LRESULT(0)
         }
 
