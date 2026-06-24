@@ -12,6 +12,7 @@ pub mod drcs;
 pub mod grid;
 pub mod image_decode;
 pub mod iterm2;
+pub mod mouse;
 pub mod parser;
 pub mod pty;
 pub mod screen;

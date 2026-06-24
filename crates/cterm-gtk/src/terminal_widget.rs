@@ -14,7 +14,8 @@ use parking_lot::Mutex;
 use cterm_app::config::Config;
 use cterm_core::cell::CellAttrs;
 use cterm_core::color::{Color, Rgb};
-use cterm_core::screen::{ClipboardOperation, CursorStyle, ScreenConfig};
+use cterm_core::mouse::{encode_mouse_event, MouseButton, MouseModifiers};
+use cterm_core::screen::{ClipboardOperation, CursorStyle, MouseMode, ScreenConfig};
 use cterm_core::term::{Key, Modifiers, Terminal, TerminalEvent};
 use cterm_ui::theme::Theme;
 
@@ -663,6 +664,13 @@ impl TerminalWidget {
         // Selection state: tracks whether we're in a drag operation
         let selecting = Rc::new(RefCell::new(false));
 
+        // Mouse-forwarding state (for applications that enable mouse tracking).
+        // `last_cell` is the pointer's current cell, needed by the scroll handler
+        // (GTK scroll events carry no coordinates). `pressed_button` is the button
+        // currently held, so motion can be reported as a drag and released cleanly.
+        let last_cell = Rc::new(RefCell::new((0usize, 0usize)));
+        let pressed_button: Rc<RefCell<Option<MouseButton>>> = Rc::new(RefCell::new(None));
+
         // Mouse click for selection
         let click_controller = GestureClick::new();
         click_controller.set_button(gdk::BUTTON_PRIMARY);
@@ -671,6 +679,7 @@ impl TerminalWidget {
         let cell_dims_click = Rc::clone(&cell_dims);
         let drawing_area_click = self.drawing_area.clone();
         let selecting_pressed = Rc::clone(&selecting);
+        let pressed_button_click = Rc::clone(&pressed_button);
 
         click_controller.connect_pressed(move |gesture, n_press, x, y| {
             drawing_area_click.grab_focus();
@@ -680,23 +689,46 @@ impl TerminalWidget {
             let row = (y / dims.height).floor() as usize;
             drop(dims);
 
+            let state = gesture
+                .current_event()
+                .map(|e| e.modifier_state())
+                .unwrap_or_else(gdk::ModifierType::empty);
+
             // Ctrl+click to open hyperlinks
-            if let Some(event) = gesture.current_event() {
-                let state = event.modifier_state();
-                if state.contains(gdk::ModifierType::CONTROL_MASK) {
-                    let term = terminal_click.lock();
-                    if let Some(uri) = term
-                        .screen()
-                        .get_cell(row, col)
-                        .and_then(|c| c.hyperlink.as_ref())
-                        .map(|h| h.uri.clone())
-                    {
-                        drop(term);
-                        if let Err(e) = open::that(&uri) {
-                            log::error!("Failed to open URL {}: {}", uri, e);
-                        }
-                        return;
+            if state.contains(gdk::ModifierType::CONTROL_MASK) {
+                let term = terminal_click.lock();
+                if let Some(uri) = term
+                    .screen()
+                    .get_cell(row, col)
+                    .and_then(|c| c.hyperlink.as_ref())
+                    .map(|h| h.uri.clone())
+                {
+                    drop(term);
+                    if let Err(e) = open::that(&uri) {
+                        log::error!("Failed to open URL {}: {}", uri, e);
                     }
+                    return;
+                }
+            }
+
+            // Forward to a mouse-tracking application unless Shift is held (Shift
+            // always falls through to local text selection).
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+            if !shift {
+                let mut term = terminal_click.lock();
+                if mouse_tracking_active(&term)
+                    && report_mouse(
+                        &mut term,
+                        MouseButton::Left,
+                        col,
+                        row,
+                        gtk_state_to_mouse_mods(state),
+                        false,
+                    )
+                {
+                    drop(term);
+                    *pressed_button_click.borrow_mut() = Some(MouseButton::Left);
+                    return;
                 }
             }
 
@@ -718,10 +750,36 @@ impl TerminalWidget {
         });
 
         let terminal_released = Arc::clone(&terminal);
+        let cell_dims_released = Rc::clone(&cell_dims);
         let drawing_area_released = self.drawing_area.clone();
         let selecting_released = Rc::clone(&selecting);
+        let pressed_button_released = Rc::clone(&pressed_button);
 
-        click_controller.connect_released(move |_, _n_press, _x, _y| {
+        click_controller.connect_released(move |gesture, _n_press, x, y| {
+            // If this press was forwarded to a mouse-tracking app, report the release
+            // and skip the selection-finalize path.
+            if pressed_button_released.borrow().is_some() {
+                *pressed_button_released.borrow_mut() = None;
+                let dims = cell_dims_released.borrow();
+                let col = (x / dims.width).floor() as usize;
+                let row = (y / dims.height).floor() as usize;
+                drop(dims);
+                let state = gesture
+                    .current_event()
+                    .map(|e| e.modifier_state())
+                    .unwrap_or_else(gdk::ModifierType::empty);
+                let mut term = terminal_released.lock();
+                report_mouse(
+                    &mut term,
+                    MouseButton::Release,
+                    col,
+                    row,
+                    gtk_state_to_mouse_mods(state),
+                    false,
+                );
+                return;
+            }
+
             *selecting_released.borrow_mut() = false;
 
             // Check if selection is empty (same start and end) and clear it
@@ -762,12 +820,38 @@ impl TerminalWidget {
             let terminal_rc = Arc::clone(&terminal);
             let cell_dims_rc = Rc::clone(&cell_dims);
             let drawing_area_rc = self.drawing_area.clone();
+            let pressed_button_rc = Rc::clone(&pressed_button);
 
-            right_click.connect_pressed(move |_, _n_press, x, y| {
+            right_click.connect_pressed(move |gesture, _n_press, x, y| {
                 let dims = cell_dims_rc.borrow();
                 let col = (x / dims.width).floor() as usize;
                 let row = (y / dims.height).floor() as usize;
                 drop(dims);
+
+                let state = gesture
+                    .current_event()
+                    .map(|e| e.modifier_state())
+                    .unwrap_or_else(gdk::ModifierType::empty);
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+                // Forward to a mouse-tracking app unless Shift is held.
+                if !shift {
+                    let mut term = terminal_rc.lock();
+                    if mouse_tracking_active(&term)
+                        && report_mouse(
+                            &mut term,
+                            MouseButton::Right,
+                            col,
+                            row,
+                            gtk_state_to_mouse_mods(state),
+                            false,
+                        )
+                    {
+                        drop(term);
+                        *pressed_button_rc.borrow_mut() = Some(MouseButton::Right);
+                        return;
+                    }
+                }
 
                 let term = terminal_rc.lock();
                 let uri = term
@@ -790,6 +874,34 @@ impl TerminalWidget {
                 }
             });
 
+            // Report the release of a forwarded right-button press.
+            let terminal_rr = Arc::clone(&terminal);
+            let cell_dims_rr = Rc::clone(&cell_dims);
+            let pressed_button_rr = Rc::clone(&pressed_button);
+            right_click.connect_released(move |gesture, _n_press, x, y| {
+                if *pressed_button_rr.borrow() != Some(MouseButton::Right) {
+                    return;
+                }
+                *pressed_button_rr.borrow_mut() = None;
+                let dims = cell_dims_rr.borrow();
+                let col = (x / dims.width).floor() as usize;
+                let row = (y / dims.height).floor() as usize;
+                drop(dims);
+                let state = gesture
+                    .current_event()
+                    .map(|e| e.modifier_state())
+                    .unwrap_or_else(gdk::ModifierType::empty);
+                let mut term = terminal_rr.lock();
+                report_mouse(
+                    &mut term,
+                    MouseButton::Release,
+                    col,
+                    row,
+                    gtk_state_to_mouse_mods(state),
+                    false,
+                );
+            });
+
             self.drawing_area.add_controller(right_click);
         }
 
@@ -800,9 +912,40 @@ impl TerminalWidget {
             middle_click_controller.set_button(gdk::BUTTON_MIDDLE);
 
             let terminal_middle = Arc::clone(&terminal);
+            let cell_dims_middle = Rc::clone(&cell_dims);
             let drawing_area_middle = self.drawing_area.clone();
+            let pressed_button_middle = Rc::clone(&pressed_button);
 
-            middle_click_controller.connect_pressed(move |_, _n_press, _x, _y| {
+            middle_click_controller.connect_pressed(move |gesture, _n_press, x, y| {
+                let state = gesture
+                    .current_event()
+                    .map(|e| e.modifier_state())
+                    .unwrap_or_else(gdk::ModifierType::empty);
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+                // Forward to a mouse-tracking app unless Shift is held.
+                if !shift {
+                    let dims = cell_dims_middle.borrow();
+                    let col = (x / dims.width).floor() as usize;
+                    let row = (y / dims.height).floor() as usize;
+                    drop(dims);
+                    let mut term = terminal_middle.lock();
+                    if mouse_tracking_active(&term)
+                        && report_mouse(
+                            &mut term,
+                            MouseButton::Middle,
+                            col,
+                            row,
+                            gtk_state_to_mouse_mods(state),
+                            false,
+                        )
+                    {
+                        drop(term);
+                        *pressed_button_middle.borrow_mut() = Some(MouseButton::Middle);
+                        return;
+                    }
+                }
+
                 let Some(display) = gdk::Display::default() else {
                     return;
                 };
@@ -825,6 +968,34 @@ impl TerminalWidget {
                 });
             });
 
+            // Report the release of a forwarded middle-button press.
+            let terminal_mr = Arc::clone(&terminal);
+            let cell_dims_mr = Rc::clone(&cell_dims);
+            let pressed_button_mr = Rc::clone(&pressed_button);
+            middle_click_controller.connect_released(move |gesture, _n_press, x, y| {
+                if *pressed_button_mr.borrow() != Some(MouseButton::Middle) {
+                    return;
+                }
+                *pressed_button_mr.borrow_mut() = None;
+                let dims = cell_dims_mr.borrow();
+                let col = (x / dims.width).floor() as usize;
+                let row = (y / dims.height).floor() as usize;
+                drop(dims);
+                let state = gesture
+                    .current_event()
+                    .map(|e| e.modifier_state())
+                    .unwrap_or_else(gdk::ModifierType::empty);
+                let mut term = terminal_mr.lock();
+                report_mouse(
+                    &mut term,
+                    MouseButton::Release,
+                    col,
+                    row,
+                    gtk_state_to_mouse_mods(state),
+                    false,
+                );
+            });
+
             self.drawing_area.add_controller(middle_click_controller);
         }
 
@@ -835,12 +1006,44 @@ impl TerminalWidget {
         let cell_dims_motion = Rc::clone(&cell_dims);
         let drawing_area_motion = self.drawing_area.clone();
         let selecting_motion = Rc::clone(&selecting);
+        let last_cell_motion = Rc::clone(&last_cell);
+        let pressed_button_motion = Rc::clone(&pressed_button);
 
-        motion_controller.connect_motion(move |_, x, y| {
+        motion_controller.connect_motion(move |controller, x, y| {
             let dims = cell_dims_motion.borrow();
             let col = (x / dims.width).floor() as usize;
             let row = (y / dims.height).floor() as usize;
             drop(dims);
+
+            // Track the pointer cell for the scroll handler (scroll events carry no
+            // coordinates), and detect whether we moved to a new cell.
+            let prev_cell = *last_cell_motion.borrow();
+            *last_cell_motion.borrow_mut() = (col, row);
+
+            let state = controller
+                .current_event()
+                .map(|e| e.modifier_state())
+                .unwrap_or_else(gdk::ModifierType::empty);
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+            // If a button was forwarded to a mouse-tracking app, this drag belongs to
+            // the app: report motion (on cell change, to avoid flooding) and swallow it.
+            if !shift {
+                if let Some(button) = *pressed_button_motion.borrow() {
+                    if prev_cell != (col, row) {
+                        let mut term = terminal_motion.lock();
+                        report_mouse(
+                            &mut term,
+                            button,
+                            col,
+                            row,
+                            gtk_state_to_mouse_mods(state),
+                            true,
+                        );
+                    }
+                    return;
+                }
+            }
 
             // Selection drag
             if *selecting_motion.borrow() {
@@ -884,14 +1087,63 @@ impl TerminalWidget {
             EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         let terminal_scroll = Arc::clone(&terminal);
         let drawing_area_scroll = self.drawing_area.clone();
+        let last_cell_scroll = Rc::clone(&last_cell);
 
-        scroll_controller.connect_scroll(move |_, _dx, dy| {
+        // Lines of cursor-key / viewport movement per wheel notch.
+        const SCROLL_LINES: usize = 3;
+
+        scroll_controller.connect_scroll(move |controller, _dx, dy| {
+            let up = dy < 0.0;
+            let state = controller
+                .current_event()
+                .map(|e| e.modifier_state())
+                .unwrap_or_else(gdk::ModifierType::empty);
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
             let mut term = terminal_scroll.lock();
-            if dy < 0.0 {
-                term.scroll_viewport_up(3);
-            } else {
-                term.scroll_viewport_down(3);
+
+            // Shift+wheel always scrolls cterm's own scrollback, overriding any
+            // application mouse/alternate-scroll handling (xterm/VTE convention).
+            if !shift {
+                // 1) Application is tracking the mouse: forward a wheel report.
+                if mouse_tracking_active(&term) {
+                    let (col, row) = *last_cell_scroll.borrow();
+                    let button = if up {
+                        MouseButton::WheelUp
+                    } else {
+                        MouseButton::WheelDown
+                    };
+                    report_mouse(
+                        &mut term,
+                        button,
+                        col,
+                        row,
+                        gtk_state_to_mouse_mods(state),
+                        false,
+                    );
+                    return glib::Propagation::Stop;
+                }
+
+                // 2) Alternate screen + alternate-scroll: translate the wheel into
+                //    cursor-key input so pagers (less/man) scroll.
+                if term.screen().modes.alternate_screen && term.screen().modes.alternate_scroll {
+                    let key = if up { Key::Up } else { Key::Down };
+                    if let Some(bytes) = term.handle_key(key, Modifiers::empty()) {
+                        for _ in 0..SCROLL_LINES {
+                            let _ = term.write(&bytes);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
             }
+
+            // 3) Default: scroll cterm's local scrollback viewport.
+            if up {
+                term.scroll_viewport_up(SCROLL_LINES);
+            } else {
+                term.scroll_viewport_down(SCROLL_LINES);
+            }
+            drop(term);
             drawing_area_scroll.queue_draw();
             glib::Propagation::Stop
         });
@@ -1860,6 +2112,41 @@ fn draw_terminal(
         cr.close_path();
         cr.set_source_rgba(0.5, 0.5, 0.5, opacity);
         cr.fill().ok();
+    }
+}
+
+/// Extract mouse-report modifier bits from a GTK modifier state.
+fn gtk_state_to_mouse_mods(state: gdk::ModifierType) -> MouseModifiers {
+    MouseModifiers {
+        shift: state.contains(gdk::ModifierType::SHIFT_MASK),
+        alt: state.contains(gdk::ModifierType::ALT_MASK),
+        ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
+    }
+}
+
+/// Whether an application has enabled any mouse tracking mode.
+fn mouse_tracking_active(term: &Terminal) -> bool {
+    term.screen().modes.mouse_mode != MouseMode::None
+}
+
+/// Encode a mouse event for the current tracking/encoding modes and, if it
+/// produces a report, write it to the PTY. Returns true if the event was
+/// consumed (a report was sent), false if mouse reporting is inactive for it.
+fn report_mouse(
+    term: &mut Terminal,
+    button: MouseButton,
+    col: usize,
+    row: usize,
+    mods: MouseModifiers,
+    is_drag: bool,
+) -> bool {
+    let mode = term.screen().modes.mouse_mode;
+    let sgr = term.screen().modes.sgr_mouse;
+    if let Some(seq) = encode_mouse_event(mode, sgr, button, col, row, mods, is_drag) {
+        let _ = term.write(&seq);
+        true
+    } else {
+        false
     }
 }
 

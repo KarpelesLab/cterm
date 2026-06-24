@@ -1438,6 +1438,8 @@ impl ScreenPerformer<'_> {
             1005 => { /* UTF-8 encoding for mouse coordinates - not implemented */ }
             // SGR Mouse Mode (extended coordinates)
             1006 => self.screen.modes.sgr_mouse = set,
+            // Alternate Scroll Mode: wheel -> cursor keys on the alternate screen
+            1007 => self.screen.modes.alternate_scroll = set,
             // Alternate Screen Buffer
             1047 => {
                 if set {
@@ -1661,5 +1663,34 @@ mod tests {
         parser.parse(&mut screen, b"\x1b[?1049l"); // Exit alternate
         assert!(!screen.modes.alternate_screen);
         assert_eq!(screen.get_cell(0, 0).unwrap().c, 'P');
+    }
+
+    #[test]
+    fn test_mouse_modes() {
+        let mut screen = make_screen();
+        let mut parser = Parser::new();
+
+        assert_eq!(screen.modes.mouse_mode, MouseMode::None);
+        parser.parse(&mut screen, b"\x1b[?1000h"); // normal tracking
+        assert_eq!(screen.modes.mouse_mode, MouseMode::Normal);
+        parser.parse(&mut screen, b"\x1b[?1002h"); // button-event tracking
+        assert_eq!(screen.modes.mouse_mode, MouseMode::ButtonEvent);
+        parser.parse(&mut screen, b"\x1b[?1006h"); // SGR encoding
+        assert!(screen.modes.sgr_mouse);
+        parser.parse(&mut screen, b"\x1b[?1000l"); // disable tracking
+        assert_eq!(screen.modes.mouse_mode, MouseMode::None);
+    }
+
+    #[test]
+    fn test_alternate_scroll_mode() {
+        let mut screen = make_screen();
+        let mut parser = Parser::new();
+
+        // Enabled by default so pagers scroll out of the box.
+        assert!(screen.modes.alternate_scroll);
+        parser.parse(&mut screen, b"\x1b[?1007l"); // disable
+        assert!(!screen.modes.alternate_scroll);
+        parser.parse(&mut screen, b"\x1b[?1007h"); // re-enable
+        assert!(screen.modes.alternate_scroll);
     }
 }

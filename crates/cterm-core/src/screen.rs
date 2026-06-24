@@ -82,6 +82,10 @@ pub struct TerminalModes {
     pub mouse_mode: MouseMode,
     /// SGR mouse encoding (mode 1006) - uses CSI < format instead of X10
     pub sgr_mouse: bool,
+    /// Alternate scroll mode (mode 1007): on the alternate screen, translate the
+    /// scroll wheel into cursor-key input when the application isn't tracking the
+    /// mouse. Enabled by default so pagers (less/man) scroll out of the box.
+    pub alternate_scroll: bool,
     /// Bracketed paste mode
     pub bracketed_paste: bool,
     /// Focus events reporting
@@ -432,7 +436,8 @@ impl Screen {
         let modes = TerminalModes {
             auto_wrap: true,
             show_cursor: true,
-            sixel_scrolling: true, // Sixel scrolling enabled by default
+            sixel_scrolling: true,  // Sixel scrolling enabled by default
+            alternate_scroll: true, // Alternate-screen wheel-to-arrows enabled by default
             ..Default::default()
         };
 
@@ -1129,6 +1134,7 @@ impl Screen {
             auto_wrap: true,
             show_cursor: true,
             sixel_scrolling: true,
+            alternate_scroll: true,
             ..Default::default()
         };
         self.title.clear();
