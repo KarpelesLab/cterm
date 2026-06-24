@@ -13,7 +13,7 @@ use tonic::transport::Channel;
 
 /// GitHub repository for downloading ctermd releases
 #[cfg(unix)]
-const GITHUB_REPO: &str = "unixshells/cterm";
+const GITHUB_REPO: &str = "KarpelesLab/cterm";
 
 /// Max time to establish the HTTP/2 transport to the daemon. A wedged daemon can
 /// accept the socket connection (the listen backlog is kernel-side) yet never
