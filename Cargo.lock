@@ -2048,9 +2048,9 @@ checksum = "624ac0e9d8302b1cffcf303cf2de2d17692393d8aef5b0a35c5a5b506b784524"
 
 [[package]]
 name = "purecrypto"
-version = "0.6.14"
+version = "0.6.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62cd09d8abe7704aa67b07e6446aeccecb68a9b738acd1393c188b350892c3bf"
+checksum = "1195836298100c210d42f26ce46a5b3ec520c51eb3acd00397e27bdf4faa0f5b"
 dependencies = [
  "cacrt",
  "compcol",
@@ -2058,9 +2058,9 @@ dependencies = [
 
 [[package]]
 name = "puressh"
-version = "0.0.7"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff75da64b84cefb343999a0631e4c43f3d4e69d1d0125fedc84d162429a07934"
+checksum = "0e20de0c3a4b1b7ac6a2a411c055d400c844da6d9e8ed907cf4e7fce0fd298b2"
 dependencies = [
  "libc",
  "nix",

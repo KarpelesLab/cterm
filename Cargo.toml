@@ -79,7 +79,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # SSH (native, pure-Rust)
-puressh = { version = "0.0.7", default-features = false, features = ["multichannel"] }
+puressh = { version = "0.1.0", default-features = false, features = ["multichannel"] }
 
 # Upgrade system
 rsurl = { version = "0.1.1", default-features = false, features = ["purecrypto-tls"] }
