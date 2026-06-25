@@ -488,11 +488,23 @@ fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
         }
     }
 
-    // Identity files.
-    for path in &config.identity_files {
-        match load_identity(path, config.passphrase_prompt.as_ref()) {
-            Some(cred) => creds.push(cred),
-            None => log::warn!("ssh: skipping identity file {}", path.display()),
+    // Identity files. When none are configured, fall back to the standard
+    // OpenSSH defaults (`~/.ssh/id_*`) that exist on disk. This matters for
+    // GUI launches, which don't inherit `SSH_AUTH_SOCK`, so the agent branch
+    // above finds nothing and key auth would otherwise be impossible.
+    if config.identity_files.is_empty() {
+        for path in default_identity_files() {
+            match load_identity(&path, config.passphrase_prompt.as_ref()) {
+                Some(cred) => creds.push(cred),
+                None => log::warn!("ssh: skipping default identity file {}", path.display()),
+            }
+        }
+    } else {
+        for path in &config.identity_files {
+            match load_identity(path, config.passphrase_prompt.as_ref()) {
+                Some(cred) => creds.push(cred),
+                None => log::warn!("ssh: skipping identity file {}", path.display()),
+            }
         }
     }
 
@@ -547,6 +559,21 @@ fn default_username() -> Option<String> {
 fn default_known_hosts_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".ssh").join("known_hosts"))
+}
+
+/// Standard OpenSSH default identity files, in preference order, returned only
+/// if they exist on disk. Used when no identity files are explicitly
+/// configured, mirroring OpenSSH trying `~/.ssh/id_*` automatically.
+fn default_identity_files() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return Vec::new();
+    };
+    let ssh_dir = PathBuf::from(home).join(".ssh");
+    ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"]
+        .iter()
+        .map(|name| ssh_dir.join(name))
+        .filter(|p| p.is_file())
+        .collect()
 }
 
 // ============================================================================
