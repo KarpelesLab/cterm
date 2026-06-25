@@ -121,18 +121,18 @@ pub struct DaemonInfo {
 #[derive(Clone, Default)]
 pub struct SshTunnelHandle {
     tunnel: Option<Arc<cterm_core::SshTunnel>>,
+    /// Registry key under which the tunnel is registered, so `kill` can
+    /// deregister it (stopping reconnects from reaching a dead connection).
+    key: Option<PathBuf>,
 }
 
 #[cfg(unix)]
 impl SshTunnelHandle {
-    fn from_tunnel(tunnel: cterm_core::SshTunnel) -> Self {
-        Self {
-            tunnel: Some(Arc::new(tunnel)),
-        }
-    }
-
-    /// Stop the tunnel. No-op if it has already been stopped.
+    /// Stop the tunnel and remove it from the registry. No-op if already gone.
     pub fn kill(&self) {
+        if let Some(key) = &self.key {
+            unregister_ssh_tunnel(key);
+        }
         if let Some(tunnel) = &self.tunnel {
             tunnel.close();
         }
@@ -175,6 +175,14 @@ impl DaemonConnection {
     /// On Windows, `socket_path` is a named pipe path (e.g., `\\.\pipe\ctermd-user`).
     /// If `auto_start` is true, spawn ctermd if not already running.
     pub async fn connect_unix(socket_path: &Path, auto_start: bool) -> Result<Self> {
+        // SSH-tunneled connections have no socket file: if this path is a
+        // registered SSH tunnel key, dial a fresh channel over the shared SSH
+        // connection instead of a Unix socket.
+        #[cfg(unix)]
+        if let Some(opener) = ssh_opener_for(socket_path) {
+            return Self::connect_via_ssh(socket_path, opener).await;
+        }
+
         // Try connecting first
         match Self::try_connect(socket_path).await {
             Ok(conn) => Ok(conn),
@@ -255,9 +263,13 @@ impl DaemonConnection {
         };
 
         // The setup script finds/installs ctermd, starts the daemon, and prints
-        // the remote socket path; the tunnel forwards a local socket to it.
+        // the remote socket path; we then talk gRPC directly over the SSH
+        // connection — no local socket file is ever created.
         let script = remote_setup_script();
-        let local_socket = Self::ssh_forward_socket_path(host);
+        // Synthetic key, carried through the app as this connection's
+        // `socket_path`. Readers reconnect through it (see `connect_unix`);
+        // nothing is written to this path.
+        let tunnel_key = Self::ssh_tunnel_key(host);
 
         let ssh_config = cterm_core::SshConfig {
             host: hostname,
@@ -269,42 +281,36 @@ impl DaemonConnection {
             ..Default::default()
         };
 
-        // puressh is blocking and spawns its own pump/accept threads; run the
+        // puressh is blocking and spawns its own pump thread; run the
         // connect+setup on a blocking task so we don't stall the reactor.
-        let local_for_tunnel = local_socket.clone();
         let host_owned = host.to_string();
         let tunnel = tokio::task::spawn_blocking(move || {
-            cterm_core::SshTunnel::connect(ssh_config, &script, local_for_tunnel)
+            cterm_core::SshTunnel::connect(ssh_config, &script)
         })
         .await
         .map_err(|e| ClientError::Connection(format!("SSH tunnel task panicked: {e}")))?
         .map_err(|e| ClientError::Connection(format!("SSH tunnel to {host_owned}: {e}")))?;
 
-        // `SshTunnel::connect` binds the local socket before returning, but allow
-        // a brief grace period in case of filesystem latency.
-        for i in 0..30 {
-            if local_socket.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100 * (i / 5 + 1))).await;
-        }
-        if !local_socket.exists() {
-            return Err(ClientError::Connection(format!(
-                "SSH tunnel failed to create local socket at {}",
-                local_socket.display()
-            )));
-        }
+        // Keep the SSH connection alive in a registry so reconnects (output
+        // streams run in their own runtimes) can open fresh channels over it,
+        // and so dropping the returned handle doesn't tear it down.
+        let tunnel = Arc::new(tunnel);
+        register_ssh_tunnel(tunnel_key.clone(), Arc::clone(&tunnel));
 
-        // Connect the gRPC client to the forwarded socket.
-        let conn = Self::try_connect_unix(&local_socket).await?;
-        let tunnel_handle = SshTunnelHandle::from_tunnel(tunnel);
+        // Dial the gRPC connection directly over the SSH channel.
+        let conn = Self::connect_via_ssh(&tunnel_key, tunnel.opener()).await?;
+        let tunnel_handle = SshTunnelHandle {
+            tunnel: Some(tunnel),
+            key: Some(tunnel_key),
+        };
         Ok((conn, tunnel_handle))
     }
 
-    /// Get the local socket path used for SSH forwarding to a given host
+    /// Stable per-host key identifying an SSH tunnel in the registry. It reuses
+    /// the daemon socket directory for a recognizable value but is never created
+    /// as a file — it only flows through the app as a connection's `socket_path`.
     #[cfg(unix)]
-    fn ssh_forward_socket_path(host: &str) -> PathBuf {
-        // Sanitize hostname for use in path
+    fn ssh_tunnel_key(host: &str) -> PathBuf {
         let safe_host: String = host
             .chars()
             .map(|c| {
@@ -317,8 +323,38 @@ impl DaemonConnection {
             .collect();
 
         let mut path = socket::default_socket_path();
-        path.set_file_name(format!("ctermd-ssh-{}.sock", safe_host));
+        path.set_file_name(format!("ctermd-ssh-{}", safe_host));
         path
+    }
+
+    /// Build a gRPC connection that runs over a fresh `direct-streamlocal`
+    /// channel on the shared SSH connection. `key` is recorded as the
+    /// connection's `socket_path` so reconnects route back through the registry.
+    #[cfg(unix)]
+    async fn connect_via_ssh(key: &Path, opener: cterm_core::SshChannelOpener) -> Result<Self> {
+        let endpoint = tonic::transport::Endpoint::try_from("http://[::]:0")
+            .map_err(|e| ClientError::Connection(e.to_string()))?;
+        let connect =
+            endpoint.connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let opener = opener.clone();
+                async move {
+                    // Opening the channel is a quick round-trip to the serve
+                    // loop (a separate thread); fine to do inline here.
+                    let (reader, writer) = opener.open()?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(ssh_channel_io(
+                        reader, writer,
+                    )))
+                }
+            }));
+        let channel = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| {
+                ClientError::DaemonUnresponsive(format!(
+                    "connect timed out after {}s",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            })??;
+        Self::handshake(channel, Some(key.to_owned())).await
     }
 
     /// Try to connect to the daemon at the given path (platform-dispatched).
@@ -626,5 +662,153 @@ impl DaemonConnection {
             .await?;
 
         Ok(response.into_inner())
+    }
+}
+
+// ===========================================================================
+// SSH transport: gRPC over an SSH channel with no local socket file.
+//
+// Each SSH connection's `SshChannelOpener` is held in a registry keyed by the
+// synthetic path that flows through the app as the connection's `socket_path`.
+// Reconnects (output-stream readers run in their own runtimes) look the opener
+// up and dial a fresh `direct-streamlocal` channel over the shared SSH
+// connection, which is bridged to async with in-process channels (no sockets).
+// ===========================================================================
+
+#[cfg(unix)]
+static SSH_TUNNELS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<cterm_core::SshTunnel>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(unix)]
+fn register_ssh_tunnel(key: PathBuf, tunnel: Arc<cterm_core::SshTunnel>) {
+    SSH_TUNNELS.lock().unwrap().insert(key, tunnel);
+}
+
+#[cfg(unix)]
+fn ssh_opener_for(key: &Path) -> Option<cterm_core::SshChannelOpener> {
+    SSH_TUNNELS.lock().unwrap().get(key).map(|t| t.opener())
+}
+
+#[cfg(unix)]
+fn unregister_ssh_tunnel(key: &Path) {
+    if let Some(tunnel) = SSH_TUNNELS.lock().unwrap().remove(key) {
+        tunnel.close();
+    }
+}
+
+/// An async-I/O bridge over a blocking SSH channel. The read direction
+/// (daemon -> client) is bounded so a slow consumer applies backpressure to
+/// the remote via the SSH channel's own flow control; the write direction
+/// (client -> daemon: input, resize, control) is small and unbounded.
+#[cfg(unix)]
+struct SshChannelIo {
+    rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    read_buf: Vec<u8>,
+    read_pos: usize,
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+#[cfg(unix)]
+fn ssh_channel_io(
+    reader: cterm_core::SshChannelReader,
+    writer: cterm_core::SshChannelWriter,
+) -> SshChannelIo {
+    use std::io::{Read, Write};
+
+    let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    // Daemon output: blocking-read the channel, hand chunks to the async side.
+    let mut reader = reader;
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 32 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if read_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        // `read_tx` drops here -> the async receiver sees EOF.
+    });
+
+    // Client input: blocking-write each chunk the async side produces.
+    let mut writer = writer;
+    std::thread::spawn(move || {
+        while let Some(chunk) = write_rx.blocking_recv() {
+            if writer.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+        // `writer` drops here -> SshChannelWriter sends EOF/Close to the channel.
+    });
+
+    SshChannelIo {
+        rx: read_rx,
+        read_buf: Vec::new(),
+        read_pos: 0,
+        tx: write_tx,
+    }
+}
+
+#[cfg(unix)]
+impl tokio::io::AsyncRead for SshChannelIo {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        if this.read_pos >= this.read_buf.len() {
+            match this.rx.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => {
+                    this.read_buf = chunk;
+                    this.read_pos = 0;
+                }
+                // Channel closed: report EOF (0 bytes read).
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        let n = (this.read_buf.len() - this.read_pos).min(buf.remaining());
+        buf.put_slice(&this.read_buf[this.read_pos..this.read_pos + n]);
+        this.read_pos += n;
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(unix)]
+impl tokio::io::AsyncWrite for SshChannelIo {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.tx.send(buf.to_vec()) {
+            Ok(()) => std::task::Poll::Ready(Ok(buf.len())),
+            Err(_) => std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "ssh channel closed",
+            ))),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }

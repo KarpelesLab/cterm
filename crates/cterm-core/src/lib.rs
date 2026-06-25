@@ -36,11 +36,11 @@ pub use screen::{
     SearchResult, Selection, SelectionMode, SelectionPoint, TerminalImage,
 };
 pub use sixel::{SixelDecoder, SixelImage};
-#[cfg(unix)]
-pub use ssh::SshTunnel;
 pub use ssh::{
     HostKeyPrompt, HostKeyRequest, LocalForward, PassphrasePrompt, PasswordPrompt, SshConfig,
     SshPrompts,
 };
+#[cfg(unix)]
+pub use ssh::{SshChannelOpener, SshChannelReader, SshChannelWriter, SshTunnel};
 pub use streaming_file::{StreamingFileData, StreamingFileReceiver, StreamingFileResult};
 pub use term::{Terminal, WriteFn};

@@ -13,6 +13,8 @@
 //! supply prompt callbacks (see [`SshConfig`]) so the surrounding UI can ask
 //! the user about an unknown host key, a password, or a key passphrase.
 
+#[cfg(unix)]
+use std::io::Write;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -656,35 +658,33 @@ fn default_identity_files() -> Vec<PathBuf> {
 }
 
 // ============================================================================
-// SSH tunnel: forward a local Unix socket to a remote Unix socket over SSH.
-//
-// This replaces the old `ssh -L local.sock:remote.sock host` invocation used to
-// reach a remote ctermd's gRPC socket. It runs a serve loop on the puressh
-// connection and opens a `direct-streamlocal@openssh.com` channel per accepted
-// local connection.
+// SSH tunnel: reach a remote ctermd's gRPC Unix socket over SSH *without* any
+// local socket file. A serve loop runs on the puressh connection; callers open
+// a fresh `direct-streamlocal@openssh.com` channel on demand (one per gRPC
+// connection) via [`SshChannelOpener`] and bridge it to async in-process. This
+// replaces the old `ssh -L local.sock:remote.sock` style forward — there is no
+// `.sock` file to create, connect to, or lose.
 // ============================================================================
 
-/// A live SSH tunnel forwarding a local Unix socket to a remote Unix socket.
+/// A live SSH connection to a remote host running ctermd. Holds the serve loop
+/// that multiplexes channels; clone an [`SshChannelOpener`] from it to open new
+/// streams to the remote daemon socket.
 ///
-/// Dropping (or [`SshTunnel::close`]) stops the serve loop and removes the
-/// local socket.
+/// Dropping (or [`SshTunnel::close`]) stops the serve loop. Keep the tunnel
+/// alive for as long as any session reached through it is in use.
 #[cfg(unix)]
 pub struct SshTunnel {
     stop: Arc<std::sync::atomic::AtomicBool>,
-    local_socket: PathBuf,
+    opener: SshChannelOpener,
 }
 
 #[cfg(unix)]
 impl SshTunnel {
-    /// Connect and authenticate, run `setup_command` to learn the remote socket
-    /// path (its last stdout line), then forward `local_socket` to it.
-    pub fn connect(
-        config: SshConfig,
-        setup_command: &str,
-        local_socket: PathBuf,
-    ) -> Result<Self, PtyError> {
+    /// Connect and authenticate, then run `setup_command` to learn the remote
+    /// ctermd socket path (its last stdout line) and start the serve loop. No
+    /// local socket is bound; use [`SshTunnel::opener`] to open channels.
+    pub fn connect(config: SshConfig, setup_command: &str) -> Result<Self, PtyError> {
         use puressh::client::ClientHandlers;
-        use std::os::unix::net::UnixListener;
         use std::sync::atomic::Ordering;
 
         let mut client = connect_and_authenticate(&config)?;
@@ -702,21 +702,12 @@ impl SshTunnel {
             )));
         }
 
-        // Bind the local Unix socket the gRPC client will connect to.
-        let _ = std::fs::remove_file(&local_socket);
-        if let Some(parent) = local_socket.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let listener = UnixListener::bind(&local_socket)
-            .map_err(|e| PtyError::Spawn(format!("bind {}: {e}", local_socket.display())))?;
-        listener.set_nonblocking(true).ok();
-
-        // Pair a serve context (for opening channels from the accept thread)
-        // with the handler set that the serve loop runs.
+        // Pair a serve context (used to open channels on demand) with the
+        // handler set the serve loop runs.
         let (handlers, ctx) = ClientHandlers::new().with_serve_context();
         let stop = handlers.stop.clone();
 
-        // Pump thread: drives the connection and services ctx channel opens.
+        // Pump thread: drives the connection and services channel opens.
         let serve_stop = stop.clone();
         std::thread::spawn(move || {
             if let Err(e) = client.serve(handlers) {
@@ -725,39 +716,24 @@ impl SshTunnel {
             serve_stop.store(true, Ordering::Relaxed);
         });
 
-        // Accept thread: forward each local connection over a streamlocal channel.
-        let accept_stop = stop.clone();
-        std::thread::spawn(move || loop {
-            if accept_stop.load(Ordering::Relaxed) {
-                break;
-            }
-            match listener.accept() {
-                Ok((local_stream, _)) => match ctx.open_direct_streamlocal(&remote_socket) {
-                    Ok(channel) => spawn_unix_channel_splice(local_stream, channel),
-                    Err(e) => log::warn!("SSH tunnel: open channel failed: {e}"),
-                },
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    log::debug!("SSH tunnel accept loop ended: {e}");
-                    break;
-                }
-            }
-        });
-
-        Ok(Self { stop, local_socket })
+        Ok(Self {
+            stop,
+            opener: SshChannelOpener {
+                ctx,
+                remote_socket: Arc::from(remote_socket.as_str()),
+            },
+        })
     }
 
-    /// The local Unix socket path clients should connect to.
-    pub fn local_socket(&self) -> &std::path::Path {
-        &self.local_socket
+    /// A cloneable handle for opening fresh channels to the remote daemon over
+    /// this SSH connection.
+    pub fn opener(&self) -> SshChannelOpener {
+        self.opener.clone()
     }
 
-    /// Stop the tunnel and remove the local socket. Idempotent.
+    /// Stop the serve loop. Idempotent.
     pub fn close(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = std::fs::remove_file(&self.local_socket);
     }
 }
 
@@ -768,54 +744,94 @@ impl Drop for SshTunnel {
     }
 }
 
-/// Bidirectionally splice a local Unix stream and an SSH channel stream, each
-/// direction on its own thread (mirrors puressh's internal forward splice).
+/// Opens fresh `direct-streamlocal` channels to a remote ctermd Unix socket
+/// over an established SSH connection. Cheap to clone (just a serve-context
+/// sender plus the remote path) and safe to use from any thread, so a single
+/// SSH connection can back many independent gRPC connections.
 #[cfg(unix)]
-fn spawn_unix_channel_splice(
-    local: std::os::unix::net::UnixStream,
-    channel: puressh::stream::ChannelStream,
-) {
-    use puressh::stream::ChannelEgress;
-    use std::io::{Read, Write};
+#[derive(Clone)]
+pub struct SshChannelOpener {
+    ctx: puressh::client::ServeContext,
+    remote_socket: Arc<str>,
+}
 
-    let (chan_rx, chan_tx) = channel.into_raw();
-    let Ok(mut local_in) = local.try_clone() else {
-        let _ = chan_tx.send(ChannelEgress::Eof);
-        let _ = chan_tx.send(ChannelEgress::Close);
-        return;
-    };
-    let mut local_out = local;
+#[cfg(unix)]
+impl SshChannelOpener {
+    /// Open a new channel to the remote daemon socket, returning blocking
+    /// read/write halves (the caller bridges them to async I/O). No local
+    /// socket is involved.
+    pub fn open(&self) -> io::Result<(SshChannelReader, SshChannelWriter)> {
+        let channel = self
+            .ctx
+            .open_direct_streamlocal(&self.remote_socket)
+            .map_err(|e| io::Error::other(format!("ssh open channel: {e}")))?;
+        let (rx, tx) = channel.into_raw();
+        Ok((
+            SshChannelReader {
+                rx,
+                pending: Vec::new(),
+                pos: 0,
+            },
+            SshChannelWriter { tx },
+        ))
+    }
+}
 
-    // local -> channel
-    let chan_tx_a = chan_tx.clone();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 32 * 1024];
+/// Blocking read half of an SSH channel (server -> client bytes).
+#[cfg(unix)]
+pub struct SshChannelReader {
+    rx: std::sync::mpsc::Receiver<Option<Vec<u8>>>,
+    pending: Vec<u8>,
+    pos: usize,
+}
+
+#[cfg(unix)]
+impl Read for SshChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         loop {
-            match local_in.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if chan_tx_a
-                        .send(ChannelEgress::Data(buf[..n].to_vec()))
-                        .is_err()
-                    {
-                        break;
-                    }
+            if self.pos < self.pending.len() {
+                let n = (self.pending.len() - self.pos).min(out.len());
+                out[..n].copy_from_slice(&self.pending[self.pos..self.pos + n]);
+                self.pos += n;
+                return Ok(n);
+            }
+            match self.rx.recv() {
+                // `None` (graceful EOF) or a dropped sender both end the stream.
+                Ok(Some(chunk)) => {
+                    self.pending = chunk;
+                    self.pos = 0;
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Ok(None) | Err(_) => return Ok(0),
             }
         }
-        let _ = chan_tx_a.send(ChannelEgress::Eof);
-    });
+    }
+}
 
-    // channel -> local
-    std::thread::spawn(move || {
-        while let Ok(Some(chunk)) = chan_rx.recv() {
-            if local_out.write_all(&chunk).is_err() {
-                break;
-            }
-        }
-        let _ = chan_tx.send(ChannelEgress::Close);
-        let _ = local_out.shutdown(std::net::Shutdown::Both);
-    });
+/// Blocking write half of an SSH channel (client -> server bytes).
+#[cfg(unix)]
+pub struct SshChannelWriter {
+    tx: std::sync::mpsc::SyncSender<puressh::stream::ChannelEgress>,
+}
+
+#[cfg(unix)]
+impl Write for SshChannelWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.tx
+            .send(puressh::stream::ChannelEgress::Data(data.to_vec()))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ssh channel closed"))?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SshChannelWriter {
+    fn drop(&mut self) {
+        use puressh::stream::ChannelEgress;
+        let _ = self.tx.send(ChannelEgress::Eof);
+        let _ = self.tx.send(ChannelEgress::Close);
+    }
 }
