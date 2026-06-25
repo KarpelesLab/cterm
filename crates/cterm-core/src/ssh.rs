@@ -488,23 +488,30 @@ fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
         }
     }
 
-    // Identity files. When none are configured, fall back to the standard
-    // OpenSSH defaults (`~/.ssh/id_*`) that exist on disk. This matters for
-    // GUI launches, which don't inherit `SSH_AUTH_SOCK`, so the agent branch
-    // above finds nothing and key auth would otherwise be impossible.
-    if config.identity_files.is_empty() {
-        for path in default_identity_files() {
-            match load_identity(&path, config.passphrase_prompt.as_ref()) {
-                Some(cred) => creds.push(cred),
-                None => log::warn!("ssh: skipping default identity file {}", path.display()),
-            }
-        }
+    // Identity files. Offer each key's public half (read from its `.pub`) and
+    // defer reading/decrypting the private key until the server selects it via
+    // the publickey probe. This way an encrypted key such as `id_rsa` is never
+    // decrypted — and never prompts for a passphrase — when an earlier key like
+    // `id_ed25519` already authenticates. When none are configured, fall back
+    // to the standard OpenSSH defaults (`~/.ssh/id_*`); this matters for GUI
+    // launches, which don't inherit `SSH_AUTH_SOCK`.
+    let identity_files = if config.identity_files.is_empty() {
+        default_identity_files()
     } else {
-        for path in &config.identity_files {
-            match load_identity(path, config.passphrase_prompt.as_ref()) {
-                Some(cred) => creds.push(cred),
-                None => log::warn!("ssh: skipping identity file {}", path.display()),
+        config.identity_files.clone()
+    };
+    for path in identity_files {
+        match identity_offer(&path) {
+            Some((public_blob, algorithm)) => {
+                creds.push(ClientCredential::PublicKey(Box::new(LazyIdentity {
+                    path,
+                    public_blob,
+                    algorithm,
+                    passphrase_prompt: config.passphrase_prompt.clone(),
+                    signer: Mutex::new(None),
+                })));
             }
+            None => log::warn!("ssh: no usable public key for identity {}", path.display()),
         }
     }
 
@@ -526,25 +533,97 @@ fn build_credentials(config: &SshConfig) -> Vec<ClientCredential> {
 
 /// Load an identity file into a public-key credential, prompting for a
 /// passphrase if the key is encrypted and a prompt is available.
-fn load_identity(
-    path: &PathBuf,
-    passphrase: Option<&PassphrasePrompt>,
-) -> Option<ClientCredential> {
-    let pem = std::fs::read_to_string(path).ok()?;
+/// A public-key credential whose private key is read and decrypted only when
+/// the server selects it (puressh signs only after a successful publickey
+/// probe). The public half offered during the probe comes from the `.pub` file
+/// or an unencrypted private key, so an encrypted identity such as `id_rsa` is
+/// never decrypted — and never prompts for a passphrase — unless the server
+/// actually asks us to sign with it.
+struct LazyIdentity {
+    /// Private key file path, read lazily in `sign`.
+    path: PathBuf,
+    /// SSH wire-format public key, used for the offer/probe.
+    public_blob: Vec<u8>,
+    /// Signature algorithm advertised for this key.
+    algorithm: &'static str,
+    /// Passphrase prompt for an encrypted private key.
+    passphrase_prompt: Option<PassphrasePrompt>,
+    /// Decrypted signer, loaded (and prompted for) at most once.
+    signer: Mutex<Option<Box<dyn puressh::hostkey::HostKey + Send>>>,
+}
 
-    // Try without a passphrase first.
-    if let Ok(key) = puressh::key::PrivateKey::parse_openssh_pem(&pem, None) {
-        if let Ok(hk) = key.into_host_key() {
-            return Some(ClientCredential::PublicKey(hk));
+impl LazyIdentity {
+    fn load_signer(
+        &self,
+    ) -> Result<Box<dyn puressh::hostkey::HostKey + Send>, puressh::error::Error> {
+        let pem = std::fs::read_to_string(&self.path).map_err(puressh::error::Error::Io)?;
+        // Unencrypted keys load without a passphrase.
+        if let Ok(key) = puressh::key::PrivateKey::parse_openssh_pem(&pem, None) {
+            return key.into_host_key();
         }
+        // Encrypted: prompt for the passphrase, only now that it's needed.
+        let prompt = self
+            .passphrase_prompt
+            .as_ref()
+            .ok_or(puressh::error::Error::Crypto(
+                "encrypted identity, no passphrase prompt",
+            ))?;
+        let phrase =
+            prompt(&self.path.to_string_lossy()).ok_or(puressh::error::Error::AuthFailed)?;
+        let key = puressh::key::PrivateKey::parse_openssh_pem(&pem, Some(phrase.as_bytes()))
+            .map_err(|_| puressh::error::Error::Crypto("failed to decrypt identity"))?;
+        key.into_host_key()
+    }
+}
+
+impl puressh::hostkey::HostKey for LazyIdentity {
+    fn algorithm(&self) -> &'static str {
+        self.algorithm
     }
 
-    // Encrypted key: prompt for the passphrase if we can.
-    let prompt = passphrase?;
-    let phrase = prompt(&path.to_string_lossy())?;
-    let key = puressh::key::PrivateKey::parse_openssh_pem(&pem, Some(phrase.as_bytes())).ok()?;
-    let hk = key.into_host_key().ok()?;
-    Some(ClientCredential::PublicKey(hk))
+    fn public_blob(&self) -> Vec<u8> {
+        self.public_blob.clone()
+    }
+
+    fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, puressh::error::Error> {
+        let mut guard = self
+            .signer
+            .lock()
+            .map_err(|_| puressh::error::Error::Protocol("ssh identity mutex poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(self.load_signer()?);
+        }
+        guard.as_ref().expect("signer loaded above").sign(msg)
+    }
+}
+
+/// Read the public half of an identity for the userauth probe without touching
+/// (or decrypting) the private key. Prefers the sibling `<path>.pub` file and
+/// falls back to deriving it from an unencrypted private key.
+fn identity_offer(path: &std::path::Path) -> Option<(Vec<u8>, &'static str)> {
+    // Prefer the `.pub` file — it never requires the private key or passphrase.
+    let mut pub_path = path.as_os_str().to_os_string();
+    pub_path.push(".pub");
+    if let Ok(line) = std::fs::read_to_string(PathBuf::from(pub_path)) {
+        if let Ok(pk) = puressh::key::PublicKey::parse_authorized_keys_line(line.trim()) {
+            return Some((pk.wire_blob(), advertised_algorithm(&pk)));
+        }
+    }
+    // Fall back: derive the public key from an unencrypted private key (no prompt).
+    let pem = std::fs::read_to_string(path).ok()?;
+    let key = puressh::key::PrivateKey::parse_openssh_pem(&pem, None).ok()?;
+    let pk = key.public_key();
+    Some((pk.wire_blob(), advertised_algorithm(&pk)))
+}
+
+/// The signature algorithm to advertise for a public key. RSA keys are offered
+/// as `rsa-sha2-512` to match the signer built by `PrivateKey::into_host_key`
+/// (and because servers reject the legacy SHA-1 `ssh-rsa`).
+fn advertised_algorithm(pk: &puressh::key::PublicKey) -> &'static str {
+    match pk.algorithm() {
+        "ssh-rsa" => "rsa-sha2-512",
+        other => other,
+    }
 }
 
 /// Best-effort local username.
