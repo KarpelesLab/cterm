@@ -559,11 +559,24 @@ impl LazyIdentity {
         &self,
     ) -> Result<Box<dyn puressh::hostkey::HostKey + Send>, puressh::error::Error> {
         let pem = std::fs::read_to_string(&self.path).map_err(puressh::error::Error::Io)?;
-        // Unencrypted keys load without a passphrase.
-        if let Ok(key) = puressh::key::PrivateKey::parse_openssh_pem(&pem, None) {
+        // Unencrypted keys load without a passphrase. `parse_pem` auto-detects
+        // the container from the PEM label, so a traditional `-----BEGIN RSA
+        // PRIVATE KEY-----` (PKCS#1) key — or SEC1 / PKCS#8 — parses here just
+        // like the modern OpenSSH format, and never triggers a passphrase
+        // prompt. (`parse_openssh_pem` handles *only* the OpenSSH container and
+        // would fail on these, which previously looked like "encrypted".)
+        if let Ok(key) = puressh::key::PrivateKey::parse_pem(&pem, None) {
             return key.into_host_key();
         }
-        // Encrypted: prompt for the passphrase, only now that it's needed.
+        // A no-passphrase parse failure only means "encrypted" for the OpenSSH
+        // container — the one encryptable format puressh can actually decrypt.
+        // For anything else the failure is terminal (unsupported/corrupt, or
+        // legacy DEK-Info / encrypted-PKCS#8 we can't decrypt anyway), so don't
+        // pop a useless passphrase prompt.
+        if !pem.contains("OPENSSH PRIVATE KEY") {
+            return Err(puressh::error::Error::Crypto("unsupported identity format"));
+        }
+        // Encrypted OpenSSH key: prompt for the passphrase, only now that it's needed.
         let prompt = self
             .passphrase_prompt
             .as_ref()
@@ -572,7 +585,7 @@ impl LazyIdentity {
             ))?;
         let phrase =
             prompt(&self.path.to_string_lossy()).ok_or(puressh::error::Error::AuthFailed)?;
-        let key = puressh::key::PrivateKey::parse_openssh_pem(&pem, Some(phrase.as_bytes()))
+        let key = puressh::key::PrivateKey::parse_pem(&pem, Some(phrase.as_bytes()))
             .map_err(|_| puressh::error::Error::Crypto("failed to decrypt identity"))?;
         key.into_host_key()
     }
@@ -611,9 +624,12 @@ fn identity_offer(path: &std::path::Path) -> Option<(Vec<u8>, &'static str)> {
             return Some((pk.wire_blob(), advertised_algorithm(&pk)));
         }
     }
-    // Fall back: derive the public key from an unencrypted private key (no prompt).
+    // Fall back: derive the public key from an unencrypted private key (no
+    // prompt). `parse_pem` covers every container (OpenSSH, PKCS#1, SEC1,
+    // PKCS#8), so a traditional RSA key without a sibling `.pub` is still
+    // offered rather than silently skipped.
     let pem = std::fs::read_to_string(path).ok()?;
-    let key = puressh::key::PrivateKey::parse_openssh_pem(&pem, None).ok()?;
+    let key = puressh::key::PrivateKey::parse_pem(&pem, None).ok()?;
     let pk = key.public_key();
     Some((pk.wire_blob(), advertised_algorithm(&pk)))
 }
