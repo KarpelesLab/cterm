@@ -799,12 +799,21 @@ fn default_known_hosts_path() -> Option<PathBuf> {
 /// Standard OpenSSH default identity files, in preference order, returned only
 /// if they exist on disk. Used when no identity files are explicitly
 /// configured, mirroring OpenSSH trying `~/.ssh/id_*` automatically.
+///
+/// `id_xmss` is included because OpenSSH auto-loads it too — and in practice it
+/// is often a conventional RSA/Ed25519 key parked under that name so it gets
+/// picked up without an explicit `IdentityFile` (cterm does not read
+/// `~/.ssh/config`). The FIDO `id_ed25519_sk` / `id_ecdsa_sk` variants are
+/// deliberately *excluded*: puressh cannot produce hardware-token signatures,
+/// and a failed `sign()` aborts the whole auth exchange (it does not fall
+/// through to the next method), so offering one we can't sign would be worse
+/// than not offering it at all.
 fn default_identity_files() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
         return Vec::new();
     };
     let ssh_dir = PathBuf::from(home).join(".ssh");
-    ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"]
+    ["id_ed25519", "id_ecdsa", "id_rsa", "id_xmss", "id_dsa"]
         .iter()
         .map(|name| ssh_dir.join(name))
         .filter(|p| p.is_file())
