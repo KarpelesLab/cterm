@@ -695,18 +695,31 @@ define_class!(
             let alert = objc2_app_kit::NSAlert::new(mtm);
             alert.setMessageText(&NSString::from_str("SSH Remote Terminal"));
             alert.setInformativeText(&NSString::from_str(
-                "Enter host (e.g. user@hostname or user@hostname:port):",
+                "Enter host (e.g. user@hostname:port). Chain jump hosts with '>':\nbastion:2222>10.0.0.5",
             ));
             alert.addButtonWithTitle(&NSString::from_str("Connect"));
             alert.addButtonWithTitle(&NSString::from_str("Cancel"));
 
+            // Combo box: editable like a text field, with previous connection
+            // strings in the dropdown. Pre-filled with the most recent entry.
+            let history = cterm_app::ssh_history::load();
             let input = unsafe {
-                let field = objc2_app_kit::NSTextField::new(mtm);
+                let field = objc2_app_kit::NSComboBox::new(mtm);
                 field.setFrame(objc2_foundation::NSRect::new(
                     objc2_foundation::NSPoint::new(0.0, 0.0),
-                    objc2_foundation::NSSize::new(300.0, 24.0),
+                    objc2_foundation::NSSize::new(300.0, 26.0),
                 ));
-                field.setPlaceholderString(Some(&NSString::from_str("user@hostname:port")));
+                field.setPlaceholderString(Some(&NSString::from_str(
+                    "user@hostname:port or hostA>hostB",
+                )));
+                field.setUsesDataSource(false);
+                field.setCompletes(true);
+                for entry in &history {
+                    field.addItemWithObjectValue(&NSString::from_str(entry));
+                }
+                if let Some(last) = history.first() {
+                    field.setStringValue(&NSString::from_str(last));
+                }
                 alert.setAccessoryView(Some(&field));
                 field
             };
@@ -721,6 +734,7 @@ define_class!(
                 return;
             }
 
+            cterm_app::ssh_history::add(&host);
             log::info!("SSH connect to: {}", host);
 
             let app = NSApplication::sharedApplication(mtm);

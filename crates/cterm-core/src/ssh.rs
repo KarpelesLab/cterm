@@ -95,7 +95,11 @@ pub struct LocalForward {
 /// attempted (authentication then relies on the agent and unencrypted keys).
 #[derive(Clone, Default)]
 pub struct SshConfig {
-    /// Remote host to connect to.
+    /// Remote host to connect to. May be a `>`-separated chain of
+    /// `[user@]host[:port]` segments (e.g. `bastion:2222>10.0.0.5`): each
+    /// segment before the last is an intermediate hop reached by tunneling a
+    /// `direct-tcpip` channel through the previous one, and the last segment
+    /// is the actual target.
     pub host: String,
     /// Remote port (defaults handled by the caller; 22 if unset).
     pub port: u16,
@@ -111,8 +115,8 @@ pub struct SshConfig {
     /// Local port forwards (`-L`).
     pub local_forwards: Vec<LocalForward>,
 
-    /// ProxyJump-style jump host (`user@host[:port]`). Not yet supported by the
-    /// puressh shell model; currently rejected if set.
+    /// ProxyJump-style jump hosts (`user@host[:port]`, comma-separated).
+    /// These are prepended to any `>`-chain hops embedded in [`Self::host`].
     pub jump_host: Option<String>,
     /// Forward the local SSH agent (`-A`). Requires puressh serve-loop support
     /// not available alongside the multichannel shell; not yet wired.
@@ -367,47 +371,110 @@ fn spawn_tcp_channel_splice(
     });
 }
 
-/// Connect to the host, verify the host key, and authenticate, returning the
-/// authenticated puressh [`Client`]. Shared by the interactive shell
-/// ([`SshPty`]) and the gRPC tunnel ([`SshTunnel`]).
-fn connect_and_authenticate(config: &SshConfig) -> Result<Client, PtyError> {
-    if config.jump_host.is_some() {
+/// One `[user@]host[:port]` element of an SSH connection chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChainHop {
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+}
+
+/// Parse one `[user@]host[:port]` chain segment. IPv6 literals with a port
+/// must be bracketed (`[::1]:2222`); a bare IPv6 address is accepted as-is.
+/// A trailing `:suffix` that does not parse as a port is treated as part of
+/// the host, matching the lenient parsing used elsewhere in cterm.
+fn parse_chain_hop(segment: &str) -> Result<ChainHop, PtyError> {
+    let segment = segment.trim();
+    if segment.is_empty() {
         return Err(PtyError::Spawn(
-            "SSH jump hosts are not supported yet".to_string(),
+            "SSH host chain contains an empty segment".to_string(),
         ));
     }
-
-    let port = if config.port == 0 { 22 } else { config.port };
-
-    // Host-key policy: strict known_hosts, optionally prompting via the UI.
-    let known_hosts_path = default_known_hosts_path();
-    let store = match &known_hosts_path {
-        Some(path) => Arc::new(Mutex::new(
-            KnownHosts::load(path).unwrap_or_else(|_| KnownHosts::new()),
-        )),
-        None => Arc::new(Mutex::new(KnownHosts::new())),
+    // Split on the *last* `@` (usernames may themselves contain `@`).
+    let (user, rest) = match segment.rsplit_once('@') {
+        Some((u, r)) if !u.is_empty() => (Some(u.to_string()), r),
+        Some((_, r)) => (None, r),
+        None => (None, segment),
     };
-    let mut policy = KnownHostsPolicy::strict(Arc::clone(&store));
+    let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
+        let (host, after) = bracketed
+            .split_once(']')
+            .ok_or_else(|| PtyError::Spawn(format!("SSH host {rest:?}: missing closing ']'")))?;
+        let port =
+            match after.strip_prefix(':') {
+                Some(p) => Some(p.parse::<u16>().map_err(|_| {
+                    PtyError::Spawn(format!("SSH host {rest:?}: invalid port {p:?}"))
+                })?),
+                None if after.is_empty() => None,
+                None => {
+                    return Err(PtyError::Spawn(format!(
+                        "SSH host {rest:?}: unexpected text after ']'"
+                    )))
+                }
+            };
+        (host.to_string(), port)
+    } else {
+        match rest.rsplit_once(':') {
+            // Only treat the suffix as a port when it parses and the remainder
+            // is not itself a bare IPv6 address (which still contains ':').
+            Some((h, p)) if !h.contains(':') => match p.parse::<u16>() {
+                Ok(port) => (h.to_string(), Some(port)),
+                Err(_) => (rest.to_string(), None),
+            },
+            _ => (rest.to_string(), None),
+        }
+    };
+    if host.is_empty() {
+        return Err(PtyError::Spawn(format!(
+            "SSH chain segment {segment:?} has no host"
+        )));
+    }
+    Ok(ChainHop { user, host, port })
+}
+
+/// Split an [`SshConfig`] into intermediate hops and the final target:
+/// `jump_host` entries (comma-separated, ProxyJump-style) come first, then any
+/// `>`-separated hops embedded in `config.host`; the last `>` segment is the
+/// target.
+fn parse_chain(config: &SshConfig) -> Result<(Vec<ChainHop>, ChainHop), PtyError> {
+    let mut hops = Vec::new();
+    if let Some(jump) = config.jump_host.as_deref() {
+        for part in jump.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            hops.push(parse_chain_hop(part)?);
+        }
+    }
+    let mut segments = config.host.split('>');
+    let mut target = parse_chain_hop(segments.next().unwrap_or(""))?;
+    for segment in segments {
+        hops.push(std::mem::replace(&mut target, parse_chain_hop(segment)?));
+    }
+    Ok((hops, target))
+}
+
+/// Build a per-connection puressh [`Config`] carrying the strict known-hosts
+/// policy (and UI prompt hooks). Each hop of a chain gets its own `Config`
+/// (the value is consumed by `connect`), all sharing one loaded store.
+fn hop_client_config(
+    config: &SshConfig,
+    store: &Arc<Mutex<KnownHosts>>,
+    known_hosts_path: &Option<PathBuf>,
+) -> Config {
+    let mut policy = KnownHostsPolicy::strict(Arc::clone(store));
     policy.save_path = known_hosts_path.clone();
     if let Some(prompt) = config.host_key_prompt.clone() {
         policy.on_unknown = TofuAction::Prompt(make_tofu(prompt.clone(), false));
         policy.on_mismatch = TofuAction::Prompt(make_tofu(prompt, true));
     }
-    let cfg = Config {
+    Config {
         host_key_policy: HostKeyPolicy::KnownHosts(policy),
         timeout: None,
         algorithms: Default::default(),
-    };
+    }
+}
 
-    let mut client = Client::connect_to_host(&config.host, port, cfg)
-        .map_err(|e| PtyError::Spawn(format!("SSH connect to {}: {e}", config.host)))?;
-
-    let user = config
-        .username
-        .clone()
-        .or_else(default_username)
-        .unwrap_or_else(|| "root".to_string());
-
+/// Authenticate `client` as `user` using the credential set derived from
+/// `config` (agent, identity files, interactive prompts).
+fn authenticate_hop(client: &mut Client, user: &str, config: &SshConfig) -> Result<(), PtyError> {
     let credentials = build_credentials(config);
     if credentials.is_empty() {
         return Err(PtyError::Spawn(
@@ -415,9 +482,80 @@ fn connect_and_authenticate(config: &SshConfig) -> Result<Client, PtyError> {
         ));
     }
     client
-        .authenticate(&user, credentials)
-        .map_err(|e| PtyError::Spawn(format!("SSH authentication failed: {e}")))?;
+        .authenticate(user, credentials)
+        .map_err(|e| PtyError::Spawn(format!("SSH authentication failed for {user}: {e}")))
+}
 
+/// Connect to `host:port` — directly over TCP for the first hop, or through a
+/// `direct-tcpip` channel tunneled via the previous hop. The channel stream
+/// keeps the previous hop's connection alive (it holds the shared client), so
+/// the returned [`Client`] transitively owns the whole chain beneath it.
+fn connect_hop(
+    via: Option<&SharedClient>,
+    host: &str,
+    port: u16,
+    cfg: Config,
+) -> Result<Client, PtyError> {
+    match via {
+        None => Client::connect_to_host(host, port, cfg)
+            .map_err(|e| PtyError::Spawn(format!("SSH connect to {host}:{port}: {e}"))),
+        Some(prev) => {
+            let channel = prev
+                .open_direct_tcpip(host, port, "127.0.0.1", 0)
+                .map_err(|e| {
+                    PtyError::Spawn(format!("SSH tunnel to {host}:{port} via jump host: {e}"))
+                })?;
+            Client::connect_via(Box::new(channel), host, port, cfg).map_err(|e| {
+                PtyError::Spawn(format!("SSH connect to {host}:{port} via jump host: {e}"))
+            })
+        }
+    }
+}
+
+/// Connect to the host (walking any jump-host chain), verify host keys, and
+/// authenticate, returning the authenticated puressh [`Client`] for the final
+/// target. Shared by the interactive shell ([`SshPty`]) and the gRPC tunnel
+/// ([`SshTunnel`]).
+fn connect_and_authenticate(config: &SshConfig) -> Result<Client, PtyError> {
+    let (hops, target) = parse_chain(config)?;
+
+    // Host-key policy: strict known_hosts (shared store across all hops, each
+    // checked under its own host name), optionally prompting via the UI.
+    let known_hosts_path = default_known_hosts_path();
+    let store = match &known_hosts_path {
+        Some(path) => Arc::new(Mutex::new(
+            KnownHosts::load(path).unwrap_or_else(|_| KnownHosts::new()),
+        )),
+        None => Arc::new(Mutex::new(KnownHosts::new())),
+    };
+
+    // Login-name fallback for segments without an explicit `user@`.
+    let fallback_user = config
+        .username
+        .clone()
+        .or_else(default_username)
+        .unwrap_or_else(|| "root".to_string());
+
+    // Walk the intermediate hops, each tunneled through the previous one.
+    let mut via: Option<SharedClient> = None;
+    for hop in &hops {
+        let port = hop.port.unwrap_or(22);
+        let cfg = hop_client_config(config, &store, &known_hosts_path);
+        let mut client = connect_hop(via.as_ref(), &hop.host, port, cfg)?;
+        let user = hop.user.as_deref().unwrap_or(&fallback_user);
+        authenticate_hop(&mut client, user, config)?;
+        log::info!("ssh: jump hop {}:{port} authenticated", hop.host);
+        via = Some(SharedClient::from(client));
+    }
+
+    // Final target. An explicit port in the segment wins over `config.port`.
+    let port = target
+        .port
+        .unwrap_or(if config.port == 0 { 22 } else { config.port });
+    let cfg = hop_client_config(config, &store, &known_hosts_path);
+    let mut client = connect_hop(via.as_ref(), &target.host, port, cfg)?;
+    let user = target.user.as_deref().unwrap_or(&fallback_user);
+    authenticate_hop(&mut client, user, config)?;
     Ok(client)
 }
 
@@ -849,5 +987,134 @@ impl Drop for SshChannelWriter {
         use puressh::stream::ChannelEgress;
         let _ = self.tx.send(ChannelEgress::Eof);
         let _ = self.tx.send(ChannelEgress::Close);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hop(user: Option<&str>, host: &str, port: Option<u16>) -> ChainHop {
+        ChainHop {
+            user: user.map(str::to_string),
+            host: host.to_string(),
+            port,
+        }
+    }
+
+    #[test]
+    fn parse_hop_plain() {
+        assert_eq!(
+            parse_chain_hop("example.com").unwrap(),
+            hop(None, "example.com", None)
+        );
+        assert_eq!(
+            parse_chain_hop(" example.com ").unwrap(),
+            hop(None, "example.com", None)
+        );
+    }
+
+    #[test]
+    fn parse_hop_user_and_port() {
+        assert_eq!(
+            parse_chain_hop("root@10.0.0.1:2222").unwrap(),
+            hop(Some("root"), "10.0.0.1", Some(2222))
+        );
+        assert_eq!(
+            parse_chain_hop("a@b@host").unwrap(),
+            hop(Some("a@b"), "host", None)
+        );
+    }
+
+    #[test]
+    fn parse_hop_non_numeric_suffix_is_host() {
+        // Lenient: `:suffix` that isn't a u16 stays part of the host.
+        assert_eq!(
+            parse_chain_hop("host:abc").unwrap(),
+            hop(None, "host:abc", None)
+        );
+    }
+
+    #[test]
+    fn parse_hop_ipv6() {
+        assert_eq!(parse_chain_hop("::1").unwrap(), hop(None, "::1", None));
+        assert_eq!(
+            parse_chain_hop("user@[fe80::1]:2200").unwrap(),
+            hop(Some("user"), "fe80::1", Some(2200))
+        );
+        assert_eq!(parse_chain_hop("[::1]").unwrap(), hop(None, "::1", None));
+        assert!(parse_chain_hop("[::1").is_err());
+        assert!(parse_chain_hop("[::1]:notaport").is_err());
+    }
+
+    #[test]
+    fn parse_hop_empty_is_error() {
+        assert!(parse_chain_hop("").is_err());
+        assert!(parse_chain_hop("  ").is_err());
+        assert!(parse_chain_hop("user@").is_err());
+    }
+
+    #[test]
+    fn parse_chain_single_host_no_hops() {
+        let config = SshConfig {
+            host: "example.com".to_string(),
+            ..Default::default()
+        };
+        let (hops, target) = parse_chain(&config).unwrap();
+        assert!(hops.is_empty());
+        assert_eq!(target, hop(None, "example.com", None));
+    }
+
+    #[test]
+    fn parse_chain_with_intermediate_hosts() {
+        let config = SshConfig {
+            host: "219.117.244.105:8192>192.168.88.24".to_string(),
+            ..Default::default()
+        };
+        let (hops, target) = parse_chain(&config).unwrap();
+        assert_eq!(hops, vec![hop(None, "219.117.244.105", Some(8192))]);
+        assert_eq!(target, hop(None, "192.168.88.24", None));
+    }
+
+    #[test]
+    fn parse_chain_three_hosts_with_users() {
+        let config = SshConfig {
+            host: "u1@a:2201 > u2@b > c:2203".to_string(),
+            ..Default::default()
+        };
+        let (hops, target) = parse_chain(&config).unwrap();
+        assert_eq!(
+            hops,
+            vec![hop(Some("u1"), "a", Some(2201)), hop(Some("u2"), "b", None)]
+        );
+        assert_eq!(target, hop(None, "c", Some(2203)));
+    }
+
+    #[test]
+    fn parse_chain_jump_host_hops_come_first() {
+        let config = SshConfig {
+            host: "mid>target".to_string(),
+            jump_host: Some("j1, j2:2222".to_string()),
+            ..Default::default()
+        };
+        let (hops, target) = parse_chain(&config).unwrap();
+        assert_eq!(
+            hops,
+            vec![
+                hop(None, "j1", None),
+                hop(None, "j2", Some(2222)),
+                hop(None, "mid", None)
+            ]
+        );
+        assert_eq!(target, hop(None, "target", None));
+    }
+
+    #[test]
+    fn parse_chain_empty_segment_is_error() {
+        let config = SshConfig {
+            host: "a>>b".to_string(),
+            ..Default::default()
+        };
+        assert!(parse_chain(&config).is_err());
     }
 }

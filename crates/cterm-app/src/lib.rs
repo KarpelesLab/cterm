@@ -15,6 +15,7 @@ pub mod log_capture;
 pub mod quick_open;
 pub mod session;
 pub mod shortcuts;
+pub mod ssh_history;
 pub mod upgrade;
 
 pub use config::{

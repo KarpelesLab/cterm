@@ -255,11 +255,18 @@ impl DaemonConnection {
         // puressh compression negotiation is not wired through this path yet.
         let _ = compress;
 
-        // Parse optional port and split user@host.
-        let (ssh_dest, port) = parse_ssh_host(host);
-        let (username, hostname) = match ssh_dest.split_once('@') {
-            Some((u, h)) => (Some(u.to_string()), h.to_string()),
-            None => (None, ssh_dest.clone()),
+        // Parse optional port and split user@host. A `>`-separated jump chain
+        // (`bastion:2222>10.0.0.5`) is passed through whole: cterm-core parses
+        // per-segment `[user@]host[:port]` itself, and splitting on the first
+        // `@` here would corrupt chains like `a>user@b`.
+        let (username, hostname, port) = if host.contains('>') {
+            (None, host.to_string(), None)
+        } else {
+            let (ssh_dest, port) = parse_ssh_host(host);
+            match ssh_dest.split_once('@') {
+                Some((u, h)) => (Some(u.to_string()), h.to_string(), port),
+                None => (None, ssh_dest, port),
+            }
         };
 
         // The setup script finds/installs ctermd, starts the daemon, and prints
