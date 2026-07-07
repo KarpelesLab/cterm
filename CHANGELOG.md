@@ -9,6 +9,12 @@ is omitted for readability.
 
 ## [Unreleased]
 
+### Added
+- Mouse-event forwarding parity on macOS: right/middle-button reports, drag
+  motion, and alternate-scroll (DECSET 1007) so pagers (less/man/vim) scroll via
+  the wheel even without mouse tracking. Holding Shift bypasses reporting so
+  selection, scrollback, and context menus keep working under a tracking app.
+
 ## [0.0.18] - 2026-07-07
 
 ### Added
