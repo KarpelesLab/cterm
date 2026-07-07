@@ -2059,9 +2059,9 @@ dependencies = [
 
 [[package]]
 name = "puressh"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e20de0c3a4b1b7ac6a2a411c055d400c844da6d9e8ed907cf4e7fce0fd298b2"
+checksum = "49cf84e011584b76aa4a1a053e897258fc6bf99a7d1780c8285ca3f1632de809"
 dependencies = [
  "compcol",
  "libc",
