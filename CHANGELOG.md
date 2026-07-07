@@ -9,6 +9,33 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-07-07
+
+### Added
+- Native SSH via puressh, replacing the system `ssh` binary; the self-updater
+  now uses rsurl instead of reqwest (MSRV 1.88).
+- Interactive SSH auth for the remote tunnel: keyboard-interactive, plus native
+  host-key / password / passphrase prompt dialogs on macOS, GTK, and Windows.
+- Run gRPC directly over the SSH channel — no locally forwarded socket file.
+- Jump-host chains via a `>` separator (`bastion:2222>10.0.0.5`), plus SSH
+  connection history in the connect dialog.
+- Default `~/.ssh/id_*` identity files are loaded automatically (including
+  PKCS#1/SEC1/PKCS#8 and `id_xmss`); identities are offered lazily via their
+  `.pub` and only decrypted on demand.
+- zlib compression (`zlib@openssh.com`) on the gRPC daemon tunnel, cutting the
+  transfer for screen snapshots and scrollback.
+- Mouse-event forwarding and alternate-scroll in the GTK and Windows terminals.
+
+### Fixed
+- Reconnecting a window with many tabs no longer stalls: sessions attach
+  concurrently, RPCs no longer serialize on the connection mutex, and each tab
+  fetches its screen snapshot only once (no redundant scrollback transfer or
+  placeholder resize).
+- Detect a stale `ctermd` socket by connecting rather than trusting the PID
+  file, and prevent a daemon deadlock from hanging cterm startup.
+- Cross-platform SSH build fixes (gate ssh-agent to Unix; Windows
+  `EM_SETPASSWORDCHAR` cast).
+
 ## [0.0.17] - 2026-06-22
 
 ### Added
