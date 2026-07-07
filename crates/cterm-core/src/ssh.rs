@@ -124,6 +124,10 @@ pub struct SshConfig {
     /// Enable X11 forwarding (`-X`). Requires puressh serve-loop support not
     /// available alongside the multichannel shell; not yet wired.
     pub x11_forward: bool,
+    /// Advertise `zlib@openssh.com` compression (`-C`). Negotiated only if the
+    /// server also supports it; falls back to `none` otherwise. Worthwhile for
+    /// the gRPC tunnel, where screen snapshots and scrollback compress well.
+    pub compress: bool,
 
     /// Prompt for accepting unknown/changed host keys.
     pub host_key_prompt: Option<HostKeyPrompt>,
@@ -468,7 +472,13 @@ fn hop_client_config(
     Config {
         host_key_policy: HostKeyPolicy::KnownHosts(policy),
         timeout: None,
-        algorithms: Default::default(),
+        algorithms: puressh::client::AlgoOverrides {
+            // `Some(true)` advertises `zlib@openssh.com` ahead of `none`; the
+            // server picks `none` if it lacks zlib, so this is always safe to
+            // offer. `None` (the default) advertises `none` only.
+            compression: config.compress.then_some(true),
+            ..Default::default()
+        },
     }
 }
 

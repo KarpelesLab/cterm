@@ -252,8 +252,6 @@ impl DaemonConnection {
         prompts: cterm_core::SshPrompts,
     ) -> Result<(Self, SshTunnelHandle)> {
         log::info!("Connecting to {} via SSH (native puressh)", host);
-        // puressh compression negotiation is not wired through this path yet.
-        let _ = compress;
 
         // Parse optional port and split user@host. A `>`-separated jump chain
         // (`bastion:2222>10.0.0.5`) is passed through whole: cterm-core parses
@@ -282,6 +280,7 @@ impl DaemonConnection {
             host: hostname,
             port: port.unwrap_or(22),
             username,
+            compress,
             host_key_prompt: prompts.host_key,
             password_prompt: prompts.password,
             passphrase_prompt: prompts.passphrase,

@@ -405,6 +405,9 @@ impl SshTabConfig {
             jump_host: self.jump_host.clone(),
             agent_forward: self.agent_forward,
             x11_forward: self.x11_forward,
+            // Interactive shell traffic is small and latency-sensitive; leave
+            // compression off here (the gRPC daemon tunnel enables it itself).
+            compress: false,
             host_key_prompt: None,
             password_prompt: None,
             passphrase_prompt: None,

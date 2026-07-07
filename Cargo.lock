@@ -2063,6 +2063,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e20de0c3a4b1b7ac6a2a411c055d400c844da6d9e8ed907cf4e7fce0fd298b2"
 dependencies = [
+ "compcol",
  "libc",
  "nix",
  "purecrypto",

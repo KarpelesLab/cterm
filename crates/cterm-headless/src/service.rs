@@ -98,6 +98,9 @@ impl TerminalService for TerminalServiceImpl {
                 jump_host: ssh.jump_host,
                 agent_forward: ssh.agent_forward,
                 x11_forward: ssh.x11_forward,
+                // Interactive shell PTY; compression is left off (small,
+                // latency-sensitive traffic).
+                compress: false,
                 host_key_prompt: None,
                 password_prompt: None,
                 passphrase_prompt: None,
