@@ -403,6 +403,7 @@ dependencies = [
  "directories",
  "env_logger",
  "flate2",
+ "futures",
  "libc",
  "log",
  "parking_lot",

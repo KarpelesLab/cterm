@@ -573,12 +573,11 @@ impl DaemonConnection {
 
     /// List all sessions on this daemon
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
-        let response = self
-            .client
-            .lock()
-            .await
-            .list_sessions(ListSessionsRequest {})
-            .await?;
+        // Clone the client out of the mutex so the RPC isn't held under the lock
+        // for its whole duration — otherwise concurrent RPCs (e.g. attaching many
+        // sessions at once during reconnect) would serialize behind each other.
+        let mut client = self.client.lock().await.clone();
+        let response = client.list_sessions(ListSessionsRequest {}).await?;
 
         Ok(response.into_inner().sessions)
     }
@@ -607,10 +606,12 @@ impl DaemonConnection {
         cols: u32,
         rows: u32,
     ) -> Result<(SessionHandle, Option<GetScreenResponse>)> {
-        let response = self
-            .client
-            .lock()
-            .await
+        // Clone the client so the RPC (which streams a full screen snapshot,
+        // scrollback included) doesn't hold the connection mutex for its whole
+        // duration. This lets `reconnect_all_sessions_on` attach every session
+        // concurrently over the multiplexed HTTP/2 channel instead of serially.
+        let mut client = self.client.lock().await.clone();
+        let response = client
             .attach_session(AttachSessionRequest {
                 session_id: session_id.to_string(),
                 cols,
@@ -627,6 +628,38 @@ impl DaemonConnection {
         );
 
         Ok((handle, resp.initial_screen))
+    }
+
+    /// Attach to a session without fetching a screen snapshot.
+    ///
+    /// Output-stream readers open their own connection purely to receive the
+    /// PTY stream; the screen state was already fetched and applied by the
+    /// reconnect that created the tab. Skipping the snapshot here avoids
+    /// re-transferring the full scrollback (up to 10k lines) a second time per
+    /// session. Passing `cols`/`rows` of 0 leaves the daemon-side size
+    /// unchanged — the UI sends a real resize once the view is laid out, so we
+    /// avoid a spurious reflow to a placeholder size.
+    pub async fn attach_session_no_snapshot(
+        &self,
+        session_id: &str,
+        cols: u32,
+        rows: u32,
+    ) -> Result<SessionHandle> {
+        let mut client = self.client.lock().await.clone();
+        client
+            .attach_session(AttachSessionRequest {
+                session_id: session_id.to_string(),
+                cols,
+                rows,
+                want_screen_snapshot: false,
+            })
+            .await?;
+
+        Ok(SessionHandle::new(
+            session_id.to_string(),
+            self.client.clone(),
+            self.info.clone(),
+        ))
     }
 
     /// Get daemon info

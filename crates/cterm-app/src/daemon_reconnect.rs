@@ -112,43 +112,42 @@ pub async fn reconnect_all_sessions_on(
     conn: &DaemonConnection,
 ) -> Result<Vec<ReconnectedSession>, ClientError> {
     let sessions = conn.list_sessions().await?;
-    let mut results = Vec::new();
 
-    for session_info in sessions {
-        if !session_info.running {
-            continue;
-        }
-        let title = session_info.title.clone();
-        let custom_title = session_info.custom_title.clone();
-        let tab_color = session_info.tab_color.clone();
-        let template_name = session_info.template_name.clone();
-        match conn
-            .attach_session(
-                &session_info.session_id,
-                session_info.cols,
-                session_info.rows,
-            )
-            .await
-        {
-            Ok((handle, screen)) => {
-                results.push(ReconnectedSession {
+    // Attach to every session concurrently. Each attach streams a full screen
+    // snapshot (scrollback included), so doing them serially made reconnecting a
+    // window with many tabs take a minute or more over an SSH tunnel. join_all
+    // preserves order, so tabs come back in their original order.
+    let attaches = sessions
+        .into_iter()
+        .filter(|s| s.running)
+        .map(|session_info| async move {
+            match conn
+                .attach_session(
+                    &session_info.session_id,
+                    session_info.cols,
+                    session_info.rows,
+                )
+                .await
+            {
+                Ok((handle, screen)) => Some(ReconnectedSession {
                     handle,
-                    title,
-                    custom_title,
-                    tab_color,
-                    template_name,
+                    title: session_info.title,
+                    custom_title: session_info.custom_title,
+                    tab_color: session_info.tab_color,
+                    template_name: session_info.template_name,
                     screen,
-                });
+                }),
+                Err(e) => {
+                    log::warn!(
+                        "Failed to reattach session {}: {}",
+                        session_info.session_id,
+                        e
+                    );
+                    None
+                }
             }
-            Err(e) => {
-                log::warn!(
-                    "Failed to reattach session {}: {}",
-                    session_info.session_id,
-                    e
-                );
-            }
-        }
-    }
+        });
 
-    Ok(results)
+    let results = futures::future::join_all(attaches).await;
+    Ok(results.into_iter().flatten().collect())
 }

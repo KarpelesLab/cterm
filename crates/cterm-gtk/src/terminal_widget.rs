@@ -1429,7 +1429,10 @@ impl TerminalWidget {
                         return;
                     }
                 };
-                let (session, _snapshot) = match conn.attach_session(&session_id, 80, 24).await {
+                // The tab already has its screen applied; this reader only needs
+                // the PTY stream. Skip the snapshot (avoids re-transferring full
+                // scrollback) and pass 0×0 to leave the daemon size unchanged.
+                let session = match conn.attach_session_no_snapshot(&session_id, 0, 0).await {
                     Ok(s) => s,
                     Err(e) => {
                         log::error!(

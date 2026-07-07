@@ -2453,7 +2453,13 @@ fn start_daemon_attach_thread(
                 }
             };
 
-            let (session, _snapshot) = match conn.attach_session(&session_id, cols, rows).await {
+            // The tab already has its screen applied; this reader only needs the
+            // PTY stream, so skip the snapshot to avoid re-transferring the full
+            // scrollback a second time per session.
+            let session = match conn
+                .attach_session_no_snapshot(&session_id, cols, rows)
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     log::error!("Failed to attach to session {}: {}", session_id, e);

@@ -1514,7 +1514,11 @@ impl TerminalView {
                     return;
                 }
             };
-            let (session, _snapshot) = match conn.attach_session(&session_id, 80, 24).await {
+            // The tab's screen was already fetched and applied when it was
+            // created; this reader only needs the PTY stream. Skip the snapshot
+            // (avoids re-transferring full scrollback) and pass 0×0 so the
+            // daemon isn't resized to a placeholder size before the real resize.
+            let session = match conn.attach_session_no_snapshot(&session_id, 0, 0).await {
                 Ok(s) => s,
                 Err(e) => {
                     log::error!(
