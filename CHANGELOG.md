@@ -9,11 +9,21 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-07-09
+
 ### Added
 - Mouse-event forwarding parity on macOS: right/middle-button reports, drag
   motion, and alternate-scroll (DECSET 1007) so pagers (less/man/vim) scroll via
   the wheel even without mouse tracking. Holding Shift bypasses reporting so
   selection, scrollback, and context menus keep working under a tracking app.
+
+### Fixed
+- SSH-tunneled sessions no longer drop at the ~1h mark: the mid-session rekey
+  fault (OpenSSH's default rekey interval), which surfaced as an opaque h2
+  "error reading a body from connection" cascade, is fixed by puressh 0.1.3.
+- The SSH tunnel's serve loop now logs its termination cause at `warn` (rekey
+  fault, keepalive timeout, decrypt/MAC error, peer EOF) instead of `debug`, so
+  the real reason for a mid-session disconnect is visible.
 
 ## [0.0.18] - 2026-07-07
 
