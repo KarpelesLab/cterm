@@ -883,8 +883,14 @@ impl SshTunnel {
         // Pump thread: drives the connection and services channel opens.
         let serve_stop = stop.clone();
         std::thread::spawn(move || {
-            if let Err(e) = client.serve(handlers) {
-                log::debug!("SSH tunnel serve loop ended: {e}");
+            // The error returned here is the *root* transport failure — a rekey
+            // fault, keepalive timeout, decrypt/MAC error, or peer EOF. It is
+            // what causes the downstream gRPC/h2 "transport error" cascade seen
+            // by the client, so log it at `warn` (not `debug`): without it the
+            // real cause of a mid-session disconnect is invisible.
+            match client.serve(handlers) {
+                Ok(()) => log::debug!("SSH tunnel serve loop stopped cleanly"),
+                Err(e) => log::warn!("SSH tunnel serve loop terminated: {e}"),
             }
             serve_stop.store(true, Ordering::Relaxed);
         });
