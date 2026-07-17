@@ -218,8 +218,17 @@ impl TabBar {
             // Position the popover at click location
             popover_clone
                 .set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            popover_clone.popup();
             gesture.set_state(gtk4::EventSequenceState::Claimed);
+            // Defer popup() to an idle callback so it runs after the current
+            // button-press event has finished being processed. Popping up the
+            // PopoverMenu synchronously here corrupts its active-state
+            // accounting (GTK warns "Broken accounting of active state"), which
+            // forces the user to move the pointer out and back before a menu
+            // item click registers.
+            let popover_idle = popover_clone.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                popover_idle.popup();
+            });
         });
         tab_widget.add_controller(gesture);
 
