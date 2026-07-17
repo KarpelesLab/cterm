@@ -270,14 +270,47 @@ where
     content.set_margin_start(12);
     content.set_margin_end(12);
 
-    let label = Label::new(Some("Host (e.g. user@hostname or user@hostname:port):"));
+    let label = Label::new(Some(
+        "Host (e.g. user@hostname:port). Chain jump hosts with '>': bastion:2222>10.0.0.5",
+    ));
     label.set_halign(Align::Start);
     content.append(&label);
 
-    let entry = gtk4::Entry::new();
-    entry.set_placeholder_text(Some("user@hostname:port"));
+    // Editable combo populated with previous connection strings (most recent
+    // first), mirroring the macOS NSComboBox. The inner entry gets an inline
+    // completion so typing a known host autofills the rest.
+    let history = cterm_app::ssh_history::load();
+    let combo = gtk4::ComboBoxText::with_entry();
+    for hist in &history {
+        combo.append_text(hist);
+    }
+    combo.set_hexpand(true);
+    content.append(&combo);
+
+    let entry = combo
+        .child()
+        .and_then(|c| c.downcast::<gtk4::Entry>().ok())
+        .expect("ComboBoxText::with_entry always has an Entry child");
+    entry.set_placeholder_text(Some("user@hostname:port or hostA>hostB"));
     entry.set_activates_default(true);
-    content.append(&entry);
+
+    // Inline autocompletion from the same history list.
+    let completion = gtk4::EntryCompletion::new();
+    let store = gtk4::ListStore::new(&[glib::types::Type::STRING]);
+    for hist in &history {
+        store.set(&store.append(), &[(0, hist)]);
+    }
+    completion.set_model(Some(&store));
+    completion.set_text_column(0);
+    completion.set_inline_completion(true);
+    completion.set_popup_completion(true);
+    entry.set_completion(Some(&completion));
+
+    // Pre-fill with the most recent entry.
+    if let Some(last) = history.first() {
+        entry.set_text(last);
+        entry.select_region(0, -1);
+    }
 
     let status_label = Label::new(None);
     status_label.set_halign(Align::Start);
@@ -297,6 +330,7 @@ where
             return;
         }
 
+        cterm_app::ssh_history::add(&host);
         status_label.set_text("Connecting...");
 
         let (tx, rx) = std::sync::mpsc::channel::<SshConnectResult>();
