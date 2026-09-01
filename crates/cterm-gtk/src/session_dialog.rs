@@ -6,8 +6,8 @@ use std::rc::Rc;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Dialog, Label, ListBox, ListBoxRow, Orientation, ResponseType,
-    ScrolledWindow, Window,
+    Align, Box as GtkBox, Button, ButtonsType, Dialog, DialogFlags, Label, ListBox, ListBoxRow,
+    MessageDialog, MessageType, Orientation, ResponseType, ScrolledWindow, Window,
 };
 
 /// Information about a daemon session for display
@@ -331,7 +331,11 @@ where
         }
 
         cterm_app::ssh_history::add(&host);
-        status_label.set_text("Connecting...");
+
+        // Close immediately — matches macOS, where the prompt dismisses as
+        // soon as Connect is clicked and the connection proceeds in the
+        // background (auth prompts appear as their own dialogs).
+        dialog.close();
 
         let (tx, rx) = std::sync::mpsc::channel::<SshConnectResult>();
         let host_bg = host.clone();
@@ -381,35 +385,24 @@ where
             let _ = tx.send(result);
         });
 
-        let dialog_weak = dialog.downgrade();
         let callback = Rc::clone(&callback);
+        let host_err = host.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             match rx.try_recv() {
                 Ok(result) => {
                     match result {
-                        Ok(sessions) => {
-                            callback(sessions);
-                            if let Some(dialog) = dialog_weak.upgrade() {
-                                dialog.close();
-                            }
-                        }
+                        Ok(sessions) => callback(sessions),
                         Err(e) => {
-                            if let Some(dialog) = dialog_weak.upgrade() {
-                                let content = dialog.content_area();
-                                let mut child = content.first_child();
-                                let mut last_label = None;
-                                while let Some(widget) = child {
-                                    if widget.downcast_ref::<Label>().is_some() {
-                                        last_label = Some(widget.clone());
-                                    }
-                                    child = widget.next_sibling();
-                                }
-                                if let Some(label) = last_label {
-                                    if let Some(label) = label.downcast_ref::<Label>() {
-                                        label.set_text(&format!("Connection failed: {}", e));
-                                    }
-                                }
-                            }
+                            log::error!("Failed to connect via SSH: {}", e);
+                            let err_dialog = MessageDialog::new(
+                                None::<&Window>,
+                                DialogFlags::MODAL,
+                                MessageType::Error,
+                                ButtonsType::Ok,
+                                &format!("Failed to connect to {}: {}", host_err, e),
+                            );
+                            err_dialog.connect_response(|d, _| d.close());
+                            err_dialog.present();
                         }
                     }
                     glib::ControlFlow::Break
