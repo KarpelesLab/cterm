@@ -23,6 +23,47 @@ use crate::quick_open::QuickOpenOverlay;
 use crate::tab_bar::TabBar;
 use crate::terminal_widget::{CellDimensions, TerminalWidget};
 
+/// Session ids this process created or attached itself. The daemon broadcasts a
+/// `SessionCreated` event for every new session — including ones we just made —
+/// so the daemon-event listener consults this set to avoid adding a duplicate
+/// tab for a session this process already owns. Sessions created by *other*
+/// cterm instances are absent here, so those get mirrored as new tabs.
+fn owned_sessions() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static OWNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    OWNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Record that this process owns (created/attached) the given session id.
+fn mark_owned_session(session_id: &str) {
+    if let Ok(mut set) = owned_sessions().lock() {
+        set.insert(session_id.to_string());
+    }
+}
+
+/// Whether this process created or attached the given session id itself.
+fn is_owned_session(session_id: &str) -> bool {
+    owned_sessions()
+        .lock()
+        .map(|set| set.contains(session_id))
+        .unwrap_or(false)
+}
+
+/// A daemon-wide event decoded off the event stream, forwarded to the GTK main
+/// thread for application to this window's tabs.
+enum DaemonUiEvent {
+    /// A session was created (by any client); carries its info snapshot.
+    Created(Box<cterm_proto::proto::SessionInfo>),
+    /// A session was destroyed; carries its id.
+    Destroyed(String),
+    /// A session's metadata changed; carries the new custom title and color.
+    MetadataChanged {
+        session_id: String,
+        custom_title: String,
+        tab_color: String,
+    },
+}
+
 /// Tab entry tracking terminal and its ID
 struct TabEntry {
     id: u64,
@@ -181,6 +222,9 @@ impl CtermWindow {
         // Set up close request handler for process confirmation
         cterm_window.setup_close_request_handler();
 
+        // Keep tabs in sync with other clients via the daemon event stream
+        cterm_window.setup_daemon_event_listener();
+
         cterm_window
     }
 
@@ -263,8 +307,201 @@ impl CtermWindow {
         cterm_window.setup_tab_bar_callbacks();
         cterm_window.setup_tab_switch_handler();
         cterm_window.setup_close_request_handler();
+        cterm_window.setup_daemon_event_listener();
 
         cterm_window
+    }
+
+    /// Subscribe to the local daemon's daemon-wide event stream and keep this
+    /// window's tabs in sync with changes made by other cterm instances: new
+    /// sessions appear as tabs, destroyed sessions are removed, and tab metadata
+    /// (custom title / color) changes are reflected live.
+    ///
+    /// Mirrors the existing background-thread + mpsc + `timeout_add_local`
+    /// pattern used for per-session streams. Sessions this process created are
+    /// filtered out via [`is_owned_session`] so we never double-add our own tabs.
+    fn setup_daemon_event_listener(&self) {
+        let notebook = self.notebook.clone();
+        let tabs = Rc::clone(&self.tabs);
+        let next_tab_id = Rc::clone(&self.next_tab_id);
+        let config = Rc::clone(&self.config);
+        let theme = self.theme.clone();
+        let tab_bar = self.tab_bar.clone();
+        let window = self.window.clone();
+        let has_bell = Rc::clone(&self.has_bell);
+        let file_manager = Rc::clone(&self.file_manager);
+        let notification_bar = self.notification_bar.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel::<DaemonUiEvent>();
+
+        // Background thread owns the stream; decode events and forward to the
+        // main thread. Targets the local daemon.
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::warn!("daemon event listener: failed to build runtime: {e}");
+                    return;
+                }
+            };
+
+            rt.block_on(async move {
+                let conn = match cterm_client::DaemonConnection::connect_local().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("daemon event listener: connect failed: {e}");
+                        return;
+                    }
+                };
+                let mut stream = match conn.stream_daemon_events().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("daemon event listener: subscribe failed: {e}");
+                        return;
+                    }
+                };
+
+                use tokio_stream::StreamExt;
+                while let Some(result) = stream.next().await {
+                    let event = match result {
+                        Ok(e) => e,
+                        Err(e) => {
+                            log::debug!("daemon event stream ended: {e}");
+                            break;
+                        }
+                    };
+                    let ui_event = match event.event {
+                        Some(cterm_proto::proto::daemon_event::Event::SessionCreated(c)) => {
+                            match c.session {
+                                Some(info) => DaemonUiEvent::Created(Box::new(info)),
+                                None => continue,
+                            }
+                        }
+                        Some(cterm_proto::proto::daemon_event::Event::SessionDestroyed(d)) => {
+                            DaemonUiEvent::Destroyed(d.session_id)
+                        }
+                        Some(cterm_proto::proto::daemon_event::Event::SessionMetadataChanged(
+                            m,
+                        )) => DaemonUiEvent::MetadataChanged {
+                            session_id: m.session_id,
+                            custom_title: m.custom_title,
+                            tab_color: m.tab_color,
+                        },
+                        None => continue,
+                    };
+                    // If the receiver is gone the window has closed; stop.
+                    if tx.send(ui_event).is_err() {
+                        break;
+                    }
+                }
+            });
+        });
+
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || loop {
+            let ui_event = match rx.try_recv() {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    return glib::ControlFlow::Continue;
+                }
+                // Background thread ended (daemon gone / window closing).
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break;
+                }
+            };
+
+            match ui_event {
+                DaemonUiEvent::Created(info) => {
+                    // Skip sessions we created ourselves, and any we already show.
+                    let already = is_owned_session(&info.session_id)
+                        || tabs
+                            .borrow()
+                            .iter()
+                            .any(|t| t.session_id.as_deref() == Some(info.session_id.as_str()));
+                    if already || !info.running {
+                        continue;
+                    }
+                    let title = if !info.custom_title.is_empty() {
+                        Some(info.custom_title.clone())
+                    } else if !info.title.is_empty() {
+                        Some(info.title.clone())
+                    } else {
+                        None
+                    };
+                    let color = if info.tab_color.is_empty() {
+                        None
+                    } else {
+                        Some(info.tab_color.clone())
+                    };
+                    let title_locked = !info.custom_title.is_empty();
+                    create_daemon_tab_titled(
+                        &notebook,
+                        &tabs,
+                        &next_tab_id,
+                        &config,
+                        &theme,
+                        &tab_bar,
+                        &window,
+                        &has_bell,
+                        &file_manager,
+                        &notification_bar,
+                        &info.session_id,
+                        title,
+                        color,
+                        title_locked,
+                    );
+                }
+                DaemonUiEvent::Destroyed(session_id) => {
+                    let tab_id = tabs
+                        .borrow()
+                        .iter()
+                        .find(|t| t.session_id.as_deref() == Some(session_id.as_str()))
+                        .map(|t| t.id);
+                    if let Some(id) = tab_id {
+                        remove_tab_from_ui(&notebook, &tabs, &tab_bar, &window, id);
+                    }
+                }
+                DaemonUiEvent::MetadataChanged {
+                    session_id,
+                    custom_title,
+                    tab_color,
+                } => {
+                    let tab_id = tabs
+                        .borrow()
+                        .iter()
+                        .find(|t| t.session_id.as_deref() == Some(session_id.as_str()))
+                        .map(|t| t.id);
+                    let Some(id) = tab_id else { continue };
+
+                    let color = if tab_color.is_empty() {
+                        None
+                    } else {
+                        Some(tab_color.clone())
+                    };
+                    // Apply visual color only — do NOT push back to the daemon,
+                    // or we'd echo the change we just received.
+                    tab_bar.set_color(id, color.as_deref());
+
+                    if !custom_title.is_empty() {
+                        tab_bar.set_title(id, &custom_title);
+                    }
+
+                    let mut tabs_mut = tabs.borrow_mut();
+                    if let Some(tab) = tabs_mut.iter_mut().find(|t| t.id == id) {
+                        tab.color = color;
+                        if custom_title.is_empty() {
+                            // Custom title cleared elsewhere: let OSC titles win again.
+                            tab.title_locked = false;
+                        } else {
+                            tab.title = custom_title.clone();
+                            tab.title_locked = true;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Set up window actions for the menu
@@ -2579,6 +2816,10 @@ fn spawn_daemon_tab(
                     cterm_client::DaemonConnection::connect_local().await?
                 };
                 let session = conn.create_session(opts).await?;
+                // Claim ownership before the create broadcast can be processed
+                // by our own daemon-event listener, so it doesn't add a second
+                // tab for a session we created ourselves.
+                mark_owned_session(session.session_id());
                 Ok(session)
             }),
             Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
@@ -2684,6 +2925,45 @@ fn create_daemon_tab(
     notification_bar: &NotificationBar,
     session_id: &str,
 ) {
+    create_daemon_tab_titled(
+        notebook,
+        tabs,
+        next_tab_id,
+        config,
+        theme,
+        tab_bar,
+        window,
+        has_bell,
+        file_manager,
+        notification_bar,
+        session_id,
+        None,
+        None,
+        false,
+    );
+}
+
+/// Attach to an existing daemon session by id and add a tab for it, applying an
+/// optional initial title and tab color (e.g. from a `SessionInfo` broadcast by
+/// another client). `title_locked` keeps the given title from being overwritten
+/// by later OSC title updates.
+#[allow(clippy::too_many_arguments)]
+fn create_daemon_tab_titled(
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<TabEntry>>>,
+    next_tab_id: &Rc<RefCell<u64>>,
+    config: &Rc<RefCell<Config>>,
+    theme: &Theme,
+    tab_bar: &TabBar,
+    window: &ApplicationWindow,
+    has_bell: &Rc<RefCell<bool>>,
+    file_manager: &Rc<RefCell<PendingFileManager>>,
+    notification_bar: &NotificationBar,
+    session_id: &str,
+    initial_title: Option<String>,
+    initial_color: Option<String>,
+    title_locked: bool,
+) {
     let cfg = config.borrow();
     let session_id = session_id.to_string();
 
@@ -2720,6 +3000,7 @@ fn create_daemon_tab(
                 let conn = cterm_client::DaemonConnection::connect_local().await?;
                 let (session, _initial_screen) =
                     conn.attach_session(&session_id, cols, rows).await?;
+                mark_owned_session(session.session_id());
                 Ok(session)
             }),
             Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
@@ -2734,14 +3015,21 @@ fn create_daemon_tab(
                 match result {
                     Ok(session) => {
                         let sid = session.session_id().to_string();
-                        let title = "Terminal".to_string();
+                        let title = initial_title
+                            .clone()
+                            .filter(|t| !t.is_empty())
+                            .unwrap_or_else(|| "Terminal".to_string());
                         let cfg = config.borrow();
                         let terminal = TerminalWidget::from_daemon(session, &cfg, &theme);
+                        drop(cfg);
 
                         let tab_id = generate_tab_id(&next_tab_id);
                         let page_num =
                             notebook.append_page(terminal.widget(), None::<&gtk4::Widget>);
                         tab_bar.add_tab(tab_id, &title);
+                        if let Some(ref color) = initial_color {
+                            tab_bar.set_color(tab_id, Some(color));
+                        }
 
                         setup_tab_callbacks(
                             &notebook,
@@ -2765,11 +3053,20 @@ fn create_daemon_tab(
                             page_num,
                             title,
                             terminal,
-                            false,
+                            title_locked,
                             Some(sid),
                             None,
                             None,
                         );
+
+                        // Record the color on the TabEntry so later lookups and
+                        // redraws keep it.
+                        if initial_color.is_some() {
+                            if let Some(tab) = tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id)
+                            {
+                                tab.color = initial_color.clone();
+                            }
+                        }
                     }
                     Err(e) => {
                         log::error!("Failed to attach to daemon session: {}", e);

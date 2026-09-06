@@ -104,6 +104,43 @@ pub async fn reconnect_all_sessions() -> Result<Vec<ReconnectedSession>, ClientE
     reconnect_all_sessions_on(&conn).await
 }
 
+/// Attach to a single session described by a `SessionInfo` and build a
+/// `ReconnectedSession` (with screen snapshot) from it.
+///
+/// Shared by the bulk reconnect path and the live daemon-event consumers, which
+/// receive a `SessionInfo` in a `SessionCreatedEvent` and need to materialize a
+/// tab for it. Returns `None` if the attach fails (logged).
+pub async fn attach_session_from_info(
+    conn: &DaemonConnection,
+    session_info: cterm_proto::proto::SessionInfo,
+) -> Option<ReconnectedSession> {
+    match conn
+        .attach_session(
+            &session_info.session_id,
+            session_info.cols,
+            session_info.rows,
+        )
+        .await
+    {
+        Ok((handle, screen)) => Some(ReconnectedSession {
+            handle,
+            title: session_info.title,
+            custom_title: session_info.custom_title,
+            tab_color: session_info.tab_color,
+            template_name: session_info.template_name,
+            screen,
+        }),
+        Err(e) => {
+            log::warn!(
+                "Failed to attach session {}: {}",
+                session_info.session_id,
+                e
+            );
+            None
+        }
+    }
+}
+
 /// Reconnect to all running sessions on an existing daemon connection.
 ///
 /// Works with any `DaemonConnection` (local or SSH-tunneled).
@@ -120,33 +157,7 @@ pub async fn reconnect_all_sessions_on(
     let attaches = sessions
         .into_iter()
         .filter(|s| s.running)
-        .map(|session_info| async move {
-            match conn
-                .attach_session(
-                    &session_info.session_id,
-                    session_info.cols,
-                    session_info.rows,
-                )
-                .await
-            {
-                Ok((handle, screen)) => Some(ReconnectedSession {
-                    handle,
-                    title: session_info.title,
-                    custom_title: session_info.custom_title,
-                    tab_color: session_info.tab_color,
-                    template_name: session_info.template_name,
-                    screen,
-                }),
-                Err(e) => {
-                    log::warn!(
-                        "Failed to reattach session {}: {}",
-                        session_info.session_id,
-                        e
-                    );
-                    None
-                }
-            }
-        });
+        .map(|session_info| attach_session_from_info(conn, session_info));
 
     let results = futures::future::join_all(attaches).await;
     Ok(results.into_iter().flatten().collect())
