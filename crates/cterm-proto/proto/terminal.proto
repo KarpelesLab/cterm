@@ -48,6 +48,11 @@ service TerminalService {
   // Event Streaming (per-session terminal events)
   rpc StreamEvents(StreamEventsRequest) returns (stream TerminalEvent);
 
+  // Daemon-wide event stream: session lifecycle (created/destroyed) and tab
+  // metadata (custom title / color / template) changes, so every connected
+  // client can keep its tab display in sync with changes made elsewhere.
+  rpc StreamDaemonEvents(StreamDaemonEventsRequest) returns (stream DaemonEvent);
+
   // Reply to a SessionPromptEvent raised during SSH session establishment.
   rpc RespondPrompt(RespondPromptRequest) returns (RespondPromptResponse);
 
@@ -579,6 +584,41 @@ message ClearAlertResponse {}
 
 message StreamEventsRequest {
   string session_id = 1;
+}
+
+// ============================================================================
+// Daemon-wide Events
+// ============================================================================
+
+message StreamDaemonEventsRequest {}
+
+// A daemon-wide event describing a change other clients should reflect in
+// their tab display.
+message DaemonEvent {
+  oneof event {
+    SessionCreatedEvent session_created = 1;
+    SessionDestroyedEvent session_destroyed = 2;
+    SessionMetadataChangedEvent session_metadata_changed = 3;
+  }
+}
+
+// A new session was created on the daemon (by any client).
+message SessionCreatedEvent {
+  SessionInfo session = 1;
+}
+
+// A session was destroyed on the daemon.
+message SessionDestroyedEvent {
+  string session_id = 1;
+}
+
+// A session's user-facing metadata (custom title, tab color, template) changed.
+// Carries the full current values so a receiver can apply them directly.
+message SessionMetadataChangedEvent {
+  string session_id = 1;
+  string custom_title = 2;
+  string tab_color = 3;
+  string template_name = 4;
 }
 
 message TerminalEvent {

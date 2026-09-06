@@ -1,12 +1,21 @@
 //! Thread-safe session manager
 
 use crate::error::{HeadlessError, Result};
+use crate::proto::{
+    daemon_event, DaemonEvent, SessionCreatedEvent, SessionDestroyedEvent,
+    SessionMetadataChangedEvent,
+};
 use crate::session::{generate_session_id, SessionState};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::sync::broadcast;
+
+/// Capacity of the daemon-wide event broadcast channel. Events are tiny and
+/// consumed promptly; this only needs to absorb short bursts.
+const DAEMON_EVENT_CAPACITY: usize = 256;
 
 /// Thread-safe manager for terminal sessions
 pub struct SessionManager {
@@ -17,6 +26,9 @@ pub struct SessionManager {
     scrollback_lines: usize,
     /// Whether at least one session has ever been created
     had_sessions: AtomicBool,
+    /// Daemon-wide event bus: session lifecycle + metadata changes, fanned out
+    /// to every client's `StreamDaemonEvents` subscription.
+    daemon_event_tx: broadcast::Sender<DaemonEvent>,
 }
 
 impl SessionManager {
@@ -27,12 +39,60 @@ impl SessionManager {
 
     /// Create a new session manager with custom scrollback
     pub fn with_scrollback(scrollback_lines: usize) -> Self {
+        let (daemon_event_tx, _) = broadcast::channel(DAEMON_EVENT_CAPACITY);
         Self {
             sessions: RwLock::new(HashMap::new()),
             named_sessions: RwLock::new(HashMap::new()),
             scrollback_lines,
             had_sessions: AtomicBool::new(false),
+            daemon_event_tx,
         }
+    }
+
+    /// Subscribe to the daemon-wide event bus (session lifecycle + metadata).
+    pub fn subscribe_daemon_events(&self) -> broadcast::Receiver<DaemonEvent> {
+        self.daemon_event_tx.subscribe()
+    }
+
+    /// Broadcast a daemon-wide event to all subscribers. Best-effort: an error
+    /// only means there are currently no subscribers.
+    pub fn broadcast_daemon_event(&self, event: DaemonEvent) {
+        let _ = self.daemon_event_tx.send(event);
+    }
+
+    /// Broadcast a `SessionCreated` event carrying the session's current info.
+    fn broadcast_session_created(&self, session: &SessionState) {
+        self.broadcast_daemon_event(DaemonEvent {
+            event: Some(daemon_event::Event::SessionCreated(SessionCreatedEvent {
+                session: Some(session.to_session_info()),
+            })),
+        });
+    }
+
+    /// Broadcast a `SessionMetadataChanged` event carrying the session's
+    /// current custom title, tab color, and template name.
+    pub fn broadcast_session_metadata_changed(&self, session: &SessionState) {
+        self.broadcast_daemon_event(DaemonEvent {
+            event: Some(daemon_event::Event::SessionMetadataChanged(
+                SessionMetadataChangedEvent {
+                    session_id: session.id.clone(),
+                    custom_title: session.custom_title(),
+                    tab_color: session.tab_color(),
+                    template_name: session.template_name(),
+                },
+            )),
+        });
+    }
+
+    /// Broadcast a `SessionDestroyed` event for the given session id.
+    fn broadcast_session_destroyed(&self, session_id: &str) {
+        self.broadcast_daemon_event(DaemonEvent {
+            event: Some(daemon_event::Event::SessionDestroyed(
+                SessionDestroyedEvent {
+                    session_id: session_id.to_string(),
+                },
+            )),
+        });
     }
 
     /// Create a new terminal session
@@ -75,6 +135,8 @@ impl SessionManager {
 
         log::info!("Created session {} ({}x{})", state.id, cols, rows);
 
+        self.broadcast_session_created(&state);
+
         Ok(state)
     }
 
@@ -114,6 +176,8 @@ impl SessionManager {
             rows
         );
 
+        self.broadcast_session_created(&state);
+
         Ok(state)
     }
 
@@ -151,6 +215,8 @@ impl SessionManager {
         let _ = session.send_signal(sig);
 
         log::info!("Destroyed session {}", id);
+
+        self.broadcast_session_destroyed(id);
 
         Ok(())
     }
@@ -199,6 +265,8 @@ impl SessionManager {
             cols,
             rows
         );
+
+        self.broadcast_session_created(&state);
 
         Ok(state)
     }
@@ -287,13 +355,19 @@ impl SessionManager {
         // Take the write lock only to remove the dead ids.
         let count = dead_ids.len();
         if count > 0 {
-            let mut sessions = self.sessions.write();
-            let mut named = self.named_sessions.write();
+            {
+                let mut sessions = self.sessions.write();
+                let mut named = self.named_sessions.write();
+                for id in &dead_ids {
+                    sessions.remove(id);
+                    // Clean up named session mapping
+                    named.retain(|_, v| v != id);
+                    log::info!("Cleaned up dead session {}", id);
+                }
+            }
+            // Notify clients after releasing the locks.
             for id in &dead_ids {
-                sessions.remove(id);
-                // Clean up named session mapping
-                named.retain(|_, v| v != id);
-                log::info!("Cleaned up dead session {}", id);
+                self.broadcast_session_destroyed(id);
             }
         }
         count

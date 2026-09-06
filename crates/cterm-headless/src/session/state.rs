@@ -491,6 +491,26 @@ impl SessionState {
         self.terminal.read().child_pid()
     }
 
+    /// Build the proto `SessionInfo` snapshot for this session.
+    pub fn to_session_info(&self) -> crate::proto::SessionInfo {
+        let (cols, rows) = self.dimensions();
+        crate::proto::SessionInfo {
+            session_id: self.id.clone(),
+            cols: cols as u32,
+            rows: rows as u32,
+            title: self.title(),
+            running: self.is_running(),
+            child_pid: self.child_pid().unwrap_or(0),
+            attached_clients: self.attached_clients(),
+            custom_title: self.custom_title(),
+            tab_color: self.tab_color(),
+            template_name: self.template_name(),
+            has_foreground_process: self.has_foreground_process(),
+            foreground_process_name: self.foreground_process_name().unwrap_or_default(),
+            alerted: self.is_alerted(),
+        }
+    }
+
     /// Check if a non-shell foreground process is running (PID-based).
     #[cfg(unix)]
     pub fn has_foreground_process(&self) -> bool {
