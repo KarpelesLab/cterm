@@ -581,6 +581,20 @@ impl DaemonConnection {
         Ok(response.into_inner().sessions)
     }
 
+    /// Subscribe to the daemon-wide event stream: session lifecycle
+    /// (created/destroyed) and tab metadata (title/color/template) changes made
+    /// by any client. Lets a UI keep its tab list in sync with other clients.
+    pub async fn stream_daemon_events(&self) -> Result<tonic::Streaming<DaemonEvent>> {
+        // Clone the client out of the mutex so this long-lived stream doesn't
+        // hold the connection lock for its whole lifetime.
+        let mut client = self.client.lock().await.clone();
+        let response = client
+            .stream_daemon_events(StreamDaemonEventsRequest {})
+            .await?;
+
+        Ok(response.into_inner())
+    }
+
     /// Get info about a specific session
     pub async fn get_session(&self, session_id: &str) -> Result<SessionInfo> {
         let response = self
