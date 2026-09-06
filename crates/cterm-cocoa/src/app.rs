@@ -803,8 +803,13 @@ define_class!(
                                     host.clone()
                                 };
 
+                                // Honor the session's stored tab color (set by
+                                // any client); leave it uncolored otherwise.
+                                // Previously every empty-color remote tab was
+                                // forced green, which repainted all tabs on
+                                // connect.
                                 let tab_color = if recon.tab_color.is_empty() {
-                                    Some("#22c55e".to_string()) // Green for remote
+                                    None
                                 } else {
                                     Some(recon.tab_color.clone())
                                 };
