@@ -9,6 +9,26 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-09-07
+
+### Added
+- Live tab sync across every cterm connected to the same daemon: a new
+  daemon-wide event stream broadcasts session lifecycle (created/destroyed) and
+  tab-metadata (custom title / color) changes, so a tab opened, closed, renamed,
+  or recolored in one client now appears and updates in all of them. Works on
+  macOS and GTK, for the local daemon and for SSH-tunneled remote daemons alike.
+- SSH host autofill in the GTK "SSH Remote" dialog, matching macOS: an editable
+  combo prefilled with the most recently used host and backed by the shared
+  connection history, with inline completion.
+
+### Fixed
+- macOS no longer forces every remote tab green on connect — a tab keeps the
+  color it was given (or none), matching the local reconnect path.
+- The GTK tab context menu now responds to the first click after a right-click,
+  instead of swallowing it (with a "Broken accounting of active state" warning)
+  until the pointer left the menu and returned.
+- The GTK "SSH Remote" dialog closes immediately on Connect, like macOS.
+
 ## [0.0.19] - 2026-07-09
 
 ### Added
