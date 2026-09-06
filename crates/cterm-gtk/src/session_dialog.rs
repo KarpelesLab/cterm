@@ -399,7 +399,7 @@ where
                                 DialogFlags::MODAL,
                                 MessageType::Error,
                                 ButtonsType::Ok,
-                                &format!("Failed to connect to {}: {}", host_err, e),
+                                format!("Failed to connect to {}: {}", host_err, e),
                             );
                             err_dialog.connect_response(|d, _| d.close());
                             err_dialog.present();
