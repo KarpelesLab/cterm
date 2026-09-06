@@ -413,6 +413,9 @@ impl CtermWindow {
                         cterm_client::DaemonConnection::connect_local().await?
                     };
                     let session = conn.create_session(opts).await?;
+                    // Claim ownership so our own daemon-event listener doesn't
+                    // add a second tab for a session we just created.
+                    crate::app::mark_owned_session(session.session_id());
                     Ok::<_, cterm_client::ClientError>(session)
                 }),
                 Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
@@ -578,6 +581,9 @@ impl CtermWindow {
                         cterm_client::DaemonConnection::connect_local().await?
                     };
                     let session = conn.create_session(opts).await?;
+                    // Claim ownership so our own daemon-event listener doesn't
+                    // add a second tab for a session we just created.
+                    crate::app::mark_owned_session(session.session_id());
                     Ok::<_, cterm_client::ClientError>(session)
                 }),
                 Err(e) => Err(cterm_client::ClientError::Connection(e.to_string())),
@@ -849,6 +855,23 @@ impl CtermWindow {
                 return;
             }
 
+            self.apply_tab_color_to_tab(tab, color);
+        }
+    }
+
+    /// Apply a tab color visually WITHOUT persisting it back to the daemon.
+    ///
+    /// Used when reflecting a `SessionMetadataChanged` broadcast from another
+    /// client: the daemon already holds this value, so re-persisting via
+    /// `set_tab_color` would echo the change back in a loop.
+    pub fn set_tab_color_visual(&self, color: Option<&str>) {
+        *self.ivars().pending_tab_color.borrow_mut() = color.map(|s| s.to_string());
+        unsafe {
+            let tab: *mut objc2::runtime::AnyObject = msg_send![self, tab];
+            if tab.is_null() {
+                // Tab not in a group yet; apply_pending_tab_color will pick it up.
+                return;
+            }
             self.apply_tab_color_to_tab(tab, color);
         }
     }
