@@ -3,8 +3,7 @@
 use cterm_headless::cli::Cli;
 use cterm_headless::server::run_server;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
 
@@ -27,14 +26,21 @@ async fn main() -> anyhow::Result<()> {
     let relaunch_state_path = cli.relaunch_state.clone();
     let config = cli.to_server_config();
 
-    // Daemonize if not running in foreground and not using TCP
+    // Daemonize if not running in foreground and not using TCP. This must
+    // happen before the tokio runtime exists: fork() only keeps the calling
+    // thread, so forking after the runtime starts leaves the child without its
+    // worker/IO-driver threads -- it binds the socket but never accepts.
     #[cfg(unix)]
     if !config.foreground && !config.use_tcp {
         daemonize()?;
     }
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     // Run the server (with optional relaunch state restoration)
-    run_server(config, relaunch_state_path).await?;
+    runtime.block_on(run_server(config, relaunch_state_path))?;
 
     Ok(())
 }
