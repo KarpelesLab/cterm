@@ -9,6 +9,17 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-10-05
+
+### Fixed
+- ctermd no longer hangs when started in the background (without
+  `--foreground`). It forked after the tokio runtime had started, so the
+  daemonized child lost its worker threads: it bound its socket but never
+  accepted a connection. Every daemon launched by the SSH remote setup script
+  was affected, making SSH connections fail with "Daemon not responding:
+  handshake timed out after 5s". Remote hosts already running a stuck ctermd
+  need it killed so a fixed one can start.
+
 ## [0.0.20] - 2026-09-07
 
 ### Added
