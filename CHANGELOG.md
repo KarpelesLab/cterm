@@ -9,7 +9,16 @@ is omitted for readability.
 
 ## [Unreleased]
 
-## [0.0.21] - 2026-10-05
+## [0.0.22] - 2026-10-05
+
+Same fixes as 0.0.21, whose release build failed on a new clippy lint and was
+never published.
+
+### Fixed
+- CI: allow `clippy::double_must_use` on the generated proto module; newer
+  stable clippy flags the `#[must_use]` that `async_trait` adds there.
+
+## [0.0.21] - 2026-10-05 [not released]
 
 ### Fixed
 - ctermd no longer hangs when started in the background (without
