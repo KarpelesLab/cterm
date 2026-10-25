@@ -9,6 +9,19 @@ is omitted for readability.
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-10-25
+
+### Changed
+- Bumped all dependencies to their latest versions, including major
+  upgrades of vte (0.15), toml (1), base64 (0.23), puressh (0.2), sha2
+  (0.11), tower (0.5), tonic/prost (0.14), gtk4 (0.11) / glib (0.22) /
+  libadwaita (0.9), and windows (0.62).
+- Minimum supported Rust version raised to 1.95 (required by puressh and
+  rsurl).
+
+### Removed
+- Unused `bincode` dependency.
+
 ## [0.0.22] - 2026-10-05
 
 Same fixes as 0.0.21, whose release build failed on a new clippy lint and was
