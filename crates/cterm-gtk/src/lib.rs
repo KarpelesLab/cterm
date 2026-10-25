@@ -120,7 +120,7 @@ pub fn run() {
             state_path
         );
         let exit_code = upgrade_receiver::run_receiver(state_path);
-        std::process::exit(exit_code.value());
+        std::process::exit(i32::from(exit_code));
     }
 
     // Store args for later access
@@ -144,5 +144,5 @@ pub fn run() {
     // Use run_with_args with empty args to prevent GTK from parsing
     // the command line (which contains flags that GTK doesn't know)
     let exit_code = app.run_with_args(&[] as &[&str]);
-    std::process::exit(exit_code.value());
+    std::process::exit(i32::from(exit_code));
 }

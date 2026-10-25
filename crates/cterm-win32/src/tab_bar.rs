@@ -5,13 +5,14 @@
 use cterm_core::color::Rgb;
 use cterm_ui::theme::Theme;
 use windows::core::Interface;
-use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
+use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
     ID2D1HwndRenderTarget, ID2D1RenderTarget, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
 };
+use windows_numerics::Vector2;
 
 use crate::dpi::DpiInfo;
 
@@ -298,10 +299,10 @@ impl TabBar {
         let border_brush = unsafe { base.CreateSolidColorBrush(&border_color, None)? };
         unsafe {
             base.DrawLine(
-                D2D_POINT_2F { x: 0.0, y: height },
-                D2D_POINT_2F {
-                    x: width,
-                    y: height,
+                Vector2 { X: 0.0, Y: height },
+                Vector2 {
+                    X: width,
+                    Y: height,
                 },
                 &border_brush,
                 1.0,
@@ -403,9 +404,9 @@ impl TabBar {
         }
 
         // Draw text
-        let text_origin = D2D_POINT_2F {
-            x: rect.bounds.left + 8.0,
-            y: rect.bounds.top,
+        let text_origin = Vector2 {
+            X: rect.bounds.left + 8.0,
+            Y: rect.bounds.top,
         };
         unsafe { base.DrawTextLayout(text_origin, &layout, &text_brush, Default::default()) };
 
@@ -423,26 +424,26 @@ impl TabBar {
         let padding = 4.0;
         unsafe {
             base.DrawLine(
-                D2D_POINT_2F {
-                    x: rect.close_button.left + padding,
-                    y: rect.close_button.top + padding,
+                Vector2 {
+                    X: rect.close_button.left + padding,
+                    Y: rect.close_button.top + padding,
                 },
-                D2D_POINT_2F {
-                    x: rect.close_button.right - padding,
-                    y: rect.close_button.bottom - padding,
+                Vector2 {
+                    X: rect.close_button.right - padding,
+                    Y: rect.close_button.bottom - padding,
                 },
                 &close_brush,
                 1.5,
                 None,
             );
             base.DrawLine(
-                D2D_POINT_2F {
-                    x: rect.close_button.right - padding,
-                    y: rect.close_button.top + padding,
+                Vector2 {
+                    X: rect.close_button.right - padding,
+                    Y: rect.close_button.top + padding,
                 },
-                D2D_POINT_2F {
-                    x: rect.close_button.left + padding,
-                    y: rect.close_button.bottom - padding,
+                Vector2 {
+                    X: rect.close_button.left + padding,
+                    Y: rect.close_button.bottom - padding,
                 },
                 &close_brush,
                 1.5,
@@ -469,13 +470,13 @@ impl TabBar {
         unsafe {
             // Horizontal line
             base.DrawLine(
-                D2D_POINT_2F {
-                    x: cx - size,
-                    y: cy,
+                Vector2 {
+                    X: cx - size,
+                    Y: cy,
                 },
-                D2D_POINT_2F {
-                    x: cx + size,
-                    y: cy,
+                Vector2 {
+                    X: cx + size,
+                    Y: cy,
                 },
                 &brush,
                 2.0,
@@ -483,13 +484,13 @@ impl TabBar {
             );
             // Vertical line
             base.DrawLine(
-                D2D_POINT_2F {
-                    x: cx,
-                    y: cy - size,
+                Vector2 {
+                    X: cx,
+                    Y: cy - size,
                 },
-                D2D_POINT_2F {
-                    x: cx,
-                    y: cy + size,
+                Vector2 {
+                    X: cx,
+                    Y: cy + size,
                 },
                 &brush,
                 2.0,

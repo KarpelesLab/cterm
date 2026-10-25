@@ -469,17 +469,12 @@ fn hop_client_config(
         policy.on_unknown = TofuAction::Prompt(make_tofu(prompt.clone(), false));
         policy.on_mismatch = TofuAction::Prompt(make_tofu(prompt, true));
     }
-    Config {
-        host_key_policy: HostKeyPolicy::KnownHosts(policy),
-        timeout: None,
-        algorithms: puressh::client::AlgoOverrides {
-            // `Some(true)` advertises `zlib@openssh.com` ahead of `none`; the
-            // server picks `none` if it lacks zlib, so this is always safe to
-            // offer. `None` (the default) advertises `none` only.
-            compression: config.compress.then_some(true),
-            ..Default::default()
-        },
-    }
+    let mut algorithms = puressh::client::AlgoOverrides::default();
+    // `Some(true)` advertises `zlib@openssh.com` ahead of `none`; the server
+    // picks `none` if it lacks zlib, so this is always safe to offer. `None`
+    // (the default) advertises `none` only.
+    algorithms.compression = config.compress.then_some(true);
+    Config::new(HostKeyPolicy::KnownHosts(policy)).with_algorithms(algorithms)
 }
 
 /// Authenticate `client` as `user` using the credential set derived from

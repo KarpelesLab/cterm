@@ -100,7 +100,7 @@ impl Parser {
                 screen,
                 dcs_state: &mut self.dcs_state,
             };
-            self.state_machine.advance(&mut performer, byte);
+            self.state_machine.advance(&mut performer, &[byte]);
         }
     }
 

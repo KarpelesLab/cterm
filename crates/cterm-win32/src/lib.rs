@@ -155,7 +155,7 @@ fn run_main_loop(
 
         if ret.0 == -1 {
             // Error
-            return Err(windows::core::Error::from_win32());
+            return Err(windows::core::Error::from_thread());
         }
 
         unsafe {

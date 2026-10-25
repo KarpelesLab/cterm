@@ -7,8 +7,9 @@ description = "Protobuf definitions and type conversions for cterm gRPC protocol
 [dependencies]
 cterm-core.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"

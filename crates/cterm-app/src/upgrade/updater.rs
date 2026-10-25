@@ -432,9 +432,7 @@ impl Updater {
 
         // Calculate actual hash
         let file_data = std::fs::read(file_path)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&file_data);
-        let actual_hash = format!("{:x}", hasher.finalize());
+        let actual_hash = sha256_hex(&file_data);
 
         if actual_hash != expected_hash {
             return Err(UpdateError::ChecksumMismatch);
@@ -446,12 +444,18 @@ impl Updater {
     /// Verify a file against an expected SHA256 hash
     pub fn verify_hash(file_path: &Path, expected_hash: &str) -> Result<bool, UpdateError> {
         let file_data = std::fs::read(file_path)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&file_data);
-        let actual_hash = format!("{:x}", hasher.finalize());
+        let actual_hash = sha256_hex(&file_data);
 
         Ok(actual_hash.to_lowercase() == expected_hash.to_lowercase())
     }
+}
+
+/// Lowercase hex encoding of the SHA-256 digest of `data`
+fn sha256_hex(data: &[u8]) -> String {
+    Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]

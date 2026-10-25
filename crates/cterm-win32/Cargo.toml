@@ -20,7 +20,8 @@ native-windows-gui = "1.0"
 native-windows-derive = "1.0"
 
 # Windows APIs for Direct2D, DirectWrite, etc.
-windows = { version = "0.60", features = [
+windows-numerics = "0.3"
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
@@ -47,7 +48,6 @@ env_logger.workspace = true
 clap.workspace = true
 tokio.workspace = true
 futures.workspace = true
-bincode.workspace = true
 bitflags.workspace = true
 
 [target.'cfg(windows)'.dependencies]

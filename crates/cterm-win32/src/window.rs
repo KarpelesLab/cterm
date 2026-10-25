@@ -2173,7 +2173,7 @@ pub fn register_window_class() -> windows::core::Result<()> {
 
     let atom = unsafe { RegisterClassExW(&wc) };
     if atom == 0 {
-        return Err(windows::core::Error::from_win32());
+        return Err(windows::core::Error::from_thread());
     }
 
     Ok(())
@@ -2213,7 +2213,7 @@ pub fn create_window(config: &Config, theme: &Theme) -> windows::core::Result<HW
     state.init_renderer()?;
     state.new_tab().map_err(|e| {
         log::error!("Failed to create initial tab: {}", e);
-        windows::core::Error::from_win32()
+        windows::core::Error::from_thread()
     })?;
 
     // Store state pointer in window
@@ -2288,7 +2288,7 @@ pub fn create_window_from_upgrade(
         .build()
         .map_err(|e| {
             log::error!("Failed to create tokio runtime: {}", e);
-            windows::core::Error::from_win32()
+            windows::core::Error::from_thread()
         })?;
 
     let mut any_restored = false;
@@ -2323,7 +2323,7 @@ pub fn create_window_from_upgrade(
     if !any_restored {
         state.new_tab().map_err(|e| {
             log::error!("Failed to create initial tab: {}", e);
-            windows::core::Error::from_win32()
+            windows::core::Error::from_thread()
         })?;
     }
 

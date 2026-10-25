@@ -10,8 +10,7 @@ use cterm_ui::theme::Theme;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
-    D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
@@ -28,6 +27,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows_numerics::Vector2;
 
 use crate::dpi::DpiInfo;
 
@@ -441,7 +441,7 @@ impl TerminalRenderer {
                 )?
             };
 
-            let origin = D2D_POINT_2F { x, y };
+            let origin = Vector2 { X: x, Y: y };
             unsafe {
                 base.DrawTextLayout(
                     origin,
@@ -462,10 +462,13 @@ impl TerminalRenderer {
             };
             unsafe {
                 base.DrawLine(
-                    D2D_POINT_2F { x, y: underline_y },
-                    D2D_POINT_2F {
-                        x: x + self.cell_dims.width,
-                        y: underline_y,
+                    Vector2 {
+                        X: x,
+                        Y: underline_y,
+                    },
+                    Vector2 {
+                        X: x + self.cell_dims.width,
+                        Y: underline_y,
                     },
                     brush,
                     1.0,
@@ -479,10 +482,10 @@ impl TerminalRenderer {
             let strike_y = y + self.cell_dims.height / 2.0;
             unsafe {
                 base.DrawLine(
-                    D2D_POINT_2F { x, y: strike_y },
-                    D2D_POINT_2F {
-                        x: x + self.cell_dims.width,
-                        y: strike_y,
+                    Vector2 { X: x, Y: strike_y },
+                    Vector2 {
+                        X: x + self.cell_dims.width,
+                        Y: strike_y,
                     },
                     fg_brush.as_ref().unwrap(),
                     1.0,
@@ -625,7 +628,7 @@ impl TerminalRenderer {
                     )?
                 };
 
-                let origin = D2D_POINT_2F { x, y };
+                let origin = Vector2 { X: x, Y: y };
                 unsafe {
                     base.DrawTextLayout(origin, &layout, &text_brush, Default::default());
                 }
